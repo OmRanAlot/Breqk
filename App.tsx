@@ -34,10 +34,11 @@ const App = () => {
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <Tab.Navigator 
+        <Tab.Navigator
+          initialRouteName="Home"
           screenOptions={({ route }) => ({
             headerShown: false,
-            tabBarStyle: { 
+            tabBarStyle: {
               backgroundColor: '#1D201F',
               height: 80,
               paddingBottom: 20,
@@ -49,8 +50,8 @@ const App = () => {
               elevation: 8,
               borderTopWidth: 0,
             },
-            tabBarLabelStyle: { 
-              fontSize: 12, 
+            tabBarLabelStyle: {
+              fontSize: 12,
               fontWeight: '600',
               marginTop: 4,
             },
@@ -71,8 +72,8 @@ const App = () => {
             },
           })}
         >
-          <Tab.Screen name="Customize" component={Customize} />
           <Tab.Screen name="Home" component={Home} />
+          <Tab.Screen name="Customize" component={Customize} />
           <Tab.Screen name="Progress" component={Progress} />
         </Tab.Navigator>
       </NavigationContainer>

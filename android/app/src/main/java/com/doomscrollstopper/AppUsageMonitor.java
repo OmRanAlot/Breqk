@@ -75,14 +75,14 @@ public class AppUsageMonitor {
     private int customDelayTimeSeconds = 15; // Default delay time for countdown
     // Popup delay: how long to wait after FIRST popup before showing popup again
     // (in minutes)
-    private int popupDelayMinutes = 1; // Default: 1 minute
+    private int popupDelayMinutes = 10; // Default: 10 minute
     // Track when each blocked app was opened (packageName -> timestamp in
     // milliseconds)
     private final ConcurrentHashMap<String, Long> appOpenTimestamps = new ConcurrentHashMap<>();
-    // Track when the FIRST popup was shown for each app (packageName -> timestamp
+    // Track when the LAST popup was shown for each app (packageName -> timestamp
     // in milliseconds)
-    // This is used to show the second popup after X minutes
-    private final ConcurrentHashMap<String, Long> firstPopupShownTimestamps = new ConcurrentHashMap<>();
+    // This is used to show the next popup after X minutes
+    private final ConcurrentHashMap<String, Long> lastPopupShownTimestamps = new ConcurrentHashMap<>();
     // Store the monitor runnable so we can remove it to prevent concurrent loops
     private Runnable monitorRunnable;
 
@@ -202,10 +202,10 @@ public class AppUsageMonitor {
                             // If this is a new blocked app or app was switched to, record the open time
                             if (!foregroundApp.equals(currentForegroundApp)) {
                                 appOpenTimestamps.put(foregroundApp, now);
-                                // Clear first popup timestamp when app is reopened (new session)
-                                firstPopupShownTimestamps.remove(foregroundApp);
+                                // Clear last popup timestamp when app is reopened (new session)
+                                lastPopupShownTimestamps.remove(foregroundApp);
                                 Log.d(TAG, "Recorded open time for " + foregroundApp + " at " + now
-                                        + " (new session, cleared first popup timestamp)");
+                                        + " (new session, cleared last popup timestamp)");
                             }
                         }
 
@@ -215,40 +215,40 @@ public class AppUsageMonitor {
                         if (isBlocked && !isOverlayActive) {
                             // Get when this app was opened
                             Long appOpenTime = appOpenTimestamps.get(foregroundApp);
-                            Long firstPopupTime = firstPopupShownTimestamps.get(foregroundApp);
+                            Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);
                             long popupDelayMs = popupDelayMinutes * 60 * 1000; // Convert minutes to milliseconds
 
                             // Determine if we should show popup:
-                            // 1. If no first popup shown yet AND app not in allowed session → show
+                            // 1. If no previous popup shown yet AND app not in allowed session → show
                             // immediately (first popup)
-                            // 2. If first popup was shown and X minutes have passed → show again (second
+                            // 2. If previous popup was shown and X minutes have passed → show again (next
                             // popup) - regardless of allowedThisSession
-                            boolean shouldShowFirstPopup = (appOpenTime != null && firstPopupTime == null
+                            boolean shouldShowFirstPopup = (appOpenTime != null && lastPopupTime == null
                                     && !isAllowed);
-                            boolean shouldShowSecondPopup = (firstPopupTime != null
-                                    && (now - firstPopupTime) >= popupDelayMs);
-                            boolean shouldShowPopup = shouldShowFirstPopup || shouldShowSecondPopup;
+                            boolean shouldShowNextPopup = (lastPopupTime != null
+                                    && (now - lastPopupTime) >= popupDelayMs);
+                            boolean shouldShowPopup = shouldShowFirstPopup || shouldShowNextPopup;
 
                             // Enhanced logging for debugging
                             long timeSinceOpenMs = appOpenTime != null ? (now - appOpenTime) : 0;
                             long timeSinceOpenSec = timeSinceOpenMs / 1000;
-                            long timeSinceFirstPopupMs = firstPopupTime != null ? (now - firstPopupTime) : 0;
-                            long timeSinceFirstPopupSec = timeSinceFirstPopupMs / 1000;
+                            long timeSinceLastPopupMs = lastPopupTime != null ? (now - lastPopupTime) : 0;
+                            long timeSinceLastPopupSec = timeSinceLastPopupMs / 1000;
 
                             Log.d(TAG, "Popup check for " + foregroundApp + ": delayMinutes=" + popupDelayMinutes +
-                                    " appOpenTime=" + appOpenTime + " firstPopupTime=" + firstPopupTime +
-                                    " shouldShowFirst=" + shouldShowFirstPopup + " shouldShowSecond="
-                                    + shouldShowSecondPopup +
+                                    " appOpenTime=" + appOpenTime + " lastPopupTime=" + lastPopupTime +
+                                    " shouldShowFirst=" + shouldShowFirstPopup + " shouldShowNext="
+                                    + shouldShowNextPopup +
                                     " shouldShow=" + shouldShowPopup +
                                     " timeSinceOpen=" + timeSinceOpenSec + "s" +
-                                    " timeSinceFirstPopup=" + timeSinceFirstPopupSec + "s");
+                                    " timeSinceLastPopup=" + timeSinceLastPopupSec + "s");
 
-                            if (!shouldShowPopup && firstPopupTime != null) {
-                                long timeRemaining = popupDelayMs - (now - firstPopupTime);
+                            if (!shouldShowPopup && lastPopupTime != null) {
+                                long timeRemaining = popupDelayMs - (now - lastPopupTime);
                                 long minutesRemaining = timeRemaining / (60 * 1000);
                                 long secondsRemaining = (timeRemaining % (60 * 1000)) / 1000;
                                 Log.d(TAG,
-                                        "Second popup delay not yet reached for " + foregroundApp + ". "
+                                        "Next popup delay not yet reached for " + foregroundApp + ". "
                                                 + minutesRemaining + "m " + secondsRemaining + "s remaining (need "
                                                 + (popupDelayMs / 1000) + "s total)");
                             } else if (!shouldShowPopup && appOpenTime == null) {
@@ -275,15 +275,9 @@ public class AppUsageMonitor {
                                         Log.d("AppMonitor", "Blocked app detected: " + appName);
                                         Log.i(TAG, "Blocked app opened: " + appName);
 
-                                        // Track when first popup is shown (for second popup timing)
-                                        if (firstPopupShownTimestamps.get(foregroundApp) == null) {
-                                            firstPopupShownTimestamps.put(foregroundApp, now);
-                                            Log.d(TAG, "Recording first popup shown time for " + foregroundApp + " at "
-                                                    + now);
-                                        } else {
-                                            Log.d(TAG, "Showing second popup for " + foregroundApp + " (first was at "
-                                                    + firstPopupShownTimestamps.get(foregroundApp) + ")");
-                                        }
+                                        // Track when popup is shown (for next popup timing)
+                                        lastPopupShownTimestamps.put(foregroundApp, now);
+                                        Log.d(TAG, "Recording popup shown time for " + foregroundApp + " at " + now);
 
                                         overlayPendingUntil = now + OVERLAY_DEBOUNCE_MS;
                                         handleBlockedApp(foregroundApp, appName);
@@ -298,8 +292,8 @@ public class AppUsageMonitor {
                             if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
                                 allowedThisSession.remove(currentForegroundApp);
                                 appOpenTimestamps.remove(currentForegroundApp); // Clear timestamp when switching away
-                                firstPopupShownTimestamps.remove(currentForegroundApp); // Clear first popup timestamp
-                                                                                        // when switching away
+                                lastPopupShownTimestamps.remove(currentForegroundApp); // Clear last popup timestamp
+                                                                                       // when switching away
                                 Log.d(TAG, "Cleared timestamps for " + currentForegroundApp + " after switching away");
                             }
                             currentForegroundApp = foregroundApp;
@@ -585,8 +579,8 @@ public class AppUsageMonitor {
             overlayView = null;
         }
         isOverlayActive = false;
-        // NOTE: We DON'T clear appOpenTimestamps or firstPopupShownTimestamps here
-        // because we want to track the second popup timing even after first popup is
+        // NOTE: We DON'T clear appOpenTimestamps or lastPopupShownTimestamps here
+        // because we want to track the next popup timing even after a popup is
         // dismissed
         // Timestamps are only cleared when user switches away from the app
         lastAppPackage = "";
@@ -643,11 +637,11 @@ public class AppUsageMonitor {
             Log.d(TAG, "Removed monitor runnable from handler");
         }
 
-        // Clear all app open timestamps and first popup timestamps when monitoring
+        // Clear all app open timestamps and last popup timestamps when monitoring
         // stops
         appOpenTimestamps.clear();
-        firstPopupShownTimestamps.clear();
-        Log.d(TAG, "Cleared all app open timestamps and first popup timestamps");
+        lastPopupShownTimestamps.clear();
+        Log.d(TAG, "Cleared all app open timestamps and last popup timestamps");
 
         removeOverlay();
         Log.d(TAG, "stopMonitoring completed");

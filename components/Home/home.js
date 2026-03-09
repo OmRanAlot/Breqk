@@ -72,6 +72,7 @@ const EntertainmentIcon = ({ color, size }) => (
 
 
 const Home = () => {
+    const [animatedScore, setAnimatedScore] = useState(0);
     // Hard-coded data for display (Matches Stitch Mock)
     const dailyStats = {
         focusScore: 85,
@@ -108,6 +109,25 @@ const Home = () => {
     const [isMonitoring, setIsMonitoring] = useState(false);
 
     const insets = useSafeAreaInsets();
+
+    useEffect(() => {
+        let start = 0;
+        const target = dailyStats.focusScore;
+        const duration = 1500; // 1.5 seconds animation
+        const increment = target / (duration / 16); // Assuming ~60fps (16ms per frame)
+
+        const timer = setInterval(() => {
+            start += increment;
+            if (start >= target) {
+                setAnimatedScore(target);
+                clearInterval(timer);
+            } else {
+                setAnimatedScore(Math.ceil(start));
+            }
+        }, 16);
+
+        return () => clearInterval(timer);
+    }, [dailyStats.focusScore]);
 
     const checkUsagePermission = useCallback(async () => {
         try {
@@ -312,7 +332,7 @@ const Home = () => {
                     <View style={styles.scoreCircle}>
                         <View style={styles.innerScoreContent}>
                             <Text style={styles.scoreLabel}>FOCUS SCORE</Text>
-                            <Text style={styles.scoreValue}>{dailyStats.focusScore}</Text>
+                            <Text style={styles.scoreValue}>{animatedScore}</Text>
                             <View style={styles.trendChip}>
                                 <TrendUpIcon size={12} color="#C2E7DA" />
                                 <Text style={styles.trendText}>+12%</Text>
