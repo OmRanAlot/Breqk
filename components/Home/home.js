@@ -71,7 +71,7 @@ const EntertainmentIcon = ({ color, size }) => (
 );
 
 
-const Home = () => {
+const Home = ({ navigation }) => {
     const [animatedScore, setAnimatedScore] = useState(0);
     // Hard-coded data for display (Matches Stitch Mock)
     const dailyStats = {
@@ -96,6 +96,7 @@ const Home = () => {
     });
 
     const restartDebounceRef = useRef(null);
+    const monitoringRef = useRef(isMonitoring);
 
     const [hasUsagePermission, setHasUsagePermission] = useState(false);
     const [isLoadingStats, setIsLoadingStats] = useState(false);
@@ -109,6 +110,17 @@ const Home = () => {
     const [isMonitoring, setIsMonitoring] = useState(false);
 
     const insets = useSafeAreaInsets();
+
+    useEffect(() => {
+        monitoringRef.current = isMonitoring;
+    }, [isMonitoring]);
+
+    useEffect(() => {
+        if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
+            const timeSavedMin = dailyStats.timeSavedHours * 60 + dailyStats.timeSavedMinutes;
+            SettingsModule.updateWidgetStats(dailyStats.focusScore, timeSavedMin, dailyStats.appsBlocked, isMonitoring);
+        }
+    }, [isMonitoring]);
 
     useEffect(() => {
         let start = 0;
@@ -196,6 +208,10 @@ const Home = () => {
             console.error('Error loading screen time stats:', error);
         } finally {
             setIsLoadingStats(false);
+            if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
+                const timeSavedMin = dailyStats.timeSavedHours * 60 + dailyStats.timeSavedMinutes;
+                SettingsModule.updateWidgetStats(dailyStats.focusScore, timeSavedMin, dailyStats.appsBlocked, monitoringRef.current);
+            }
         }
     }, [checkUsagePermission]);
 
@@ -384,6 +400,47 @@ const Home = () => {
                             </Text>
                         </View>
                     </View>
+                </View>
+
+                {/* Safe Browsing */}
+                <View style={styles.blocksSection}>
+                    <Text style={styles.blocksTitle}>SAFE BROWSING</Text>
+                    <TouchableOpacity
+                        style={styles.blockRow}
+                        activeOpacity={0.7}
+                        onPress={() => navigation.navigate('Browser', { platform: 'instagram' })}
+                    >
+                        <View style={styles.blockRowLeft}>
+                            <View style={styles.blockIconBox}>
+                                <SocialMediaIcon size={24} color="#C2E7DA" />
+                            </View>
+                            <View>
+                                <Text style={styles.blockCategory}>Instagram</Text>
+                                <Text style={styles.blockApps}>No Reels · No Explore · No Suggested</Text>
+                            </View>
+                        </View>
+                        <View style={styles.blockTimeChip}>
+                            <Text style={styles.blockTimeText}>Open →</Text>
+                        </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.blockRow}
+                        activeOpacity={0.7}
+                        onPress={() => navigation.navigate('Browser', { platform: 'youtube' })}
+                    >
+                        <View style={styles.blockRowLeft}>
+                            <View style={styles.blockIconBox}>
+                                <EntertainmentIcon size={24} color="#C2E7DA" />
+                            </View>
+                            <View>
+                                <Text style={styles.blockCategory}>YouTube</Text>
+                                <Text style={styles.blockApps}>No Shorts · No Homepage Feed · No Autoplay</Text>
+                            </View>
+                        </View>
+                        <View style={styles.blockTimeChip}>
+                            <Text style={styles.blockTimeText}>Open →</Text>
+                        </View>
+                    </TouchableOpacity>
                 </View>
 
                 {/* Recent Blocks List */}

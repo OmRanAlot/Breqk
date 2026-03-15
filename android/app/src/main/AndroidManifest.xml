@@ -50,6 +50,18 @@
                 android:resource="@xml/porn_blocker_accessibility_config" />
         </service>
 
+        <receiver
+            android:name=".DoomScrollWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_description">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_doomscroll_info" />
+        </receiver>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -61,6 +73,13 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link for widget browser quick-launch buttons (doomscroll://browser/instagram, doomscroll://browser/youtube) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="doomscroll" android:host="browser" />
             </intent-filter>
         </activity>
     </application>

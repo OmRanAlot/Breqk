@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/omran/code/DoomScrollStopper/components -name \"*.tsx\" -o -name \"*.ts\" | xargs ls -1)",
+      "Bash(find /c/Users/omran/code/DoomScrollStopper -type f \\\\\\( -name \"*BrowserScreen*\" -o -name \"*webview*\" -o -name \"*injection*\" \\\\\\) 2>/dev/null | head -20)",
+      "Bash(grep -r \"WebView\\\\|react-native-webview\" /c/Users/omran/code/DoomScrollStopper --include=\"*.json\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.java\" --include=\"*.kt\" 2>/dev/null | head -20)",
+      "Bash(npm install:*)",
+      "Bash(cd /c/Users/omran/code/DoomScrollStopper/ios && pod install 2>&1 | tail -10)"
+    ]
+  },
   "enabledPlugins": {
     "everything-claude-code@everything-claude-code": true
   }

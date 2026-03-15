@@ -61,6 +61,7 @@ const Customize = () => {
     // Core Focus Mode State
     const [isMonitoringEnabled, setIsMonitoringEnabled] = useState(true);
     const [selectedModeId, setSelectedModeId] = useState('sleep');
+    const [redirectInstagramToBrowser, setRedirectInstagramToBrowser] = useState(true);
 
     // Preset Focus Modes from Stitch
     const focusModes = [
@@ -97,10 +98,16 @@ const Customize = () => {
     useEffect(() => {
         const loadSettings = async () => {
             try {
-                const monitoringEnabled = await new Promise((resolve) => {
-                    SettingsModule.getMonitoringEnabled((enabled) => resolve(enabled));
-                });
+                const [monitoringEnabled, redirectInstagram] = await Promise.all([
+                    new Promise((resolve) => {
+                        SettingsModule.getMonitoringEnabled((enabled) => resolve(enabled));
+                    }),
+                    new Promise((resolve) => {
+                        SettingsModule.getRedirectInstagramToBrowser((value) => resolve(value));
+                    })
+                ]);
                 setIsMonitoringEnabled(monitoringEnabled !== false);
+                setRedirectInstagramToBrowser(redirectInstagram !== false);
             } catch (error) {
                 console.log('loadSettings failed:', error);
             }
@@ -138,6 +145,11 @@ const Customize = () => {
         }
     };
 
+    const toggleRedirectInstagram = (value) => {
+        setRedirectInstagramToBrowser(value);
+        SettingsModule.saveRedirectInstagramToBrowser(value);
+    };
+
     return (
         <View style={styles.container}>
             <View style={[styles.headerArea, { paddingTop: Math.max(insets.top, 16) + 16 }]}>
@@ -154,6 +166,24 @@ const Customize = () => {
                 <View style={styles.titleSection}>
                     <Text style={styles.mainTitle}>Select your flow</Text>
                     <Text style={styles.subTitle}>Choose a preset to block distractions and reclaim your time.</Text>
+                </View>
+
+                {/* Instagram Reels Option */}
+                <View style={styles.instagramSection}>
+                    <Text style={styles.sectionLabel}>Instagram</Text>
+                    <View style={styles.instagramRow}>
+                        <View style={styles.instagramTexts}>
+                            <Text style={styles.instagramLabel}>Open Instagram without Reels</Text>
+                            <Text style={styles.instagramSubtitle}>When on, opening Instagram uses the in-app browser with Reels and Explore hidden.</Text>
+                        </View>
+                        <Switch
+                            value={redirectInstagramToBrowser}
+                            onValueChange={toggleRedirectInstagram}
+                            trackColor={{ false: s.appBg, true: s.appAccent }}
+                            thumbColor={redirectInstagramToBrowser ? s.appBg : s.appText}
+                            style={styles.switchControl}
+                        />
+                    </View>
                 </View>
 
                 {/* Focus Modes List */}
@@ -260,6 +290,42 @@ const styles = StyleSheet.create({
         fontSize: 14,
         color: 'rgba(241, 255, 231, 0.6)', // appText at 60%
         lineHeight: 20,
+    },
+    instagramSection: {
+        marginBottom: spacing.xl,
+    },
+    sectionLabel: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: 'rgba(241, 255, 231, 0.5)',
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        marginBottom: spacing.sm,
+    },
+    instagramRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: s.appSurface,
+        borderWidth: 1,
+        borderColor: 'rgba(98, 144, 195, 0.3)',
+        borderRadius: radii.xl,
+        padding: spacing.lg,
+    },
+    instagramTexts: {
+        flex: 1,
+        marginRight: spacing.md,
+    },
+    instagramLabel: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: s.appText,
+        marginBottom: 4,
+    },
+    instagramSubtitle: {
+        fontSize: 13,
+        color: 'rgba(241, 255, 231, 0.7)',
+        lineHeight: 18,
     },
     modesContainer: {
         gap: spacing.md,

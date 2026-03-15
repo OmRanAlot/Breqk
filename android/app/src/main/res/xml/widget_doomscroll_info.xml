@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    widget_doomscroll_info.xml — Widget metadata / provider info
+    ==============================================================
+    PURPOSE: Tells the Android system about our widget's size, update frequency,
+    and which layout to use. This file is referenced in AndroidManifest.xml:
+      <meta-data android:name="android.appwidget.provider"
+                 android:resource="@xml/widget_doomscroll_info" />
+
+    KEY ATTRIBUTES:
+      - initialLayout:      REQUIRED — the layout to render. Without this, the widget
+                             will NOT appear in the widget picker at all.
+      - previewLayout:       API 31+ — shows a live preview of the layout in the picker
+                             (falls back gracefully on older devices).
+      - minWidth/minHeight:  Minimum size in dp. Determines how many home screen cells
+                             the widget occupies.
+      - targetCellWidth/Height: API 31+ — preferred cell count (more precise than dp).
+      - updatePeriodMillis:  How often Android calls onUpdate(). 1800000ms = 30 minutes.
+                             Note: Android enforces a minimum of 30 minutes.
+      - description:         Text shown in the widget picker below the widget name.
+
+    RELATED FILES:
+      - res/layout/widget_doomscroll.xml  → The layout this points to
+      - DoomScrollWidgetProvider.java     → The Java class that handles onUpdate()
+      - AndroidManifest.xml               → Where this metadata file is registered
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="1"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_doomscroll"
+    android:previewLayout="@layout/widget_doomscroll"
+    android:description="@string/widget_description" />

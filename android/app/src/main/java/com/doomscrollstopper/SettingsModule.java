@@ -11,8 +11,10 @@ package com.doomscrollstopper;
  *  - Writes are applied asynchronously (apply) to avoid main-thread blocking.
  */
 
-import android.content.SharedPreferences;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.appwidget.AppWidgetManager;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -76,6 +78,38 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         boolean enabled = prefs.getBoolean("monitoring_enabled", true);
         Log.d(TAG, "[GET] monitoring_enabled=" + enabled);
         callback.invoke(enabled);
+    }
+
+    @ReactMethod
+    public void getRedirectInstagramToBrowser(Callback callback) {
+        Log.d(TAG, "[GET] getRedirectInstagramToBrowser called");
+        SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        // Default to true so current behavior (always redirect to Reels-free browser) is unchanged
+        boolean value = prefs.getBoolean("redirect_instagram_to_browser", true);
+        Log.d(TAG, "[GET] redirect_instagram_to_browser=" + value);
+        callback.invoke(value);
+    }
+
+    @ReactMethod
+    public void saveRedirectInstagramToBrowser(boolean value) {
+        Log.d(TAG, "[SAVE] saveRedirectInstagramToBrowser called with value=" + value);
+        SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        prefs.edit().putBoolean("redirect_instagram_to_browser", value).apply();
+        Log.d(TAG, "[SAVE] redirect_instagram_to_browser=" + value + " saved");
+    }
+
+    @ReactMethod
+    public void updateWidgetStats(int focusScore, int timeSavedMin, int appsBlocked, boolean monitoringEnabled) {
+        Log.d(TAG, "[WIDGET] updateWidgetStats focusScore=" + focusScore + " timeSavedMin=" + timeSavedMin + " appsBlocked=" + appsBlocked + " monitoring=" + monitoringEnabled);
+        WidgetPrefs widgetPrefs = new WidgetPrefs(reactContext);
+        widgetPrefs.updateWidgetCache(focusScore, timeSavedMin, appsBlocked, monitoringEnabled);
+        AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(reactContext);
+        ComponentName provider = new ComponentName(reactContext, DoomScrollWidgetProvider.class);
+        int[] appWidgetIds = appWidgetManager.getAppWidgetIds(provider);
+        if (appWidgetIds != null && appWidgetIds.length > 0) {
+            reactContext.sendBroadcast(new android.content.Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE)
+                    .putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, appWidgetIds));
+        }
     }
 
     @ReactMethod
