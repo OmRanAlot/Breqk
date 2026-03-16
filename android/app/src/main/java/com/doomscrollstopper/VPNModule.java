@@ -612,6 +612,28 @@ public class VPNModule extends ReactContextBaseJavaModule {
         }
     }
 
+    /**
+     * setScrollThreshold — Called from React Native (Customize screen) when user adjusts scroll sensitivity.
+     * Persists to SharedPreferences so PornBlockerService reads the new threshold at next scroll event.
+     *
+     * @param threshold Number of scrolls within Reels/Shorts before the intervention popup fires (1–20).
+     */
+    @ReactMethod
+    public void setScrollThreshold(int threshold, Promise promise) {
+        try {
+            Log.d(TAG, "[SET_SCROLL_THRESHOLD] Setting scroll threshold to " + threshold);
+            SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+            // Clamp to valid range: 1–20
+            int clamped = Math.max(1, Math.min(20, threshold));
+            prefs.edit().putInt("scroll_threshold", clamped).apply();
+            Log.d(TAG, "[SET_SCROLL_THRESHOLD] Saved scroll_threshold=" + clamped + " to doomscroll_prefs");
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[SET_SCROLL_THRESHOLD] Failed", e);
+            promise.reject("SET_SCROLL_THRESHOLD_ERROR", e.getMessage());
+        }
+    }
+
     @ReactMethod
     public void setPopupDelayMinutes(int minutes, Promise promise) {
         try {

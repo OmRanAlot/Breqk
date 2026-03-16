@@ -1,5 +1,25 @@
 package com.doomscrollstopper;
 
+/*
+ * PornBlockerService
+ * -------------------
+ * AccessibilityService that monitors browser URL bars and redirects away
+ * from blocked domains (porn sites).
+ *
+ * Filter logcat with: adb logcat -s BROWSER_WATCH
+ *
+ * Architecture:
+ *   AccessibilityService (this) → onAccessibilityEvent
+ *     → extractUrl (view ID lookup → event text fallback)
+ *     → findBlockedDomain
+ *     → redirect (random Pinterest image, 2s cooldown)
+ *
+ * Config: res/xml/porn_blocker_accessibility_config.xml
+ * Registered in: AndroidManifest.xml
+ *
+ * See also: ReelsInterventionService — handles Instagram/YouTube scroll detection separately.
+ */
+
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Intent;
@@ -19,7 +39,7 @@ import java.util.Random;
 public class PornBlockerService extends AccessibilityService {
 
     // Filter logcat with: adb logcat -s BROWSER_WATCH
-    private static final String BW = "BROWSER_WATCH";
+    private static final String TAG = "BROWSER_WATCH";
 
     private static final String[] REDIRECT_URL = {
             "https://yt3.ggpht.com/m1oST1H1GY1ZCFmxjmbl7EM6tNtAsa8YA1wx5Z0c4JM7hOSS9_BKlQBa_6eyeQvjq4MxnX0YM7wvK9A=s736-c-fcrop64=1,00001960ffffe69f-rw-nd-v1",
@@ -79,13 +99,13 @@ public class PornBlockerService extends AccessibilityService {
         info.notificationTimeout = 200;
         setServiceInfo(info);
 
-        Log.d(BW, "=== PornBlockerService CONNECTED ===");
-        Log.d(BW, "  eventTypes: WINDOW_CONTENT_CHANGED | WINDOW_STATE_CHANGED");
-        Log.d(BW, "  flags: FLAG_REPORT_VIEW_IDS | FLAG_RETRIEVE_INTERACTIVE_WINDOWS");
-        Log.d(BW, "  notificationTimeout: 200ms");
-        Log.d(BW, "  monitoring " + BROWSER_URL_IDS.size() + " browser packages:");
+        Log.d(TAG, "=== PornBlockerService CONNECTED ===");
+        Log.d(TAG, "  eventTypes: WINDOW_CONTENT_CHANGED | WINDOW_STATE_CHANGED");
+        Log.d(TAG, "  flags: FLAG_REPORT_VIEW_IDS | FLAG_RETRIEVE_INTERACTIVE_WINDOWS");
+        Log.d(TAG, "  notificationTimeout: 200ms");
+        Log.d(TAG, "  monitoring " + BROWSER_URL_IDS.size() + " browser packages:");
         for (String pkg : BROWSER_URL_IDS.keySet()) {
-            Log.d(BW, "    - " + pkg + " → ids=" + Arrays.toString(BROWSER_URL_IDS.get(pkg)));
+            Log.d(TAG, "    - " + pkg + " → ids=" + Arrays.toString(BROWSER_URL_IDS.get(pkg)));
         }
     }
 
@@ -99,34 +119,34 @@ public class PornBlockerService extends AccessibilityService {
 
         String packageName = pkg.toString();
 
-        // Only log events from known browsers
+        // Only process events from known browsers
         if (!BROWSER_URL_IDS.containsKey(packageName))
             return;
 
         String eventType = eventTypeName(event.getEventType());
         String className = event.getClassName() != null ? event.getClassName().toString() : "null";
 
-        Log.d(BW, "--- EVENT from " + packageName + " ---");
-        Log.d(BW, "  type=" + eventType + "  class=" + className);
+        Log.d(TAG, "--- EVENT from " + packageName + " ---");
+        Log.d(TAG, "  type=" + eventType + "  class=" + className);
 
         // Log raw event text list
         if (event.getText() != null && !event.getText().isEmpty()) {
-            Log.d(BW, "  event.getText() has " + event.getText().size() + " item(s):");
+            Log.d(TAG, "  event.getText() has " + event.getText().size() + " item(s):");
             for (int i = 0; i < event.getText().size(); i++) {
                 CharSequence cs = event.getText().get(i);
-                Log.d(BW, "    [" + i + "] = \"" + (cs != null ? cs.toString() : "null") + "\"");
+                Log.d(TAG, "    [" + i + "] = \"" + (cs != null ? cs.toString() : "null") + "\"");
             }
         } else {
-            Log.d(BW, "  event.getText() = empty/null");
+            Log.d(TAG, "  event.getText() = empty/null");
         }
 
         // Log content description
         CharSequence cd = event.getContentDescription();
-        Log.d(BW, "  contentDescription = " + (cd != null ? "\"" + cd + "\"" : "null"));
+        Log.d(TAG, "  contentDescription = " + (cd != null ? "\"" + cd + "\"" : "null"));
 
         // Extract URL and log each step
         String url = extractUrl(packageName, event);
-        Log.d(BW, "  >>> extractUrl result: " + (url != null ? "\"" + url + "\"" : "null — no URL found"));
+        Log.d(TAG, "  >>> extractUrl result: " + (url != null ? "\"" + url + "\"" : "null — no URL found"));
 
         if (url == null || url.isEmpty())
             return;
@@ -134,18 +154,18 @@ public class PornBlockerService extends AccessibilityService {
         // Block check
         String matchedDomain = findBlockedDomain(url);
         if (matchedDomain != null) {
-            Log.d(BW, "  BLOCKED! url=\"" + url + "\" matched domain=\"" + matchedDomain + "\"");
+            Log.d(TAG, "  BLOCKED! url=\"" + url + "\" matched domain=\"" + matchedDomain + "\"");
             long now = System.currentTimeMillis();
             long cooldownRemaining = REDIRECT_COOLDOWN_MS - (now - lastRedirectTime);
             if (cooldownRemaining > 0) {
-                Log.d(BW, "  cooldown active — " + cooldownRemaining + "ms remaining, skipping redirect");
+                Log.d(TAG, "  cooldown active — " + cooldownRemaining + "ms remaining, skipping redirect");
             } else {
                 lastRedirectTime = now;
-                Log.d(BW, "  REDIRECTING → Pinterest (ts=" + now + ")");
+                Log.d(TAG, "  REDIRECTING → Pinterest (ts=" + now + ")");
                 redirect();
             }
         } else {
-            Log.d(BW, "  not blocked: \"" + url + "\"");
+            Log.d(TAG, "  not blocked: \"" + url + "\"");
         }
     }
 
@@ -153,25 +173,25 @@ public class PornBlockerService extends AccessibilityService {
         // Path 1: targeted view ID lookup
         String[] ids = BROWSER_URL_IDS.get(packageName);
         if (ids != null) {
-            Log.d(BW, "  [extractUrl] trying " + ids.length + " view ID(s) for " + packageName);
+            Log.d(TAG, "  [extractUrl] trying " + ids.length + " view ID(s) for " + packageName);
             AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null) {
-                Log.d(BW, "  [extractUrl] getRootInActiveWindow() returned NULL");
+                Log.d(TAG, "  [extractUrl] getRootInActiveWindow() returned NULL");
             } else {
                 try {
                     for (String idSuffix : ids) {
                         String fullId = packageName + ":id/" + idSuffix;
-                        Log.d(BW, "  [extractUrl] searching for viewId=\"" + fullId + "\"");
+                        Log.d(TAG, "  [extractUrl] searching for viewId=\"" + fullId + "\"");
                         List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(fullId);
                         if (nodes == null || nodes.isEmpty()) {
-                            Log.d(BW, "  [extractUrl]   → 0 nodes found");
+                            Log.d(TAG, "  [extractUrl]   → 0 nodes found");
                         } else {
-                            Log.d(BW, "  [extractUrl]   → " + nodes.size() + " node(s) found");
+                            Log.d(TAG, "  [extractUrl]   → " + nodes.size() + " node(s) found");
                             for (int i = 0; i < nodes.size(); i++) {
                                 AccessibilityNodeInfo node = nodes.get(i);
                                 CharSequence text = node.getText();
                                 CharSequence desc = node.getContentDescription();
-                                Log.d(BW, "  [extractUrl]   node[" + i + "] text=" +
+                                Log.d(TAG, "  [extractUrl]   node[" + i + "] text=" +
                                         (text != null ? "\"" + text + "\"" : "null") +
                                         "  desc=" + (desc != null ? "\"" + desc + "\"" : "null"));
                                 node.recycle();
@@ -188,13 +208,13 @@ public class PornBlockerService extends AccessibilityService {
         }
 
         // Path 2: fallback from event text
-        Log.d(BW, "  [extractUrl] falling back to event.getText()");
+        Log.d(TAG, "  [extractUrl] falling back to event.getText()");
         if (event.getText() != null) {
             for (CharSequence cs : event.getText()) {
                 if (cs != null) {
                     String t = cs.toString().trim();
                     boolean isUrl = t.startsWith("http://") || t.startsWith("https://");
-                    Log.d(BW, "  [extractUrl]   candidate=\"" + t + "\"  isUrl=" + isUrl);
+                    Log.d(TAG, "  [extractUrl]   candidate=\"" + t + "\"  isUrl=" + isUrl);
                     if (isUrl)
                         return t;
                 }

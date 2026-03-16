@@ -38,6 +38,7 @@
             </intent-filter>
         </service>
 
+        <!-- Browser URL-based blocking (porn sites) -->
         <service
             android:name=".PornBlockerService"
             android:exported="true"
@@ -48,6 +49,19 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/porn_blocker_accessibility_config" />
+        </service>
+
+        <!-- Instagram Reels and YouTube Shorts scroll intervention -->
+        <service
+            android:name=".ReelsInterventionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/reels_intervention_service_config" />
         </service>
 
         <receiver
@@ -62,6 +76,26 @@
                 android:resource="@xml/widget_doomscroll_info" />
         </receiver>
 
+        <!--
+            Entry point — shown on every cold launch until ReelsInterventionService is enabled.
+            Forwards to MainActivity automatically once permission is granted.
+            Logcat tag: ACC_PERM_GATE
+        -->
+        <activity
+            android:name=".AccessibilityPermissionActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Main React Native app screen.
+            Only reached after AccessibilityPermissionActivity confirms the service is enabled.
+            Launcher intent filter removed — now lives on AccessibilityPermissionActivity.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -70,10 +104,6 @@
             android:label="@string/app_name"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
 
             <!-- Deep link for widget browser quick-launch buttons (doomscroll://browser/instagram, doomscroll://browser/youtube) -->
             <intent-filter>

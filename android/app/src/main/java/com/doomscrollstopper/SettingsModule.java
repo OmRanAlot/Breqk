@@ -112,6 +112,35 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
     }
 
+    /**
+     * Persists the scroll threshold for Reels/Shorts intervention.
+     * Read by PornBlockerService.getScrollThreshold() at runtime.
+     *
+     * @param threshold Number of scrolls before intervention popup fires (1–20).
+     */
+    @ReactMethod
+    public void saveScrollThreshold(int threshold) {
+        // Clamp to sane range before persisting
+        int clamped = Math.max(1, Math.min(20, threshold));
+        Log.d(TAG, "[SAVE] saveScrollThreshold called with threshold=" + threshold + " (clamped=" + clamped + ")");
+        SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        prefs.edit().putInt("scroll_threshold", clamped).apply();
+        Log.d(TAG, "[SAVE] scroll_threshold=" + clamped + " saved");
+    }
+
+    /**
+     * Retrieves the current scroll threshold from SharedPreferences.
+     * Returns default value (4) if not yet set.
+     */
+    @ReactMethod
+    public void getScrollThreshold(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getScrollThreshold called");
+        SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        int threshold = prefs.getInt("scroll_threshold", 4);
+        Log.d(TAG, "[GET] scroll_threshold=" + threshold);
+        callback.invoke(threshold);
+    }
+
     @ReactMethod
     public void saveBlockedApps(ReadableArray apps) {
         Log.d(TAG, "[SAVE] saveBlockedApps called with size=" + apps.size());

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Layout for AccessibilityPermissionActivity — the native gate screen shown before the app
+    boots until the user enables ReelsInterventionService in system Accessibility Settings.
+
+    Design: Dark standalone UI (#0D0D0D bg) intentionally separate from the main app theme.
+    This screen only appears during onboarding / after the service is disabled.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0D0D0D"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp"
+        android:minHeight="600dp">
+
+        <!-- Shield icon -->
+        <ImageView
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:src="@drawable/ic_shield"
+            android:contentDescription="Shield icon"
+            android:layout_marginBottom="28dp" />
+
+        <!-- Title -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="One permission needed"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Body explanation -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DoomScroll Stopper needs Accessibility access to detect when you open Reels or Shorts and intervene.\n\nYour data never leaves your device."
+            android:textColor="#AAAAAA"
+            android:textSize="15sp"
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="40dp" />
+
+        <!-- Steps hint box -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1A1A1A"
+            android:padding="20dp"
+            android:layout_marginBottom="36dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="How to enable:"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="10dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1. Tap the button below\n2. Find &quot;DoomScroll Stopper&quot;\n3. Toggle it ON"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:lineSpacingMultiplier="1.5" />
+
+        </LinearLayout>
+
+        <!-- CTA Button — opens system Accessibility Settings -->
+        <Button
+            android:id="@+id/btn_grant_permission"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Open Accessibility Settings"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:backgroundTint="#FFFFFF"
+            android:stateListAnimator="@null" />
+
+        <!-- Reassurance note -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="You'll be brought back here automatically"
+            android:textColor="#555555"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:layout_marginTop="16dp" />
+
+    </LinearLayout>
+
+</ScrollView>

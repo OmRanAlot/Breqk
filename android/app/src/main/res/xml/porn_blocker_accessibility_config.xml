@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- porn_blocker_accessibility_config.xml
+     Config for PornBlockerService (browser URL monitoring only).
+     For Reels/Shorts scroll detection, see reels_intervention_service_config.xml.
+-->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged"
