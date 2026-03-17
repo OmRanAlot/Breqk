@@ -14,7 +14,11 @@
       "Bash(find:*)",
       "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | tail -15)",
       "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | grep -E \"error:|Error\" | head -20)",
-      "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | tail -10)"
+      "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | tail -10)",
+      "Bash(mkdir:*)",
+      "Bash(for f:*)",
+      "Bash(do sed:*)",
+      "Bash(done)"
     ]
   },
   "enabledPlugins": {

@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 /*
  * MainActivity
@@ -23,7 +23,7 @@ public class MainActivity extends ReactActivity {
      */
     @Override
     protected String getMainComponentName() {
-        return "DoomScrollStopper"; // This should match the "name" in app.json
+        return "Breqk"; // This should match the "name" in app.json
     }
 
     @Override

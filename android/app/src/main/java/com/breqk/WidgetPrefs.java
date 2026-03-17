@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -9,7 +9,7 @@ import android.content.SharedPreferences;
  * without calling React Native or VPNModule.
  */
 public final class WidgetPrefs {
-    private static final String PREFS_NAME = "doomscroll_prefs";
+    private static final String PREFS_NAME = "breqk_prefs";
     private static final String KEY_FOCUS_SCORE = "widget_focus_score";
     private static final String KEY_TIME_SAVED_MIN = "widget_time_saved_min";
     private static final String KEY_APPS_BLOCKED = "widget_apps_blocked";

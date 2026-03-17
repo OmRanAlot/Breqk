@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 import android.content.ComponentName;
 import android.content.Intent;

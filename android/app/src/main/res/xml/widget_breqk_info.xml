@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    widget_doomscroll_info.xml — Widget metadata / provider info
+    widget_breqk_info.xml — Widget metadata / provider info
     ==============================================================
     PURPOSE: Tells the Android system about our widget's size, update frequency,
     and which layout to use. This file is referenced in AndroidManifest.xml:
       <meta-data android:name="android.appwidget.provider"
-                 android:resource="@xml/widget_doomscroll_info" />
+                 android:resource="@xml/widget_breqk_info" />
 
     KEY ATTRIBUTES:
       - initialLayout:      REQUIRED — the layout to render. Without this, the widget
@@ -20,8 +20,8 @@
       - description:         Text shown in the widget picker below the widget name.
 
     RELATED FILES:
-      - res/layout/widget_doomscroll.xml  → The layout this points to
-      - DoomScrollWidgetProvider.java     → The Java class that handles onUpdate()
+      - res/layout/widget_breqk.xml  → The layout this points to
+      - BreqkWidgetProvider.java     → The Java class that handles onUpdate()
       - AndroidManifest.xml               → Where this metadata file is registered
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
@@ -31,6 +31,6 @@
     android:targetCellHeight="1"
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
-    android:initialLayout="@layout/widget_doomscroll"
-    android:previewLayout="@layout/widget_doomscroll"
+    android:initialLayout="@layout/widget_breqk"
+    android:previewLayout="@layout/widget_breqk"
     android:description="@string/widget_description" />

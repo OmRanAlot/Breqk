@@ -1,4 +1,4 @@
-# DoomScrollStopper 🍃
+# Breqk 🍃
 
 A modern React Native mobile application designed to help users reduce screen time and "doom scrolling" by implementing app blocking with customizable delay screens. The app features a modern, minimal UI design that promotes digital wellness and mindful technology use.
 
@@ -60,7 +60,7 @@ This app is designed for users who want to:
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd DoomScrollStopper
+   cd Breqk
    ```
 
 2. **Install dependencies**

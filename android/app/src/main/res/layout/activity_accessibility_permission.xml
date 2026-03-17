@@ -43,7 +43,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="DoomScroll Stopper needs Accessibility access to detect when you open Reels or Shorts and intervene.\n\nYour data never leaves your device."
+            android:text="Breqk needs Accessibility access to detect when you open Reels or Shorts and intervene.\n\nYour data never leaves your device."
             android:textColor="#AAAAAA"
             android:textSize="15sp"
             android:gravity="center"
@@ -71,7 +71,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="1. Tap the button below\n2. Find &quot;DoomScroll Stopper&quot;\n3. Toggle it ON"
+                android:text="1. Tap the button below\n2. Find &quot;Breqk&quot;\n3. Toggle it ON"
                 android:textColor="#AAAAAA"
                 android:textSize="14sp"
                 android:lineSpacingMultiplier="1.5" />

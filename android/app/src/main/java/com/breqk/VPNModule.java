@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 /*
  * VPNModule
@@ -118,7 +118,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     private void loadBlockedAppsIntoMonitor() {
         try {
             // Same SharedPreferences file and key used by SettingsModule.java
-            SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+            SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
             Set<String> savedBlockedApps = prefs.getStringSet("blocked_apps", new HashSet<>());
             
             if (savedBlockedApps != null && !savedBlockedApps.isEmpty()) {
@@ -129,7 +129,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
                 Log.d(TAG, "[LOAD_BLOCKED] ✓ Loaded " + blockedAppsCopy.size() + " blocked apps into VPNModule's monitor");
                 Log.d(TAG, "[LOAD_BLOCKED] Blocked apps: " + blockedAppsCopy.toString());
             } else {
-                Log.d(TAG, "[LOAD_BLOCKED] No saved blocked apps found in SharedPreferences (file: doomscroll_prefs, key: blocked_apps)");
+                Log.d(TAG, "[LOAD_BLOCKED] No saved blocked apps found in SharedPreferences (file: breqk_prefs, key: blocked_apps)");
             }
         } catch (Exception e) {
             Log.e(TAG, "[LOAD_BLOCKED] ERROR loading blocked apps: " + e.getMessage(), e);
@@ -622,11 +622,11 @@ public class VPNModule extends ReactContextBaseJavaModule {
     public void setScrollThreshold(int threshold, Promise promise) {
         try {
             Log.d(TAG, "[SET_SCROLL_THRESHOLD] Setting scroll threshold to " + threshold);
-            SharedPreferences prefs = reactContext.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+            SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
             // Clamp to valid range: 1–20
             int clamped = Math.max(1, Math.min(20, threshold));
             prefs.edit().putInt("scroll_threshold", clamped).apply();
-            Log.d(TAG, "[SET_SCROLL_THRESHOLD] Saved scroll_threshold=" + clamped + " to doomscroll_prefs");
+            Log.d(TAG, "[SET_SCROLL_THRESHOLD] Saved scroll_threshold=" + clamped + " to breqk_prefs");
             promise.resolve(true);
         } catch (Exception e) {
             Log.e(TAG, "[SET_SCROLL_THRESHOLD] Failed", e);

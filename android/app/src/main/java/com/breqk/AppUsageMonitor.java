@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 import android.app.usage.UsageStats;
 import android.app.usage.UsageEvents;
@@ -17,6 +17,9 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
+import android.animation.ObjectAnimator;
+import android.animation.PropertyValuesHolder;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -40,7 +43,7 @@ import java.util.HashMap;
  *  - Poll UsageStats for current foreground app at 1s interval (battery-aware)
  *  - Show delay overlay for apps in the blocked list, unless explicitly allowed this session
  *  - Maintain a lightweight in-memory session allowlist (`allowedThisSession`)
- *  - Persist blocked apps in SharedPreferences (doomscroll_prefs)
+ *  - Persist blocked apps in SharedPreferences (breqk_prefs)
  *
  * Notes on Performance & Battery:
  *  - Polling is kept at 1000ms to balance responsiveness and battery usage.
@@ -85,6 +88,8 @@ public class AppUsageMonitor {
     private final ConcurrentHashMap<String, Long> lastPopupShownTimestamps = new ConcurrentHashMap<>();
     // Store the monitor runnable so we can remove it to prevent concurrent loops
     private Runnable monitorRunnable;
+    // ObjectAnimator for the breathing circle on the delay overlay — cancelled in removeOverlay()
+    private ObjectAnimator breathingAnimator = null;
 
     public interface AppDetectionListener {
         void onAppDetected(String packageName, String appName);
@@ -159,7 +164,7 @@ public class AppUsageMonitor {
     }
 
     public void loadBlockedAppsFromPrefs() {
-        SharedPreferences prefs = context.getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = context.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
         Set<String> appSet = prefs.getStringSet("blocked_apps", new HashSet<>());
         blockedApps = new HashSet<>(appSet); // make a copy
     }
@@ -427,27 +432,28 @@ public class AppUsageMonitor {
                 /*
                  * FIND VIEW COMPONENTS
                  * --------------------
+                 * New design (7_overlay.html): breathing_circle, title, backButton, continueButton.
+                 * Removed from old design: message TextView, countdown TextView, progressBar.
                  */
+                View breathingCircle = overlayView.findViewById(R.id.pulse_ring);
                 TextView titleText = overlayView.findViewById(R.id.title);
-                TextView messageText = overlayView.findViewById(R.id.message);
-                TextView countdownText = overlayView.findViewById(R.id.countdown);
-                ProgressBar progressBar = overlayView.findViewById(R.id.progressBar);
                 Button continueButton = overlayView.findViewById(R.id.continueButton);
                 Button backButton = overlayView.findViewById(R.id.backButton);
 
                 /*
-                 * SET INITIAL TEXT & VISIBILITY
-                 * ------------------------------
+                 * SET INITIAL TEXT
+                 * ----------------
+                 * Title: use customMessage if the user set one, else the default question.
+                 * Continue button: disabled, shows countdown text ("Continue (Wait Xs)").
                  */
-                titleText.setText("Pause and reflect. Is this how you want to spend your time?");
-                messageText.setText(
-                        customMessage != null && !customMessage.isEmpty() ? customMessage : "TAKE A MOMENT TO DECIDE");
+                titleText.setText(customMessage != null && !customMessage.isEmpty()
+                        ? customMessage : "Is this intentional?");
+                Log.d(TAG, "Overlay title set to: " + titleText.getText());
 
-                // Continue button is visible but disabled in Stitch design
+                // Continue button starts disabled; countdown text reflects customDelayTimeSeconds
                 continueButton.setEnabled(false);
-                continueButton.setText("CONTINUE TO " + appName.toUpperCase());
-                continueButton.setBackgroundResource(R.drawable.disabled_btn_bg);
-                continueButton.setTextColor(android.graphics.Color.parseColor("#66F1FFE7"));
+                continueButton.setText("Continue (Wait " + customDelayTimeSeconds + "s)");
+                Log.d(TAG, "Continue button initialised — will enable after " + customDelayTimeSeconds + "s");
 
                 /*
                  * WINDOW MANAGER PARAMETERS
@@ -477,10 +483,13 @@ public class AppUsageMonitor {
                 }
 
                 /*
-                 * START COUNTDOWN & ANIMATION
-                 * ---------------------------
+                 * START BREATHING ANIMATION & COUNTDOWN
+                 * --------------------------------------
+                 * Breathing: ObjectAnimator scales the circle 1.0→1.05→1.0 every 3s (infinite).
+                 * Countdown: enables the Continue button after customDelayTimeSeconds ticks.
                  */
-                startCountdown(countdownText, progressBar, continueButton, customDelayTimeSeconds);
+                startRippleAnimation(breathingCircle);
+                startContinueCountdown(continueButton, customDelayTimeSeconds);
 
                 /*
                  * CONTINUE BUTTON CLICK HANDLER
@@ -523,57 +532,90 @@ public class AppUsageMonitor {
     }
 
     /*
-     * COUNTDOWN TIMER WITH ANIMATION
-     * -------------------------------
+     * RIPPLE ANIMATION
+     * -----------------
+     * The pulse_ring view expands outward and fades, creating a sonar/ripple effect
+     * around the static "Is this intentional?" text.
+     *
+     * Animation: scale 1.0→1.8 + alpha 0.5→0.0, 2s, INFINITE RESTART.
+     * Since alpha ends at 0.0, the instant reset to (scale=1.0, alpha=0.5) at restart
+     * is invisible — there is no visible jump between cycles.
+     *
+     * The animator is stored in breathingAnimator so it can be cancelled in removeOverlay()
+     * before the view is detached from WindowManager.
      */
-    private void startCountdown(TextView countdownText, ProgressBar progressBar, Button continueButton, int seconds) {
-        final int totalSeconds = seconds;
-        progressBar.setProgress(0);
+    private void startRippleAnimation(View ring) {
+        if (ring == null) {
+            Log.w(TAG, "startRippleAnimation: ring view is null, skipping animation");
+            return;
+        }
+        // Cancel any leftover animator from a previous overlay session
+        if (breathingAnimator != null) {
+            breathingAnimator.cancel();
+            breathingAnimator = null;
+        }
+        // Expand outward (scale) and fade out (alpha) simultaneously
+        breathingAnimator = ObjectAnimator.ofPropertyValuesHolder(ring,
+                PropertyValuesHolder.ofFloat("scaleX", 1.0f, 1.8f),
+                PropertyValuesHolder.ofFloat("scaleY", 1.0f, 1.8f),
+                PropertyValuesHolder.ofFloat("alpha", 0.5f, 0.0f));
+        breathingAnimator.setDuration(2000); // 2s per ripple cycle
+        breathingAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+        breathingAnimator.setRepeatMode(ObjectAnimator.RESTART); // jump-reset is invisible at alpha=0
+        breathingAnimator.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        breathingAnimator.start();
+        Log.d(TAG, "startRippleAnimation: 2s ripple (scale 1.0→1.8, alpha 0.5→0) started");
+    }
 
+    /*
+     * CONTINUE BUTTON COUNTDOWN
+     * --------------------------
+     * Counts down from `seconds` and updates the Continue button text each tick:
+     *   "Continue (Wait 3s)" → "Continue (Wait 2s)" → "Continue (Wait 1s)" → "Continue" [enabled]
+     *
+     * When the countdown completes, the button is enabled and its text/color updated to
+     * signal it is now tappable. Uses the class-level handler (main looper).
+     */
+    private void startContinueCountdown(Button continueButton, int seconds) {
+        Log.d(TAG, "startContinueCountdown: starting " + seconds + "s countdown for " + lastAppPackage);
         handler.postDelayed(new Runnable() {
             int remaining = seconds;
 
             @Override
             public void run() {
+                // Safety: stop if overlay was removed while countdown was in flight
                 if (overlayView == null) {
-                    Log.d(TAG, "Countdown stopped: overlay was removed");
+                    Log.d(TAG, "startContinueCountdown: overlay removed, stopping countdown");
                     return;
                 }
 
-                /*
-                 * UPDATE COUNTDOWN TEXT (Format 0:00)
-                 */
-                if (remaining > 0) {
-                    int mins = remaining / 60;
-                    int secs = remaining % 60;
-                    countdownText.setText(String.format("%d:%02d", mins, secs));
-                } else {
-                    countdownText.setText("READY");
-                }
-
-                /*
-                 * UPDATE PROGRESS BAR ANIMATION
-                 */
-                int progressPercent = (int) (((float) (totalSeconds - remaining) / totalSeconds) * 100);
-                progressBar.setProgress(progressPercent);
-
                 remaining--;
 
-                if (remaining >= 0) {
+                if (remaining > 0) {
+                    // Still counting — update button text
+                    String label = "Continue (Wait " + remaining + "s)";
+                    continueButton.setText(label);
+                    Log.d(TAG, "startContinueCountdown: " + remaining + "s remaining for " + lastAppPackage);
                     handler.postDelayed(this, 1000);
                 } else {
-                    progressBar.setProgress(100);
-                    // Enable continue button as per Stitch design
+                    // Countdown complete — enable the button
+                    continueButton.setText("Continue");
                     continueButton.setEnabled(true);
-                    continueButton.setBackgroundResource(R.drawable.primary_btn_bg);
-                    continueButton.setTextColor(android.graphics.Color.parseColor("#1A1B41"));
-                    Log.d(TAG, "Countdown complete for " + lastAppPackage + " - Continue button enabled");
+                    // Fully white text to signal button is active
+                    continueButton.setTextColor(android.graphics.Color.WHITE);
+                    Log.d(TAG, "startContinueCountdown: complete — Continue button enabled for " + lastAppPackage);
                 }
             }
-        }, 0);
+        }, 1000); // first tick after 1 second
     }
 
     private void removeOverlay() {
+        // Cancel breathing animation before removing view to avoid animating a detached view
+        if (breathingAnimator != null) {
+            breathingAnimator.cancel();
+            breathingAnimator = null;
+            Log.d(TAG, "removeOverlay: breathing animation cancelled");
+        }
         if (overlayView != null) {
             windowManager.removeView(overlayView);
             overlayView = null;

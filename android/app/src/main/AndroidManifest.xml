@@ -65,7 +65,7 @@
         </service>
 
         <receiver
-            android:name=".DoomScrollWidgetProvider"
+            android:name=".BreqkWidgetProvider"
             android:exported="true"
             android:label="@string/widget_description">
             <intent-filter>
@@ -73,7 +73,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_doomscroll_info" />
+                android:resource="@xml/widget_breqk_info" />
         </receiver>
 
         <!--
@@ -105,11 +105,11 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- Deep link for widget browser quick-launch buttons (doomscroll://browser/instagram, doomscroll://browser/youtube) -->
+            <!-- Deep link for widget browser quick-launch buttons (breqk://browser/instagram, breqk://browser/youtube) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="doomscroll" android:host="browser" />
+                <data android:scheme="breqk" android:host="browser" />
             </intent-filter>
         </activity>
     </application>

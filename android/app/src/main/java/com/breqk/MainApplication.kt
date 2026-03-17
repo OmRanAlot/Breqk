@@ -1,4 +1,4 @@
-package com.doomscrollstopper
+package com.breqk
 
 /**
  * MainApplication
@@ -17,11 +17,11 @@ import com.facebook.react.ReactNativeHost
 import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.doomscrollstopper.VPNModule
-import com.doomscrollstopper.AppUsageMonitor
-import com.doomscrollstopper.AppBlockerPackage
-import com.doomscrollstopper.SettingsModule
-import com.doomscrollstopper.BuildConfig
+import com.breqk.VPNModule
+import com.breqk.AppUsageMonitor
+import com.breqk.AppBlockerPackage
+import com.breqk.SettingsModule
+import com.breqk.BuildConfig
 
 class MainApplication : Application(), ReactApplication {
 

@@ -1,472 +1,349 @@
+/**
+ * home.js — Home Screen (Tether light design system)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Minimal dashboard layout:
+ *   • App name header + settings icon
+ *   • Large "N Save Events Today" stats display
+ *   • "Open Instagram (Safe Mode)" primary action button
+ *
+ * Data strategy: shows hardcoded demo stats on first render,
+ * loads real VPN stats async in background (5-min TTL cache).
+ *
+ * Logging prefix: [Home]
+ */
+
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
-    View, Text, ScrollView, Platform, AppState, Alert, NativeModules,
-    NativeEventEmitter, TouchableOpacity
+    View,
+    Text,
+    Platform,
+    AppState,
+    NativeModules,
+    NativeEventEmitter,
+    TouchableOpacity,
+    StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path, Circle, Rect, Line, Polyline } from 'react-native-svg';
-import styles from './homeStyle';
+import Svg, { Path, Circle } from 'react-native-svg';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
 
-// Reusable SVG Icon Components
-const MenuIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Path d="M4 8h16M4 16h10" />
+// ─── Tether Light Palette ─────────────────────────────────────────────────────
+const L = {
+    bg: '#F8F8F6',
+    charcoal: '#1A1A1A',
+    muted: '#757575',
+    captionOpacity: 'rgba(26,26,26,0.6)',
+    ctaBg: '#1A1A1A',
+    ctaText: '#FFFFFF',
+};
+
+// ─── Settings icon ────────────────────────────────────────────────────────────
+const SettingsIcon = ({ color, size }) => (
+    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5}
+        strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+        <Circle cx={12} cy={12} r={3} />
+        <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </Svg>
 );
 
-const NotificationIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" />
-    </Svg>
-);
+// ─── Stats cache (5-minute TTL) ───────────────────────────────────────────────
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
-const TrendUpIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Path d="M23 6l-9.5 9.5-5-5L1 18m22-12h-6m6 0v6" />
-    </Svg>
-);
-
-const GridIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Rect height={7} rx={1} width={7} x={3} y={3} />
-        <Rect height={7} rx={1} width={7} x={14} y={3} />
-        <Rect height={7} rx={1} width={7} x={14} y={14} />
-        <Rect height={7} rx={1} width={7} x={3} y={14} />
-    </Svg>
-);
-
-const TimerIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Circle cx={12} cy={12} r={9} />
-        <Path d="M12 7v5l3 2" />
-    </Svg>
-);
-
-const InsightIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Path d="M9.5 2A4.5 4.5 0 0 0 5 6.5C5 8.97 7.03 11 9.5 11h.5c.5 0 .93-.28 1.15-.69A3.001 3.001 0 0 1 15 9V8a3 3 0 0 1 3-3h1" />
-        <Circle cx={15} cy={15} r={4} />
-        <Path d="M15 19v3" />
-    </Svg>
-);
-
-const SocialMediaIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Circle cx={18} cy={5} r={3} />
-        <Circle cx={6} cy={12} r={3} />
-        <Circle cx={18} cy={19} r={3} />
-        <Line x1={8.59} x2={15.42} y1={13.51} y2={17.49} />
-        <Line x1={15.41} x2={8.59} y1={6.51} y2={10.49} />
-    </Svg>
-);
-
-const EntertainmentIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <Rect height={12} rx={2} width={20} x={2} y={6} />
-        <Path d="M6 12h4m-2-2v4m7-2h.01m2.99 0h.01" />
-    </Svg>
-);
-
-
+// ─── Component ────────────────────────────────────────────────────────────────
 const Home = ({ navigation }) => {
-    const [animatedScore, setAnimatedScore] = useState(0);
-    // Hard-coded data for display (Matches Stitch Mock)
-    const dailyStats = {
-        focusScore: 85,
-        appsBlocked: 14,
-        timeSavedHours: 2,
-        timeSavedMinutes: 15,
-        peakFocusMins: 45
-    };
-
-    const recentBlocks = [
-        { id: 1, category: 'Social Media', apps: 'Instagram • TikTok', timeOut: '2m ago', SvgIcon: SocialMediaIcon, color: '#6290C3' },
-        { id: 2, category: 'Entertainment', apps: 'Youtube • Netflix', timeOut: '1h ago', SvgIcon: EntertainmentIcon, color: '#C2E7DA' }
-    ];
-
-    const CACHE_TTL_MS = 5 * 60 * 1000;
-    const cacheRef = useRef({
-        installedApps: { data: [], timestamp: 0 },
-        screenTimeStats: { data: null, timestamp: 0 },
-        blockedUsage: { data: [], timestamp: 0 },
-        topApps: { data: [], timestamp: 0 },
-    });
-
-    const restartDebounceRef = useRef(null);
-    const monitoringRef = useRef(isMonitoring);
-
-    const [hasUsagePermission, setHasUsagePermission] = useState(false);
-    const [isLoadingStats, setIsLoadingStats] = useState(false);
-    const [screenTime, setScreenTime] = useState(0);
-    const [blockedAppsUsage, setBlockedAppsUsage] = useState([]);
-    const [topAppsUsage, setTopAppsUsage] = useState([]);
-    const [blockedApps, setBlockedApps] = useState(new Set());
-    const [appState, setAppState] = useState('active');
-    const [installedApps, setInstalledApps] = useState([]);
-    const [detectedApps, setDetectedApps] = useState([]);
-    const [isMonitoring, setIsMonitoring] = useState(false);
-
     const insets = useSafeAreaInsets();
 
-    useEffect(() => {
-        monitoringRef.current = isMonitoring;
-    }, [isMonitoring]);
+    // Stats: defaults are demo values shown while real data loads
+    const [saveEvents, setSaveEvents] = useState(14);
+    const [timeSavedMin, setTimeSavedMin] = useState(45);
+    const [isMonitoring, setIsMonitoring] = useState(false);
 
-    useEffect(() => {
-        if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
-            const timeSavedMin = dailyStats.timeSavedHours * 60 + dailyStats.timeSavedMinutes;
-            SettingsModule.updateWidgetStats(dailyStats.focusScore, timeSavedMin, dailyStats.appsBlocked, isMonitoring);
-        }
-    }, [isMonitoring]);
+    const cacheRef = useRef({
+        screenTimeStats: { data: null, timestamp: 0 },
+    });
+    const appStateRef = useRef(AppState.currentState);
+    const restartDebounceRef = useRef(null);
 
-    useEffect(() => {
-        let start = 0;
-        const target = dailyStats.focusScore;
-        const duration = 1500; // 1.5 seconds animation
-        const increment = target / (duration / 16); // Assuming ~60fps (16ms per frame)
+    // ── Load real stats ───────────────────────────────────────────────────────
 
-        const timer = setInterval(() => {
-            start += increment;
-            if (start >= target) {
-                setAnimatedScore(target);
-                clearInterval(timer);
-            } else {
-                setAnimatedScore(Math.ceil(start));
-            }
-        }, 16);
-
-        return () => clearInterval(timer);
-    }, [dailyStats.focusScore]);
-
-    const checkUsagePermission = useCallback(async () => {
+    const loadStats = useCallback(async () => {
         try {
             const hasPermission = await VPNModule.isUsageAccessGranted();
-            setHasUsagePermission(hasPermission);
-            return hasPermission;
-        } catch (error) {
-            console.error('Error checking usage permission:', error);
-            return false;
-        }
-    }, []);
-
-    const requestUsagePermission = async () => {
-        try {
-            if (Platform.OS === 'android') {
-                await VPNModule.openUsageAccessSettings();
-                const hasPermission = await checkUsagePermission();
-                if (hasPermission) {
-                    loadScreenTimeStats();
-                }
-                return hasPermission;
+            if (!hasPermission) {
+                console.log('[Home] no usage permission — showing demo stats');
+                return;
             }
-            return false;
-        } catch (error) {
-            console.error('Error requesting usage permission:', error);
-            return false;
-        }
-    };
 
-    const loadScreenTimeStats = useCallback(async () => {
-        try {
-            const hasPermission = await checkUsagePermission();
-            if (!hasPermission) return;
-
-            setIsLoadingStats(true);
             const now = Date.now();
+            const cache = cacheRef.current.screenTimeStats;
             let stats = null;
-            if (cacheRef.current.screenTimeStats.data && (now - cacheRef.current.screenTimeStats.timestamp) < CACHE_TTL_MS) {
-                stats = cacheRef.current.screenTimeStats.data;
+
+            if (cache.data && (now - cache.timestamp) < CACHE_TTL_MS) {
+                stats = cache.data;
+                console.log('[Home] using cached screen time stats');
             } else {
                 stats = await VPNModule.getScreenTimeStats();
                 cacheRef.current.screenTimeStats = { data: stats, timestamp: now };
+                console.log('[Home] loaded fresh screen time stats:', JSON.stringify(stats));
             }
-            if (stats) setScreenTime(stats.totalScreenTime || 0);
 
-            let blockedUsage = null;
-            if (cacheRef.current.blockedUsage.data && (now - cacheRef.current.blockedUsage.timestamp) < CACHE_TTL_MS) {
-                blockedUsage = cacheRef.current.blockedUsage.data;
-            } else {
-                blockedUsage = await VPNModule.getBlockedAppsUsageStats();
-                cacheRef.current.blockedUsage = { data: blockedUsage, timestamp: now };
+            if (stats) {
+                // Map native stats to UI fields
+                if (typeof stats.blockedCount === 'number') setSaveEvents(stats.blockedCount);
+                if (typeof stats.totalTimeSavedMin === 'number') setTimeSavedMin(stats.totalTimeSavedMin);
             }
-            if (blockedUsage) setBlockedAppsUsage(blockedUsage);
-
-            const endTime = now;
-            const startTime = endTime - (24 * 60 * 60 * 1000);
-            let topApps = null;
-            if (cacheRef.current.topApps.data && (now - cacheRef.current.topApps.timestamp) < CACHE_TTL_MS) {
-                topApps = cacheRef.current.topApps.data;
-            } else {
-                topApps = await VPNModule.getTopAppsByUsage(startTime, endTime, 5);
-                cacheRef.current.topApps = { data: topApps, timestamp: now };
-            }
-            if (topApps) setTopAppsUsage(topApps);
-        } catch (error) {
-            console.error('Error loading screen time stats:', error);
-        } finally {
-            setIsLoadingStats(false);
-            if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
-                const timeSavedMin = dailyStats.timeSavedHours * 60 + dailyStats.timeSavedMinutes;
-                SettingsModule.updateWidgetStats(dailyStats.focusScore, timeSavedMin, dailyStats.appsBlocked, monitoringRef.current);
-            }
-        }
-    }, [checkUsagePermission]);
-
-    useEffect(() => {
-        const initialize = async () => {
-            try {
-                const savedBlockedApps = await new Promise((resolve) => {
-                    SettingsModule.getBlockedApps((apps) => resolve(apps));
-                });
-
-                let blockedSet = new Set(savedBlockedApps || []);
-                let hasUpdates = false;
-                ['com.instagram.android', 'com.google.android.youtube'].forEach((pkg) => {
-                    if (!blockedSet.has(pkg)) {
-                        blockedSet.add(pkg);
-                        hasUpdates = true;
-                    }
-                });
-
-                if (hasUpdates) {
-                    SettingsModule.saveBlockedApps(Array.from(blockedSet));
-                }
-                setBlockedApps(blockedSet);
-
-                await Promise.all([
-                    loadInstalledApps(),
-                    loadScreenTimeStats()
-                ]);
-
-                startMonitoringWithApps(blockedSet);
-            } catch (error) {
-                console.error('Failed to initialize:', error);
-            }
-        };
-
-        initialize();
-
-        const detectionListener = appBlockerEmitter.addListener('onAppDetected', (event) => {
-            if (event && event.packageName) addDetectedApp(event);
-        });
-
-        const blockedListener = appBlockerEmitter.addListener('onBlockedAppOpened', (event) => { });
-
-        const appStateListener = AppState.addEventListener('change', (nextAppState) => {
-            setAppState(prevState => {
-                if (prevState.match(/inactive|background/) && nextAppState === 'active' && isMonitoring) {
-                    debouncedRestartMonitoring();
-                }
-                return nextAppState;
-            });
-        });
-
-        return () => {
-            detectionListener.remove();
-            blockedListener.remove();
-            appStateListener?.remove();
-            if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
-        };
-    }, [isMonitoring, loadScreenTimeStats]);
-
-    const loadInstalledApps = async () => {
-        try {
-            const now = Date.now();
-            if (cacheRef.current.installedApps.data.length > 0 && (now - cacheRef.current.installedApps.timestamp) < CACHE_TTL_MS) {
-                setInstalledApps(cacheRef.current.installedApps.data);
-                return;
-            }
-            const apps = await VPNModule.getInstalledApps();
-            cacheRef.current.installedApps = { data: apps || [], timestamp: now };
-            setInstalledApps(apps || []);
         } catch (e) {
-            console.warn('loadInstalledApps failed', e);
+            console.warn('[Home] loadStats error:', e);
+        }
+    }, []);
+
+    // ── Monitoring helpers ────────────────────────────────────────────────────
+
+    const startMonitoring = async (apps) => {
+        try {
+            await VPNModule.setBlockedApps(Array.from(apps));
+            await VPNModule.startMonitoring();
+            setIsMonitoring(true);
+            console.log('[Home] monitoring started with', apps.size, 'blocked apps');
+        } catch (e) {
+            console.error('[Home] startMonitoring failed:', e);
         }
     };
 
-    const addDetectedApp = (appInfo) => {
-        setDetectedApps(prev => [appInfo, ...prev.slice(0, 9)]);
-    };
-
-    const restartMonitoring = async () => {
+    const restartMonitoring = useCallback(async () => {
         try {
             await VPNModule.stopMonitoring();
             setTimeout(async () => {
                 await VPNModule.startMonitoring();
+                console.log('[Home] monitoring restarted');
             }, 800);
         } catch (e) {
-            console.warn('restartMonitoring failed', e);
+            console.warn('[Home] restartMonitoring failed:', e);
         }
-    };
+    }, []);
 
-    const debouncedRestartMonitoring = useCallback(() => {
+    const debouncedRestart = useCallback(() => {
         if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
-        restartDebounceRef.current = setTimeout(() => restartMonitoring(), 1000);
+        restartDebounceRef.current = setTimeout(restartMonitoring, 1000);
     }, [restartMonitoring]);
 
-    const startMonitoringWithApps = async (apps) => {
-        try {
-            if (apps && apps.size > 0) {
-                await VPNModule.setBlockedApps(Array.from(apps));
-                await VPNModule.startMonitoring();
-                setIsMonitoring(true);
+    // ── Initialise ────────────────────────────────────────────────────────────
+
+    useEffect(() => {
+        const init = async () => {
+            console.log('[Home] initialising');
+            try {
+                // Load saved blocked apps (add defaults if empty)
+                const savedApps = await new Promise((resolve) => {
+                    SettingsModule.getBlockedApps((apps) => resolve(apps));
+                });
+                let appsSet = new Set(savedApps || []);
+                let updated = false;
+                ['com.instagram.android', 'com.google.android.youtube'].forEach((pkg) => {
+                    if (!appsSet.has(pkg)) { appsSet.add(pkg); updated = true; }
+                });
+                if (updated) SettingsModule.saveBlockedApps(Array.from(appsSet));
+
+                // Load stats and start monitoring
+                await loadStats();
+                await startMonitoring(appsSet);
+
+                // Sync widget if available (use placeholder stats until real data loads)
+                if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
+                    SettingsModule.updateWidgetStats(85, 45, 14, true);
+                }
+            } catch (e) {
+                console.error('[Home] init failed:', e);
             }
-        } catch (error) {
-            console.error('Failed to start monitoring:', error);
+        };
+        init();
+
+        // Event listeners
+        const detectionSub = appBlockerEmitter.addListener('onAppDetected', (event) => {
+            console.log('[Home] app detected:', event?.packageName);
+        });
+
+        const blockedSub = appBlockerEmitter.addListener('onBlockedAppOpened', (event) => {
+            console.log('[Home] blocked app opened:', event?.packageName);
+            // App.tsx handles navigation to Browser; this is a secondary log hook.
+        });
+
+        const stateSub = AppState.addEventListener('change', (nextState) => {
+            if (appStateRef.current.match(/inactive|background/) && nextState === 'active' && isMonitoring) {
+                debouncedRestart();
+            }
+            appStateRef.current = nextState;
+        });
+
+        return () => {
+            detectionSub.remove();
+            blockedSub.remove();
+            stateSub?.remove();
+            if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
+        };
+    }, [isMonitoring, loadStats, debouncedRestart]);
+
+    // ── Render helpers ────────────────────────────────────────────────────────
+
+    /** Format minutes as "Xh Ym" or just "Ym" */
+    const formatTime = (minutes) => {
+        if (minutes >= 60) {
+            const h = Math.floor(minutes / 60);
+            const m = minutes % 60;
+            return m > 0 ? `${h}h ${m}m` : `${h}h`;
         }
+        return `${minutes}m`;
     };
 
-    const renderInnerHeader = () => (
-        <View style={[styles.innerHeader, { paddingTop: Math.max(insets.top, 16) + 16 }]}>
-            <TouchableOpacity style={styles.iconButton}>
-                <MenuIcon size={24} color="#C2E7DA" />
-            </TouchableOpacity>
-
-            <View style={styles.statusChip}>
-                <View style={styles.pulseDot} />
-                <Text style={styles.statusText}>FOCUS ACTIVE</Text>
-            </View>
-
-            <TouchableOpacity style={styles.iconButton}>
-                <NotificationIcon size={24} color="#C2E7DA" />
-                <View style={styles.notificationDot} />
-            </TouchableOpacity>
-        </View>
-    );
+    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
-        <View style={styles.container}>
-            <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-                {renderInnerHeader()}
+        <View style={[styles.container, { paddingTop: Math.max(insets.top, 16) }]}>
 
-                {/* Large Focus Score Dial */}
-                <View style={styles.scoreContainer}>
-                    <View style={styles.circleBackgroundGlow} />
-                    <View style={styles.scoreCircle}>
-                        <View style={styles.innerScoreContent}>
-                            <Text style={styles.scoreLabel}>FOCUS SCORE</Text>
-                            <Text style={styles.scoreValue}>{animatedScore}</Text>
-                            <View style={styles.trendChip}>
-                                <TrendUpIcon size={12} color="#C2E7DA" />
-                                <Text style={styles.trendText}>+12%</Text>
-                            </View>
-                        </View>
-                    </View>
-                </View>
+            {/* ── Header: app name (centered) + settings icon ─────────────── */}
+            <View style={styles.header}>
+                {/* Left spacer to balance settings icon */}
+                <View style={styles.headerSpacer} />
 
-                {/* Glass Panels Grid */}
-                <View style={styles.glassGrid}>
-                    <View style={styles.glassCard}>
-                        <View style={styles.glassCardIconBoxSteel}>
-                            <GridIcon size={24} color="#6290C3" />
-                        </View>
-                        <Text style={styles.glassCardLabel}>APPS BLOCKED</Text>
-                        <View style={styles.glassCardValues}>
-                            <Text style={styles.glassCardValueBig}>{dailyStats.appsBlocked}</Text>
-                            <Text style={styles.glassCardValueSmall}>TODAY</Text>
-                        </View>
-                    </View>
+                <Text style={styles.appName}>BREQK</Text>
 
-                    <View style={styles.glassCard}>
-                        <View style={styles.glassCardIconBoxSeafoam}>
-                            <TimerIcon size={24} color="#C2E7DA" />
-                        </View>
-                        <Text style={styles.glassCardLabel}>TIME SAVED</Text>
-                        <View style={styles.glassCardValues}>
-                            <Text style={styles.glassCardValueBig}>{dailyStats.timeSavedHours}h</Text>
-                            <Text style={[styles.glassCardValueSmall, { fontSize: 20, marginTop: 4, marginLeft: 2, color: 'rgba(241, 255, 231, 0.4)' }]}>{dailyStats.timeSavedMinutes}m</Text>
-                        </View>
-                    </View>
-                </View>
+                <TouchableOpacity
+                    style={styles.settingsButton}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel="Settings"
+                    onPress={() => {
+                        console.log('[Home] settings tapped — navigating to Customize');
+                        navigation.navigate('Customize');
+                    }}
+                >
+                    <SettingsIcon color={L.muted} size={22} />
+                </TouchableOpacity>
+            </View>
 
-                {/* Daily Insight Gradient Panel */}
-                <View style={styles.insightSection}>
-                    <View style={styles.insightHeader}>
-                        <Text style={styles.insightTitle}>DAILY INSIGHT</Text>
-                        <Text style={styles.insightReportLink}>REPORT</Text>
-                    </View>
+            {/* ── Main stats section ──────────────────────────────────────── */}
+            <View style={styles.statsSection}>
+                <Text style={styles.saveEventsText}>
+                    {saveEvents} Save Events Today
+                </Text>
+                <Text style={styles.timeSavedText}>
+                    Total time saved: {formatTime(timeSavedMin)}
+                </Text>
+            </View>
 
-                    <View style={styles.insightCard}>
-                        <View style={styles.insightIconBox}>
-                            <InsightIcon size={24} color="#F1FFE7" />
-                        </View>
-                        <View style={styles.insightTexts}>
-                            <Text style={styles.insightCardTitle}>Deep Work Peak</Text>
-                            <Text style={styles.insightCardDesc}>
-                                You maintained deep focus for <Text style={styles.insightHighlight}>{dailyStats.peakFocusMins} mins</Text> straight during your morning session.
-                            </Text>
-                        </View>
-                    </View>
-                </View>
+            {/* ── Footer: action button + caption ────────────────────────── */}
+            <View style={styles.footer}>
+                <TouchableOpacity
+                    style={styles.primaryButton}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                        console.log('[Home] Open Instagram (Safe Mode) tapped');
+                        navigation.navigate('Browser', { platform: 'instagram' });
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open Instagram in Safe Mode"
+                >
+                    <Text style={styles.primaryButtonText}>Open Instagram (Safe Mode)</Text>
+                </TouchableOpacity>
 
-                {/* Safe Browsing */}
-                <View style={styles.blocksSection}>
-                    <Text style={styles.blocksTitle}>SAFE BROWSING</Text>
-                    <TouchableOpacity
-                        style={styles.blockRow}
-                        activeOpacity={0.7}
-                        onPress={() => navigation.navigate('Browser', { platform: 'instagram' })}
-                    >
-                        <View style={styles.blockRowLeft}>
-                            <View style={styles.blockIconBox}>
-                                <SocialMediaIcon size={24} color="#C2E7DA" />
-                            </View>
-                            <View>
-                                <Text style={styles.blockCategory}>Instagram</Text>
-                                <Text style={styles.blockApps}>No Reels · No Explore · No Suggested</Text>
-                            </View>
-                        </View>
-                        <View style={styles.blockTimeChip}>
-                            <Text style={styles.blockTimeText}>Open →</Text>
-                        </View>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={styles.blockRow}
-                        activeOpacity={0.7}
-                        onPress={() => navigation.navigate('Browser', { platform: 'youtube' })}
-                    >
-                        <View style={styles.blockRowLeft}>
-                            <View style={styles.blockIconBox}>
-                                <EntertainmentIcon size={24} color="#C2E7DA" />
-                            </View>
-                            <View>
-                                <Text style={styles.blockCategory}>YouTube</Text>
-                                <Text style={styles.blockApps}>No Shorts · No Homepage Feed · No Autoplay</Text>
-                            </View>
-                        </View>
-                        <View style={styles.blockTimeChip}>
-                            <Text style={styles.blockTimeText}>Open →</Text>
-                        </View>
-                    </TouchableOpacity>
-                </View>
+                <Text style={styles.caption}>Reels are disabled</Text>
+            </View>
 
-                {/* Recent Blocks List */}
-                <View style={styles.blocksSection}>
-                    <Text style={styles.blocksTitle}>RECENT BLOCKS</Text>
-                    {recentBlocks.map(block => (
-                        <View key={block.id} style={styles.blockRow}>
-                            <View style={styles.blockRowLeft}>
-                                <View style={styles.blockIconBox}>
-                                    <block.SvgIcon size={24} color={block.color} />
-                                </View>
-                                <View>
-                                    <Text style={styles.blockCategory}>{block.category}</Text>
-                                    <Text style={styles.blockApps}>{block.apps}</Text>
-                                </View>
-                            </View>
-                            <View style={styles.blockTimeChip}>
-                                <Text style={styles.blockTimeText}>{block.timeOut}</Text>
-                            </View>
-                        </View>
-                    ))}
-                </View>
-
-            </ScrollView>
         </View>
     );
 };
 
 export default Home;
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: L.bg,
+        paddingHorizontal: 28,
+        paddingBottom: 32,
+        justifyContent: 'space-between',
+    },
+
+    // Header row
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingTop: 8,
+    },
+    // Spacer matches settings button width so app name stays centered
+    headerSpacer: {
+        width: 36,
+    },
+    appName: {
+        fontSize: 13,
+        fontWeight: '500',
+        color: L.charcoal,
+        letterSpacing: 1.5,
+        textAlign: 'center',
+        flex: 1,
+    },
+    settingsButton: {
+        width: 36,
+        height: 36,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+
+    // Stats section (vertically centered in remaining space)
+    statsSection: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    // Large stat headline — fontWeight 300 (light) to match stitch screen
+    saveEventsText: {
+        fontSize: 36,
+        fontWeight: '300',
+        color: L.charcoal,
+        textAlign: 'center',
+        lineHeight: 44,
+        letterSpacing: -0.5,
+    },
+    timeSavedText: {
+        marginTop: 8,
+        fontSize: 14,
+        color: L.muted,
+        textAlign: 'center',
+    },
+
+    // Footer
+    footer: {
+        gap: 10,
+        alignItems: 'center',
+    },
+    primaryButton: {
+        backgroundColor: L.ctaBg,
+        borderRadius: 9999,
+        paddingVertical: 18,
+        paddingHorizontal: 32,
+        width: '100%',
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    primaryButtonText: {
+        color: L.ctaText,
+        fontSize: 17,
+        fontWeight: '500',
+    },
+    caption: {
+        fontSize: 10,
+        fontWeight: '600',
+        color: L.captionOpacity,
+        textTransform: 'uppercase',
+        letterSpacing: 2,
+    },
+});

@@ -1,438 +1,459 @@
+/**
+ * customize.js — Customize Screen (Tether light design system)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Settings screen layout (stitch screen 2):
+ *   • Sticky header: back button + "Customize" title
+ *   • "Intervention Modes" section — two toggles
+ *   • "Intercept Message" section — text input, duration slider, preview button
+ *   • Version footer
+ *
+ * State wired to VPNModule (monitoring, delay) and SettingsModule (redirect toggle).
+ *
+ * Logging prefix: [Customize]
+ */
+
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Switch, NativeModules } from 'react-native';
+import {
+    View,
+    Text,
+    StyleSheet,
+    Switch,
+    TouchableOpacity,
+    TextInput,
+    ScrollView,
+    NativeModules,
+    Modal,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path, Circle, Rect } from 'react-native-svg';
+import Slider from '@react-native-community/slider';
+import Svg, { Path } from 'react-native-svg';
+import BlockerInterstitial from '../BlockerInterstitial/BlockerInterstitial';
 
 const { VPNModule, SettingsModule } = NativeModules;
-const tokens = require('../../design/tokens').default;
 
-const { spacing, radii, typography, shadows, colors } = tokens;
-const s = colors.stitch; // { navy, mint, seafoam, steel, appBg, appSurface, appBorder, appText, appAccent }
+// ─── Tether Light Palette ─────────────────────────────────────────────────────
+const L = {
+    bg: '#FAFAFA',
+    charcoal: '#1A1A1A',
+    muted: '#737373',
+    border: '#E5E5E5',
+    sectionLabel: '#1A1A1A',
+    inputBorder: '#1A1A1A',  // focused underline
+    sliderTrack: '#E5E5E5',
+    sliderThumb: '#1A1A1A',
+    previewBorder: '#E5E5E5',
+};
 
-// Reusable SVG Icon Components
+// ─── Back arrow icon ──────────────────────────────────────────────────────────
 const BackIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5} viewBox="0 0 24 24">
-        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5}
+        strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+        <Path d="M15 19l-7-7 7-7" />
     </Svg>
 );
 
-const DeepWorkIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.2} viewBox="0 0 24 24">
-        <Rect height={16} width={16} x={4} y={4} />
-        <Path d="M12 4v16M4 12h16M8 8l8 8M16 8l-8 8" strokeLinecap="round" />
-    </Svg>
-);
-
-const SleepIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.2} viewBox="0 0 24 24">
-        <Circle cx={12} cy={12} r={8} />
-        <Path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5" />
-    </Svg>
-);
-
-const ReadingIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.2} viewBox="0 0 24 24">
-        <Path d="M4 6h16M4 10h16M4 14h10M4 18h16" strokeLinecap="round" />
-        <Circle cx={18} cy={14} r={2} />
-    </Svg>
-);
-
-const DetoxIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.2} viewBox="0 0 24 24">
-        <Path d="M12 4v16M8 6l8 12M16 6L8 18" strokeLinecap="round" />
-        <Circle cx={12} cy={12} r={9} />
-    </Svg>
-);
-
-const AddIcon = ({ color, size }) => (
-    <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={2.5} viewBox="0 0 24 24">
-        <Path d="M12 5v14M5 12h14" strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-);
-
-
-const Customize = () => {
+// ─── Component ────────────────────────────────────────────────────────────────
+const Customize = ({ navigation }) => {
     const insets = useSafeAreaInsets();
-    // Hidden standard settings that we'll just keep defaults for, to match Stitch Mock visuals precisely
-    const [delayTime, setDelayTime] = useState(15);
-    const [delayMessage, setDelayMessage] = useState('Take a moment to consider if you really need this app right now');
-    const [popupDelayMinutes, setPopupDelayMinutes] = useState(1);
 
-    // Core Focus Mode State
+    // ── State ─────────────────────────────────────────────────────────────────
+
+    // "App Open Intercept" = monitoring enabled
     const [isMonitoringEnabled, setIsMonitoringEnabled] = useState(true);
-    const [selectedModeId, setSelectedModeId] = useState('sleep');
-    const [redirectInstagramToBrowser, setRedirectInstagramToBrowser] = useState(true);
+    // "Reels Detection" = redirect Instagram to safe browser
+    const [reelsDetection, setReelsDetection] = useState(true);
+    // Intercept message shown on the pause overlay
+    const [interceptMessage, setInterceptMessage] = useState('Is this intentional?');
+    // Forced pause duration in seconds (1–30)
+    const [pauseDuration, setPauseDuration] = useState(5);
+    // Live slider value (tracks before commit)
+    const [sliderValue, setSliderValue] = useState(5);
+    // Preview modal visibility
+    const [previewVisible, setPreviewVisible] = useState(false);
 
-    // Preset Focus Modes from Stitch
-    const focusModes = [
-        {
-            id: 'deep-work',
-            name: 'Deep Work',
-            description: 'Blocks social media & news apps for uninterrupted productivity.',
-            SvgIcon: DeepWorkIcon,
-            blockedApps: ['com.instagram.android', 'com.zhiliaoapp.musically', 'com.twitter.android']
-        },
-        {
-            id: 'sleep',
-            name: 'Sleep',
-            description: 'Dims screen and silences notifications to help you rest.',
-            SvgIcon: SleepIcon,
-            blockedApps: ['com.google.android.youtube', 'com.facebook.katana', 'com.snapchat.android', 'com.reddit.frontpage']
-        },
-        {
-            id: 'reading',
-            name: 'Reading',
-            description: 'Limits distractions to Kindle and Books only.',
-            SvgIcon: ReadingIcon,
-            blockedApps: ['com.instagram.android', 'com.zhiliaoapp.musically', 'com.google.android.youtube', 'com.twitter.android', 'com.whatsapp']
-        },
-        {
-            id: 'digital-detox',
-            name: 'Digital Detox',
-            description: 'Hard block on all entertainment apps.',
-            SvgIcon: DetoxIcon,
-            blockedApps: ['com.instagram.android', 'com.zhiliaoapp.musically', 'com.google.android.youtube', 'com.twitter.android', 'com.spotify.music', 'com.reddit.frontpage', 'com.snapchat.android']
-        }
-    ];
+    // ── Load saved settings ───────────────────────────────────────────────────
 
     useEffect(() => {
-        const loadSettings = async () => {
+        const load = async () => {
+            console.log('[Customize] loading saved settings');
             try {
-                const [monitoringEnabled, redirectInstagram] = await Promise.all([
-                    new Promise((resolve) => {
-                        SettingsModule.getMonitoringEnabled((enabled) => resolve(enabled));
-                    }),
-                    new Promise((resolve) => {
-                        SettingsModule.getRedirectInstagramToBrowser((value) => resolve(value));
-                    })
+                const [monitoring, redirect] = await Promise.all([
+                    new Promise((resolve) => SettingsModule.getMonitoringEnabled((v) => resolve(v))),
+                    new Promise((resolve) => SettingsModule.getRedirectInstagramToBrowser((v) => resolve(v))),
                 ]);
-                setIsMonitoringEnabled(monitoringEnabled !== false);
-                setRedirectInstagramToBrowser(redirectInstagram !== false);
-            } catch (error) {
-                console.log('loadSettings failed:', error);
+                setIsMonitoringEnabled(monitoring !== false);
+                setReelsDetection(redirect !== false);
+                console.log('[Customize] settings loaded — monitoring:', monitoring, 'redirect:', redirect);
+            } catch (e) {
+                console.warn('[Customize] load settings error:', e);
             }
         };
-        loadSettings();
+        load();
     }, []);
 
-    const handleModeSelect = async (mode) => {
-        setSelectedModeId(mode.id);
-        const appsToBlock = mode.blockedApps || [];
+    // ── Toggle handlers ───────────────────────────────────────────────────────
 
+    const handleMonitoringToggle = async (value) => {
+        console.log('[Customize] monitoring toggle →', value);
         try {
-            SettingsModule.saveBlockedApps(appsToBlock);
-            await VPNModule.setBlockedApps(appsToBlock);
-            if (!isMonitoringEnabled) {
-                await toggleMonitoring(true);
-            }
-        } catch (error) {
-            console.error('Failed to apply focus mode:', error);
-        }
-    };
-
-    const toggleMonitoring = async (forceState = null) => {
-        const nextValue = forceState !== null ? forceState : !isMonitoringEnabled;
-        try {
-            if (nextValue) {
+            if (value) {
                 await VPNModule.startMonitoring();
             } else {
                 await VPNModule.stopMonitoring();
             }
-            setIsMonitoringEnabled(nextValue);
-            SettingsModule.saveMonitoringEnabled(nextValue);
-        } catch (error) {
-            console.error('Failed to toggle monitoring:', error);
+            setIsMonitoringEnabled(value);
+            SettingsModule.saveMonitoringEnabled(value);
+        } catch (e) {
+            console.error('[Customize] monitoring toggle failed:', e);
         }
     };
 
-    const toggleRedirectInstagram = (value) => {
-        setRedirectInstagramToBrowser(value);
+    const handleReelsToggle = (value) => {
+        console.log('[Customize] reels detection toggle →', value);
+        setReelsDetection(value);
         SettingsModule.saveRedirectInstagramToBrowser(value);
     };
 
+    // ── Duration slider handlers ──────────────────────────────────────────────
+
+    const handleSliderChange = (value) => {
+        // Update displayed value while dragging (integer)
+        const rounded = Math.round(value);
+        setSliderValue(rounded);
+    };
+
+    const handleSliderComplete = async (value) => {
+        const rounded = Math.round(value);
+        setPauseDuration(rounded);
+        setSliderValue(rounded);
+        console.log('[Customize] pause duration set to', rounded, 'seconds');
+        try {
+            await VPNModule.setDelayTime(rounded);
+        } catch (e) {
+            console.warn('[Customize] setDelayTime error:', e);
+        }
+    };
+
+    // ── Intercept message save ────────────────────────────────────────────────
+
+    const handleMessageSubmit = async () => {
+        console.log('[Customize] saving intercept message:', interceptMessage);
+        try {
+            await VPNModule.setDelayMessage(interceptMessage);
+        } catch (e) {
+            console.warn('[Customize] setDelayMessage error:', e);
+        }
+    };
+
+    // ── Preview ───────────────────────────────────────────────────────────────
+
+    const handlePreview = () => {
+        console.log('[Customize] showing preview interstitial');
+        setPreviewVisible(true);
+    };
+
+    // ── Render ────────────────────────────────────────────────────────────────
+
     return (
-        <View style={styles.container}>
-            <View style={[styles.headerArea, { paddingTop: Math.max(insets.top, 16) + 16 }]}>
-                {/* Need backButton styling to be round for symmetry */}
-                <TouchableOpacity style={styles.backButton}>
-                    <BackIcon color={s.appText} size={24} />
+        <View style={[styles.container, { paddingTop: Math.max(insets.top, 0) }]}>
+
+            {/* ── Sticky header ───────────────────────────────────────────── */}
+            <View style={styles.header}>
+                <TouchableOpacity
+                    style={styles.backButton}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back"
+                    onPress={() => {
+                        console.log('[Customize] back tapped — navigating back');
+                        navigation.goBack();
+                    }}
+                >
+                    <BackIcon color={L.charcoal} size={24} />
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Focus Modes</Text>
+
+                <Text style={styles.headerTitle}>Customize</Text>
+
+                {/* Spacer to centre the title */}
                 <View style={styles.headerSpacer} />
             </View>
 
-            <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            {/* ── Scrollable content ──────────────────────────────────────── */}
+            <ScrollView
+                style={styles.scroll}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+            >
 
-                <View style={styles.titleSection}>
-                    <Text style={styles.mainTitle}>Select your flow</Text>
-                    <Text style={styles.subTitle}>Choose a preset to block distractions and reclaim your time.</Text>
-                </View>
+                {/* ── Intervention Modes ────────────────────────────────── */}
+                <View style={styles.section}>
+                    <Text style={styles.sectionLabel}>Intervention Modes</Text>
 
-                {/* Instagram Reels Option */}
-                <View style={styles.instagramSection}>
-                    <Text style={styles.sectionLabel}>Instagram</Text>
-                    <View style={styles.instagramRow}>
-                        <View style={styles.instagramTexts}>
-                            <Text style={styles.instagramLabel}>Open Instagram without Reels</Text>
-                            <Text style={styles.instagramSubtitle}>When on, opening Instagram uses the in-app browser with Reels and Explore hidden.</Text>
-                        </View>
+                    {/* Toggle: App Open Intercept */}
+                    <View style={styles.toggleRow}>
+                        <Text style={styles.toggleLabel}>App Open Intercept</Text>
                         <Switch
-                            value={redirectInstagramToBrowser}
-                            onValueChange={toggleRedirectInstagram}
-                            trackColor={{ false: s.appBg, true: s.appAccent }}
-                            thumbColor={redirectInstagramToBrowser ? s.appBg : s.appText}
-                            style={styles.switchControl}
+                            value={isMonitoringEnabled}
+                            onValueChange={handleMonitoringToggle}
+                            trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                            thumbColor="#FFFFFF"
+                            ios_backgroundColor="#D6D6D6"
+                        />
+                    </View>
+
+                    <View style={styles.divider} />
+
+                    {/* Toggle: Reels Detection */}
+                    <View style={styles.toggleRow}>
+                        <Text style={styles.toggleLabel}>Reels Detection (Android)</Text>
+                        <Switch
+                            value={reelsDetection}
+                            onValueChange={handleReelsToggle}
+                            trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                            thumbColor="#FFFFFF"
+                            ios_backgroundColor="#D6D6D6"
                         />
                     </View>
                 </View>
 
-                {/* Focus Modes List */}
-                <View style={styles.modesContainer}>
-                    {focusModes.map((mode) => {
-                        const isSelected = selectedModeId === mode.id;
-                        return (
-                            <TouchableOpacity
-                                key={mode.id}
-                                style={[styles.modeCard, isSelected && styles.modeCardSelected]}
-                                onPress={() => handleModeSelect(mode)}
-                                activeOpacity={0.8}
-                            >
-                                <View style={styles.cardHeader}>
-                                    <View style={styles.iconBox}>
-                                        <mode.SvgIcon color={s.appText} size={28} />
-                                    </View>
-                                    <View style={styles.radioWrapper}>
-                                        <Switch
-                                            value={isSelected}
-                                            onValueChange={() => handleModeSelect(mode)}
-                                            trackColor={{ false: s.appBg, true: s.appAccent }}
-                                            thumbColor={isSelected ? s.appBg : s.appText}
-                                            style={styles.switchControl}
-                                        />
-                                    </View>
-                                </View>
+                {/* ── Intercept Message ─────────────────────────────────── */}
+                <View style={styles.section}>
+                    <Text style={styles.sectionLabel}>Intercept Message</Text>
 
-                                <View style={styles.cardTexts}>
-                                    <Text style={styles.modeName}>{mode.name}</Text>
-                                    <Text style={styles.modeDesc}>{mode.description}</Text>
-                                </View>
+                    {/* Text input with underline border (no box, transparent bg) */}
+                    <TextInput
+                        style={styles.messageInput}
+                        value={interceptMessage}
+                        onChangeText={setInterceptMessage}
+                        onBlur={handleMessageSubmit}
+                        onSubmitEditing={handleMessageSubmit}
+                        placeholder="Enter message..."
+                        placeholderTextColor={L.muted}
+                        returnKeyType="done"
+                        accessibilityLabel="Intercept message"
+                    />
 
-                                {/* Background Glow effect placeholder */}
-                                <View style={styles.glowEffect} />
-                            </TouchableOpacity>
-                        );
-                    })}
+                    {/* Duration label + live value */}
+                    <View style={styles.durationHeader}>
+                        <Text style={styles.durationLabel}>Forced Pause Duration</Text>
+                        <Text style={styles.durationValue}>{sliderValue} seconds</Text>
+                    </View>
 
-                    {/* Create Custom Mode Button */}
-                    <TouchableOpacity style={styles.createButton} activeOpacity={0.7}>
-                        <View style={styles.createIconBox}>
-                            <AddIcon color={s.appBg} size={24} />
-                        </View>
-                        <Text style={styles.createText}>Create Custom Mode</Text>
+                    {/* Slider (1–30 seconds) */}
+                    <Slider
+                        style={styles.slider}
+                        minimumValue={1}
+                        maximumValue={30}
+                        step={1}
+                        value={pauseDuration}
+                        minimumTrackTintColor={L.charcoal}
+                        maximumTrackTintColor={L.sliderTrack}
+                        thumbTintColor={L.sliderThumb}
+                        onValueChange={handleSliderChange}
+                        onSlidingComplete={handleSliderComplete}
+                        accessibilityLabel="Pause duration in seconds"
+                    />
+
+                    {/* Range labels */}
+                    <View style={styles.sliderLabels}>
+                        <Text style={styles.sliderRangeLabel}>1s</Text>
+                        <Text style={styles.sliderRangeLabel}>30s</Text>
+                    </View>
+
+                    {/* Preview Intercept button */}
+                    <TouchableOpacity
+                        style={styles.previewButton}
+                        activeOpacity={0.85}
+                        onPress={handlePreview}
+                        accessibilityRole="button"
+                        accessibilityLabel="Preview intercept"
+                    >
+                        <Text style={styles.previewButtonText}>Preview Intercept</Text>
                     </TouchableOpacity>
                 </View>
 
+                {/* ── Footer ────────────────────────────────────────────── */}
+                <Text style={styles.footer}>v1.0 • Minimal Design</Text>
+
             </ScrollView>
+
+            {/* ── Preview modal ─────────────────────────────────────────── */}
+            <Modal
+                visible={previewVisible}
+                transparent
+                animationType="none"
+                onRequestClose={() => setPreviewVisible(false)}
+            >
+                <BlockerInterstitial
+                    duration={pauseDuration}
+                    onComplete={() => {
+                        console.log('[Customize] preview completed');
+                        setPreviewVisible(false);
+                    }}
+                    onForceClose={() => {
+                        console.log('[Customize] preview force-closed');
+                        setPreviewVisible(false);
+                    }}
+                />
+            </Modal>
+
         </View>
     );
 };
 
+export default Customize;
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: s.appBg,
+        backgroundColor: L.bg,
     },
-    headerArea: {
+
+    // Sticky header
+    header: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: spacing.md,
-        paddingBottom: spacing.sm,
+        paddingHorizontal: 20,
+        paddingVertical: 14,
+        backgroundColor: L.bg,
+        // Simulate backdrop blur with a bottom border instead
+        borderBottomWidth: 1,
+        borderBottomColor: L.border,
         zIndex: 10,
     },
     backButton: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
+        width: 36,
+        height: 36,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(255,255,255,0.05)',
     },
     headerTitle: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: s.appText,
         flex: 1,
         textAlign: 'center',
+        fontSize: 18,
+        fontWeight: '500',
+        color: L.charcoal,
+        letterSpacing: -0.2,
     },
+    // Balances back button so title is visually centred
     headerSpacer: {
-        width: 40, // Match backButton width to center title perfectly
+        width: 36,
     },
-    scrollContainer: {
+
+    // Scrollable area
+    scroll: {
         flex: 1,
     },
     scrollContent: {
-        paddingHorizontal: spacing.md,
-        paddingBottom: spacing.xxxl,
-        paddingTop: spacing.sm,
+        paddingHorizontal: 24,
+        paddingTop: 28,
+        paddingBottom: 48,
     },
-    titleSection: {
-        marginBottom: spacing.xl,
-    },
-    mainTitle: {
-        fontSize: 32,
-        fontWeight: 'bold',
-        color: s.appText,
-        marginBottom: spacing.xs,
-        letterSpacing: -0.5,
-    },
-    subTitle: {
-        fontSize: 14,
-        color: 'rgba(241, 255, 231, 0.6)', // appText at 60%
-        lineHeight: 20,
-    },
-    instagramSection: {
-        marginBottom: spacing.xl,
-    },
-    sectionLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: 'rgba(241, 255, 231, 0.5)',
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-        marginBottom: spacing.sm,
-    },
-    instagramRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        backgroundColor: s.appSurface,
-        borderWidth: 1,
-        borderColor: 'rgba(98, 144, 195, 0.3)',
-        borderRadius: radii.xl,
-        padding: spacing.lg,
-    },
-    instagramTexts: {
-        flex: 1,
-        marginRight: spacing.md,
-    },
-    instagramLabel: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: s.appText,
-        marginBottom: 4,
-    },
-    instagramSubtitle: {
-        fontSize: 13,
-        color: 'rgba(241, 255, 231, 0.7)',
-        lineHeight: 18,
-    },
-    modesContainer: {
-        gap: spacing.md,
-        flexDirection: 'column',
-    },
-    modeCard: {
-        position: 'relative',
-        overflow: 'hidden',
-        backgroundColor: s.appSurface,
-        borderWidth: 1,
-        borderColor: 'rgba(98, 144, 195, 0.3)', // appBorder at 30%
-        borderRadius: radii.xl,
-        padding: spacing.lg,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.2,
-        shadowRadius: 15,
-        elevation: 10,
-        marginBottom: spacing.md,
-    },
-    modeCardSelected: {
-        borderColor: s.appBorder,
-    },
-    cardHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: spacing.md,
-        zIndex: 2,
-    },
-    iconBox: {
-        width: 48,
-        height: 48,
-        borderRadius: radii.md,
-        backgroundColor: 'rgba(241, 255, 231, 0.1)', // text/10
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    radioWrapper: {
-        position: 'absolute',
-        right: 0,
-        top: 0,
-    },
-    switchControl: {
-        transform: [{ scaleX: 0.9 }, { scaleY: 0.9 }],
-    },
-    cardTexts: {
-        zIndex: 2,
-    },
-    modeName: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: s.appText,
-        marginBottom: 4,
-    },
-    modeDesc: {
-        fontSize: 14,
-        color: 'rgba(241, 255, 231, 0.7)',
-        lineHeight: 20,
-    },
-    glowEffect: {
-        position: 'absolute',
-        bottom: -40,
-        right: -40,
-        width: 128,
-        height: 128,
-        borderRadius: 64,
-        backgroundColor: 'rgba(194, 231, 218, 0.05)', // accent/5
-        shadowColor: s.appAccent,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 1,
-        shadowRadius: 40,
-        elevation: 5,
-        zIndex: 1,
-    },
-    createButton: {
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: spacing.xl,
-        borderRadius: radii.xl,
-        borderWidth: 2,
-        borderColor: 'rgba(98, 144, 195, 0.4)', // border/40
-        borderStyle: 'dashed',
-        backgroundColor: 'transparent',
-        marginTop: spacing.sm,
-    },
-    createIconBox: {
-        width: 48,
-        height: 48,
-        borderRadius: 24,
-        backgroundColor: s.appAccent,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: spacing.md,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 6,
-        elevation: 5,
-    },
-    createText: {
-        fontSize: 16,
-        fontWeight: 'bold',
-        color: s.appAccent,
-        textAlign: 'center',
-    }
-});
 
-export default Customize;
+    // Section block
+    section: {
+        marginBottom: 36,
+    },
+    // "INTERVENTION MODES" / "INTERCEPT MESSAGE" labels
+    sectionLabel: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: L.charcoal,
+        textTransform: 'uppercase',
+        letterSpacing: 1.5,
+        marginBottom: 16,
+    },
+
+    // Toggle row
+    toggleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 4,
+    },
+    toggleLabel: {
+        fontSize: 16,
+        color: L.charcoal,
+        fontWeight: '400',
+    },
+
+    // Thin divider between toggles
+    divider: {
+        height: 1,
+        backgroundColor: L.border,
+        marginVertical: 14,
+    },
+
+    // Text input with underline only (no box)
+    messageInput: {
+        fontSize: 18,
+        color: L.charcoal,
+        borderBottomWidth: 1.5,
+        borderBottomColor: L.inputBorder,
+        paddingVertical: 8,
+        paddingHorizontal: 0,
+        backgroundColor: 'transparent',
+        marginBottom: 24,
+    },
+
+    // Duration header row
+    durationHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+        marginBottom: 4,
+    },
+    durationLabel: {
+        fontSize: 14,
+        color: L.charcoal,
+        fontWeight: '500',
+    },
+    durationValue: {
+        fontSize: 14,
+        color: L.muted,
+        fontWeight: '400',
+    },
+
+    // Slider
+    slider: {
+        width: '100%',
+        height: 40,
+    },
+    sliderLabels: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginTop: -4,
+        marginBottom: 20,
+    },
+    sliderRangeLabel: {
+        fontSize: 11,
+        color: L.muted,
+    },
+
+    // Preview button (outlined, light border)
+    previewButton: {
+        borderWidth: 1,
+        borderColor: L.previewBorder,
+        borderRadius: 12,
+        paddingVertical: 16,
+        alignItems: 'center',
+    },
+    previewButtonText: {
+        fontSize: 15,
+        color: L.charcoal,
+        fontWeight: '500',
+    },
+
+    // Footer caption
+    footer: {
+        textAlign: 'center',
+        fontSize: 10,
+        color: L.muted,
+        letterSpacing: 1.5,
+        textTransform: 'uppercase',
+        marginTop: 8,
+    },
+});

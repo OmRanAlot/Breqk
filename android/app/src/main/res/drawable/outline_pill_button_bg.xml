@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    outline_pill_button_bg.xml
+    Transparent pill with a white outline used for secondary/destructive action buttons.
+    Used by:
+      - overlay_reels_intervention.xml: "Force Close Instagram/YouTube" button
+    Matches the stitch design's outlined secondary action style.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <!-- Transparent fill — shows background through -->
+    <solid android:color="#00000000" />
+    <!-- ~30% white border -->
+    <stroke
+        android:width="1dp"
+        android:color="#4DFFFFFF" />
+    <corners android:radius="9999dp" />
+</shape>

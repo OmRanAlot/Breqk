@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 import android.app.ActivityManager;
 import android.app.Notification;
@@ -42,7 +42,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 // The actual VPN that READS the incoming data and creates a Notification so the service runs in background
 public class MyVpnService extends VpnService {
     private static final String TAG = "MyVpnService";
-    private static final String NOTIFICATION_CHANNEL_ID = "DoomScrollStopperVPN";
+    private static final String NOTIFICATION_CHANNEL_ID = "BreqkVPN";
     private static final int NOTIFICATION_ID = 1;
     private static final String LOG_TAG = "VPNActivity";
     
@@ -232,7 +232,7 @@ public class MyVpnService extends VpnService {
         if (vpnInterface == null) {
             startForeground(NOTIFICATION_ID, createNotification("VPN Active"));
             Builder builder = new Builder();
-            builder.setSession("Doom Scroll Stopper")
+            builder.setSession("Breqk")
                 .addAddress("10.0.0.2", 24)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("8.8.8.8")
@@ -280,7 +280,7 @@ public class MyVpnService extends VpnService {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("DoomScrollStopper")
+            .setContentTitle("Breqk")
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_vpn)
             .setContentIntent(pendingIntent)
@@ -326,7 +326,7 @@ public class MyVpnService extends VpnService {
     }
 
     private void saveBlockedApps(Set<String> blockedApps) {
-        getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE)
+        getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE)
             .edit()
             .putStringSet("blocked_apps", blockedApps)
             .apply();
@@ -334,7 +334,7 @@ public class MyVpnService extends VpnService {
     }
     
     private Set<String> loadBlockedApps() {
-        Set<String> set = getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE)
+        Set<String> set = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE)
             .getStringSet("blocked_apps", new HashSet<>());
         Log.d(TAG, "[PREF] loadBlockedApps size=" + (set != null ? set.size() : 0) + " data=" + set);
         return set;

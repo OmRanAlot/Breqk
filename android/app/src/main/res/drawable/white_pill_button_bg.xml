@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    white_pill_button_bg.xml
+    Solid white rounded-rectangle (pill shape) used for primary action buttons.
+    Used by:
+      - delay_overlay.xml: "Back to Reality" button
+      - overlay_reels_intervention.xml: "Return to Feed" button (via backgroundTint)
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFF" />
+    <!-- 9999dp gives a perfect pill regardless of button height -->
+    <corners android:radius="9999dp" />
+</shape>

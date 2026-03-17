@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 /*
  * AppBlockerPackage

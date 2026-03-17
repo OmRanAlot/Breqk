@@ -26,7 +26,7 @@ For Android-only builds (from `android/` directory):
 
 ## Architecture Overview
 
-**DoomScrollStopper** is a React Native Android app that blocks distracting apps by showing a mandatory delay overlay when a blocked app is opened.
+**Breqk** is a React Native Android app that blocks distracting apps by showing a mandatory delay overlay when a blocked app is opened.
 
 ### Layer Separation
 
@@ -34,13 +34,13 @@ For Android-only builds (from `android/` directory):
 React Native UI (TypeScript/JS)
     ↕ NativeModules bridge
 VPNModule.java + SettingsModule.java
-    ↕ SharedPreferences ("doomscroll_prefs")
+    ↕ SharedPreferences ("breqk_prefs")
 MyVpnService.java (foreground service) → AppUsageMonitor.java
     ↕ UsageStatsManager (Android API)
 WindowManager overlay (shown when blocked app is foregrounded)
 ```
 
-### Native Modules (android/app/src/main/java/com/doomscrollstopper/)
+### Native Modules (android/app/src/main/java/com/breqk/)
 
 - **VPNModule.java** — Primary JS↔Android bridge. Manages permissions, starts/stops monitoring, exposes screen time stats, emits `onAppDetected` / `onBlockedAppOpened` events to JS.
 - **SettingsModule.java** — Persists blocked apps list and monitoring toggle via SharedPreferences.

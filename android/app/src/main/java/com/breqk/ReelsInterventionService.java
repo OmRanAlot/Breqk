@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 /*
  * ReelsInterventionService
@@ -34,7 +34,7 @@ package com.doomscrollstopper;
  *   2. Slow path: full accessibility tree traversal for Reels view IDs
  *   Both paths gate through isFullScreenReelsViewPager() before confirming.
  *
- * Scroll threshold is persisted in SharedPreferences ("doomscroll_prefs", key "scroll_threshold")
+ * Scroll threshold is persisted in SharedPreferences ("breqk_prefs", key "scroll_threshold")
  * and can be updated from React Native via SettingsModule.saveScrollThreshold() or
  * VPNModule.setScrollThreshold() without restarting the service.
  *
@@ -168,7 +168,7 @@ public class ReelsInterventionService extends AccessibilityService {
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching: " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
         Log.d(TAG, "  scroll threshold (default): " + DEFAULT_SCROLL_THRESHOLD
-                + " (override via doomscroll_prefs/scroll_threshold)");
+                + " (override via breqk_prefs/scroll_threshold)");
         Log.d(TAG, "  full-screen thresholds: widthRatio>=" + MIN_WIDTH_RATIO
                 + " heightRatio>=" + MIN_HEIGHT_RATIO + " topOffset<=" + MAX_TOP_OFFSET_PX + "px");
         Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded)");
@@ -563,10 +563,10 @@ public class ReelsInterventionService extends AccessibilityService {
     /**
      * Reads the scroll threshold from SharedPreferences.
      * Default: DEFAULT_SCROLL_THRESHOLD. Clamped to 1-20.
-     * Key: "scroll_threshold" in "doomscroll_prefs".
+     * Key: "scroll_threshold" in "breqk_prefs".
      */
     private int getScrollThreshold() {
-        SharedPreferences prefs = getSharedPreferences("doomscroll_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
         int threshold = prefs.getInt("scroll_threshold", DEFAULT_SCROLL_THRESHOLD);
         return Math.max(1, Math.min(20, threshold));
     }
@@ -608,8 +608,9 @@ public class ReelsInterventionService extends AccessibilityService {
                 return;
             }
 
-            // MATCH_PARENT height so the FrameLayout wrapper fills the screen,
-            // allowing the inner card to be centered via layout_gravity="center".
+            // MATCH_PARENT so the FrameLayout fills the screen.
+            // Gravity.BOTTOM: the inner bottom sheet LinearLayout rises from the bottom edge.
+            // Design matches stitch_screens/3_reels_intervention.jpg.
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -618,34 +619,33 @@ public class ReelsInterventionService extends AccessibilityService {
                             | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                     PixelFormat.TRANSLUCENT
             );
-            // Gravity.CENTER: card is centered both vertically and horizontally
-            params.gravity = Gravity.CENTER;
+            // BOTTOM gravity so the sheet anchors to the bottom of the screen
+            params.gravity = Gravity.BOTTOM;
 
             interventionView = LayoutInflater.from(this)
                     .inflate(R.layout.overlay_reels_intervention, null);
 
-            // Platform-specific subtitle
-            TextView subtitle = interventionView.findViewById(R.id.intervention_subtitle);
+            // Update headline to be platform-specific ("Reels Detected" / "Shorts Detected")
+            TextView titleView = interventionView.findViewById(R.id.intervention_title);
             String contentType = pkg.equals(PKG_YOUTUBE) ? "Shorts" : "Reels";
-            subtitle.setText("You've scrolled through " + scrollCountSnapshot + " " + contentType + ".");
+            titleView.setText(contentType + " Detected");
+            Log.d(TAG, "triggerIntervention: title set to '" + contentType + " Detected'");
 
-            // "Lock In" — exits the app entirely to the Android home screen
+            /*
+             * btn_lock_in → "Return to Feed"
+             * --------------------------------
+             * NEW behavior (swapped from old "Take a Break"):
+             *   Deep-link to the app's home feed (instagram://feed or youtube://).
+             *   Lets the user continue using the app in a less addictive section.
+             */
             Button btnLockIn = interventionView.findViewById(R.id.btn_lock_in);
+            btnLockIn.setText("Return to Feed");
             btnLockIn.setOnClickListener(v -> {
-                Log.i(TAG, "lock_in tapped for " + pkg + " — going to home screen");
-                dismissIntervention();
-                resetReelsState();
-                performGlobalAction(GLOBAL_ACTION_HOME);
-            });
-
-            // "Take a Break" — navigate to Instagram/YouTube home feed
-            Button btnTakeBreak = interventionView.findViewById(R.id.btn_take_break);
-            btnTakeBreak.setOnClickListener(v -> {
-                Log.i(TAG, "take_a_break tapped for " + pkg + " — navigating to home feed");
+                Log.i(TAG, "return_to_feed tapped for " + pkg + " — navigating to home feed");
                 dismissIntervention();
                 resetReelsState();
 
-                // Deep-link to the app's home feed (Instagram feed / YouTube main)
+                // Deep-link to the app's home feed
                 String feedUri = pkg.equals(PKG_YOUTUBE) ? "youtube://" : "instagram://feed";
                 android.content.Intent feedIntent = new android.content.Intent(
                         android.content.Intent.ACTION_VIEW,
@@ -653,26 +653,35 @@ public class ReelsInterventionService extends AccessibilityService {
                 feedIntent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 try {
                     startActivity(feedIntent);
-                    Log.d(TAG, "take_a_break: launched " + feedUri);
+                    Log.d(TAG, "return_to_feed: launched deep link " + feedUri);
                 } catch (Exception e) {
-                    Log.w(TAG, "take_a_break: deep link failed, firing back", e);
+                    Log.w(TAG, "return_to_feed: deep link failed, firing GLOBAL_ACTION_BACK", e);
                     performGlobalAction(GLOBAL_ACTION_BACK);
                 }
             });
 
-            // Auto-dismiss after 8 seconds if the user ignores the popup
-            autoDismissRunnable = () -> {
-                if (interventionShowing) {
-                    Log.i(TAG, "auto-dismiss after 8s for " + pkg);
-                    dismissIntervention();
-                    resetReelsState();
-                    performGlobalAction(GLOBAL_ACTION_BACK);
-                }
-            };
-            mainHandler.postDelayed(autoDismissRunnable, 8000);
+            /*
+             * btn_take_break → "Force Close <AppName>"
+             * ------------------------------------------
+             * NEW behavior (swapped from old "Lock In"):
+             *   Fire GLOBAL_ACTION_HOME to exit the app entirely to the Android home screen.
+             *   Button text is set dynamically to name the specific app being closed.
+             */
+            Button btnTakeBreak = interventionView.findViewById(R.id.btn_take_break);
+            String appDisplayName = pkg.equals(PKG_YOUTUBE) ? "YouTube" : "Instagram";
+            btnTakeBreak.setText("Force Close " + appDisplayName);
+            btnTakeBreak.setOnClickListener(v -> {
+                Log.i(TAG, "force_close tapped for " + pkg + " — going to Android home screen");
+                dismissIntervention();
+                resetReelsState();
+                performGlobalAction(GLOBAL_ACTION_HOME);
+            });
+
+            // No auto-dismiss — user must make an explicit choice (cleaner UX)
 
             windowManager.addView(interventionView, params);
-            Log.i(TAG, "overlay shown (centered) for " + pkg
+            Log.i(TAG, "overlay shown (bottom-sheet) for " + pkg
+                    + " contentType=" + contentType
                     + " count=" + scrollCountSnapshot
                     + " threshold=" + getScrollThreshold());
         });

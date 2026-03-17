@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    grab_handle.xml
+    Small pill-shaped grab handle displayed at the top of the reels intervention bottom sheet.
+    Purely decorative — signals to users that the sheet can be interacted with.
+    40dp wide × 4dp tall, ~20% white opacity to stay subtle against the dark sheet background.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <!-- ~20% white opacity (rgba(255,255,255,0.2)) -->
+    <solid android:color="#33FFFFFF" />
+    <corners android:radius="2dp" />
+</shape>

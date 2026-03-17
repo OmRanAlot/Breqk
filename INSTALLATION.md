@@ -1,6 +1,6 @@
 # Installation Guide for Bare React Native Project
 
-This guide is specifically for setting up the DoomScrollStopper app in a **bare React Native project** (not Expo).
+This guide is specifically for setting up the Breqk app in a **bare React Native project** (not Expo).
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ npm run ios
 ## Project Structure
 
 ```
-DoomScrollStopper/
+Breqk/
 ├── App.tsx                 # Main app with navigation
 ├── components/
 │   ├── Home/

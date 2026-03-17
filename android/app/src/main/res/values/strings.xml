@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Fokus</string>
+    <string name="app_name">Breqk</string>
     <string name="accessibility_service_description">Monitor app usage to help reduce doom scrolling by detecting when blocked apps are opened</string>
-    <string name="widget_description">Focus score, time saved, and apps blocked. Tap to open DoomScrollStopper.</string>
+    <string name="widget_description">Focus score, time saved, and apps blocked. Tap to open Breqk.</string>
 </resources>
