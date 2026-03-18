@@ -141,6 +141,41 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         callback.invoke(threshold);
     }
 
+    /**
+     * Persists scroll budget configuration to SharedPreferences.
+     * Read by AppUsageMonitor.loadScrollBudgetFromPrefs() on service start.
+     *
+     * @param allowanceMinutes Minutes of scroll allowed per window (clamped 1–30)
+     * @param windowMinutes    Window duration in minutes (clamped 15–120)
+     */
+    @ReactMethod
+    public void saveScrollBudget(int allowanceMinutes, int windowMinutes) {
+        int clampedAllowance = Math.max(1, Math.min(30, allowanceMinutes));
+        int clampedWindow = Math.max(15, Math.min(120, windowMinutes));
+        Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window=" + clampedWindow + "min");
+        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        prefs.edit()
+                .putInt("scroll_allowance_minutes", clampedAllowance)
+                .putInt("scroll_window_minutes", clampedWindow)
+                .apply();
+        Log.d(TAG, "[SAVE] scroll budget saved");
+    }
+
+    /**
+     * Retrieves scroll budget configuration from SharedPreferences.
+     * Invokes callback with (allowanceMinutes, windowMinutes).
+     * Defaults: allowance=5, window=60.
+     */
+    @ReactMethod
+    public void getScrollBudget(Callback callback) {
+        Log.d(TAG, "[GET] getScrollBudget called");
+        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        int allowanceMinutes = prefs.getInt("scroll_allowance_minutes", 5);
+        int windowMinutes = prefs.getInt("scroll_window_minutes", 60);
+        Log.d(TAG, "[GET] scroll budget: allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
+        callback.invoke(allowanceMinutes, windowMinutes);
+    }
+
     @ReactMethod
     public void saveBlockedApps(ReadableArray apps) {
         Log.d(TAG, "[SAVE] saveBlockedApps called with size=" + apps.size());

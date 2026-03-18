@@ -3,16 +3,15 @@
     overlay_reels_intervention.xml
     ─────────────────────────────────────────────────────────────────────────────
     Bottom-sheet overlay shown by ReelsInterventionService.triggerIntervention()
-    when the user scrolls past the Reels/Shorts threshold.
-    Design matches stitch_screens/3_reels_intervention.jpg.
+    when the scroll budget time is exhausted.
 
     Layout structure:
       FrameLayout (root, match_parent × match_parent, ~75% opaque dark backdrop)
         └─ LinearLayout (bottom sheet — dark, rounded top corners, bottom-aligned)
              ├─ View (grab handle pill — decorative)
-             ├─ TextView "Reels Detected"
-             ├─ Button "Return to Feed" (primary white pill)
-             └─ Button "Force Close Instagram" (secondary outline pill)
+             ├─ TextView "Time is up!" (set in code)
+             ├─ Button "Lock In" (primary white pill — exits to home screen)
+             └─ Button (hidden via View.GONE — only one action available)
 
     WindowManager params set in ReelsInterventionService.triggerIntervention():
       TYPE_ACCESSIBILITY_OVERLAY — no SYSTEM_ALERT_WINDOW needed for AccessibilityServices
@@ -20,10 +19,9 @@
       Gravity.BOTTOM — sheet rises from the bottom edge of the screen
 
     View IDs used by ReelsInterventionService.java:
-      intervention_title — "Reels Detected" headline (text set in code to "Reels Detected")
-      btn_lock_in        — "Return to Feed" → deep-link to instagram://feed or youtube://
-      btn_take_break     — "Force Close" → fires GLOBAL_ACTION_HOME
-                           (text updated in code to include the app name)
+      intervention_title — headline (text set in code to "Time is up!")
+      btn_lock_in        — "Lock In" → fires GLOBAL_ACTION_HOME (exit to home screen)
+      btn_take_break     — hidden (View.GONE) — only Lock In button is shown
 -->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -57,8 +55,8 @@
             android:layout_marginBottom="24dp" />
 
         <!--
-            intervention_title: "Reels Detected" headline.
-            Text is set in triggerIntervention() — could be "Reels Detected" or "Shorts Detected".
+            intervention_title: headline text.
+            Text is set in triggerIntervention() to "Time is up!" when budget is exhausted.
             24sp, semibold, ~90% white.
         -->
         <TextView
@@ -72,9 +70,9 @@
             android:layout_marginBottom="32dp" />
 
         <!--
-            btn_lock_in: "Return to Feed" (primary white pill)
-            onClick: dismiss overlay, deep-link to instagram://feed (or youtube://).
-            Previously "Lock In" (fires GLOBAL_ACTION_HOME) — roles have swapped.
+            btn_lock_in: "Lock In" (primary white pill)
+            onClick: dismiss overlay, fire GLOBAL_ACTION_HOME (exit to Android home screen).
+            This is the ONLY visible button when budget is exhausted.
         -->
         <Button
             android:id="@+id/btn_lock_in"
@@ -88,10 +86,9 @@
             android:layout_marginBottom="14dp" />
 
         <!--
-            btn_take_break: "Force Close Instagram" (secondary outline pill)
-            Text is updated in triggerIntervention() to include the specific app name.
-            onClick: dismiss overlay, fire GLOBAL_ACTION_HOME → exit to Android home screen.
-            Previously "Take a Break" (deep-links to feed) — roles have swapped.
+            btn_take_break: hidden (View.GONE) when budget is exhausted.
+            Only the Lock In button is shown — user must exit to home screen.
+            Kept in layout for potential future use.
         -->
         <Button
             android:id="@+id/btn_take_break"

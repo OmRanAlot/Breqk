@@ -1,13 +1,19 @@
 /**
  * home.js — Home Screen (Tether light design system)
  * ─────────────────────────────────────────────────────────────────────────────
- * Minimal dashboard layout:
- *   • App name header + settings icon
- *   • Large "N Save Events Today" stats display
+ * Dashboard layout:
+ *   • App name header (centred) + settings gear icon
+ *   • Summary stat cards: total screen time, unlocks, notifications
+ *   • Top 5 apps by usage with proportional progress bars
  *   • "Open Instagram (Safe Mode)" primary action button
  *
- * Data strategy: shows hardcoded demo stats on first render,
- * loads real VPN stats async in background (5-min TTL cache).
+ * Data strategy:
+ *   Real usage data is loaded via useDigitalWellbeing hook (5-min TTL cache).
+ *   Data refreshes automatically when the app returns to the foreground.
+ *   Unavailable metrics (API version or OEM restriction) are hidden, not shown as 0.
+ *
+ * Monitoring lifecycle is separate from data display; startMonitoring / event
+ * listeners are preserved verbatim to avoid regression.
  *
  * Logging prefix: [Home]
  */
@@ -21,10 +27,13 @@ import {
     NativeModules,
     NativeEventEmitter,
     TouchableOpacity,
+    ScrollView,
+    ActivityIndicator,
     StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Circle } from 'react-native-svg';
+import useDigitalWellbeing from './useDigitalWellbeing';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
@@ -37,6 +46,14 @@ const L = {
     captionOpacity: 'rgba(26,26,26,0.6)',
     ctaBg: '#1A1A1A',
     ctaText: '#FFFFFF',
+    // Accent colours for stats
+    accentGreen: '#4CAF50',
+    accentBlue: '#2196F3',
+    accentOrange: '#FF9800',
+    cardBg: '#FFFFFF',
+    cardBorder: 'rgba(0,0,0,0.07)',
+    barBg: 'rgba(0,0,0,0.07)',
+    barFill: '#1A1A1A',
 };
 
 // ─── Settings icon ────────────────────────────────────────────────────────────
@@ -48,58 +65,69 @@ const SettingsIcon = ({ color, size }) => (
     </Svg>
 );
 
-// ─── Stats cache (5-minute TTL) ───────────────────────────────────────────────
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// ─── Component ────────────────────────────────────────────────────────────────
+/** Format minutes as "Xh Ym", "Xh", or "Ym" */
+const formatTime = (minutes) => {
+    if (minutes == null) return '—';
+    const m = Math.round(minutes);
+    if (m >= 60) {
+        const h = Math.floor(m / 60);
+        const rem = m % 60;
+        return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+    }
+    return `${m}m`;
+};
+
+/** Format a nullable integer stat; returns '—' for null/undefined */
+const formatCount = (value) => (value == null ? '—' : String(value));
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+/** Single stat card shown in the summary row */
+const StatCard = ({ label, value, loading }) => (
+    <View style={styles.statCard}>
+        {loading
+            ? <View style={styles.skeletonValue} />
+            : <Text style={styles.statValue}>{value}</Text>
+        }
+        <Text style={styles.statLabel}>{label}</Text>
+    </View>
+);
+
+/** One row in the top-apps list */
+const AppUsageRow = ({ appName, usageTimeMin, maxTimeMin }) => {
+    // Progress bar fill ratio relative to the top app in the list
+    const ratio = maxTimeMin > 0 ? usageTimeMin / maxTimeMin : 0;
+
+    return (
+        <View style={styles.appUsageRow}>
+            <View style={styles.appUsageInfo}>
+                <Text style={styles.appUsageName} numberOfLines={1}>{appName}</Text>
+                <Text style={styles.appUsageTime}>{formatTime(usageTimeMin)}</Text>
+            </View>
+            <View style={styles.usageBar}>
+                <View style={[styles.usageBarFill, { width: `${Math.round(ratio * 100)}%` }]} />
+            </View>
+        </View>
+    );
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 const Home = ({ navigation }) => {
     const insets = useSafeAreaInsets();
-
-    // Stats: defaults are demo values shown while real data loads
-    const [saveEvents, setSaveEvents] = useState(14);
-    const [timeSavedMin, setTimeSavedMin] = useState(45);
     const [isMonitoring, setIsMonitoring] = useState(false);
 
-    const cacheRef = useRef({
-        screenTimeStats: { data: null, timestamp: 0 },
-    });
+    // ── Digital Wellbeing data ────────────────────────────────────────────────
+    const { stats, topApps, loading, error, refresh } = useDigitalWellbeing();
+
+    // ── Monitoring lifecycle refs ─────────────────────────────────────────────
     const appStateRef = useRef(AppState.currentState);
     const restartDebounceRef = useRef(null);
 
-    // ── Load real stats ───────────────────────────────────────────────────────
-
-    const loadStats = useCallback(async () => {
-        try {
-            const hasPermission = await VPNModule.isUsageAccessGranted();
-            if (!hasPermission) {
-                console.log('[Home] no usage permission — showing demo stats');
-                return;
-            }
-
-            const now = Date.now();
-            const cache = cacheRef.current.screenTimeStats;
-            let stats = null;
-
-            if (cache.data && (now - cache.timestamp) < CACHE_TTL_MS) {
-                stats = cache.data;
-                console.log('[Home] using cached screen time stats');
-            } else {
-                stats = await VPNModule.getScreenTimeStats();
-                cacheRef.current.screenTimeStats = { data: stats, timestamp: now };
-                console.log('[Home] loaded fresh screen time stats:', JSON.stringify(stats));
-            }
-
-            if (stats) {
-                // Map native stats to UI fields
-                if (typeof stats.blockedCount === 'number') setSaveEvents(stats.blockedCount);
-                if (typeof stats.totalTimeSavedMin === 'number') setTimeSavedMin(stats.totalTimeSavedMin);
-            }
-        } catch (e) {
-            console.warn('[Home] loadStats error:', e);
-        }
-    }, []);
-
     // ── Monitoring helpers ────────────────────────────────────────────────────
+    // NOTE: These are preserved verbatim from the original implementation.
 
     const startMonitoring = async (apps) => {
         try {
@@ -129,7 +157,7 @@ const Home = ({ navigation }) => {
         restartDebounceRef.current = setTimeout(restartMonitoring, 1000);
     }, [restartMonitoring]);
 
-    // ── Initialise ────────────────────────────────────────────────────────────
+    // ── Initialise (monitoring + defaults) ────────────────────────────────────
 
     useEffect(() => {
         const init = async () => {
@@ -146,11 +174,10 @@ const Home = ({ navigation }) => {
                 });
                 if (updated) SettingsModule.saveBlockedApps(Array.from(appsSet));
 
-                // Load stats and start monitoring
-                await loadStats();
+                // Start blocking overlay
                 await startMonitoring(appsSet);
 
-                // Sync widget if available (use placeholder stats until real data loads)
+                // Sync widget if available
                 if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
                     SettingsModule.updateWidgetStats(85, 45, 14, true);
                 }
@@ -183,28 +210,20 @@ const Home = ({ navigation }) => {
             stateSub?.remove();
             if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
         };
-    }, [isMonitoring, loadStats, debouncedRestart]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isMonitoring, debouncedRestart]);
 
-    // ── Render helpers ────────────────────────────────────────────────────────
+    // ── Derived display values ────────────────────────────────────────────────
 
-    /** Format minutes as "Xh Ym" or just "Ym" */
-    const formatTime = (minutes) => {
-        if (minutes >= 60) {
-            const h = Math.floor(minutes / 60);
-            const m = minutes % 60;
-            return m > 0 ? `${h}h ${m}m` : `${h}h`;
-        }
-        return `${minutes}m`;
-    };
+    const maxTopAppTime = topApps.length > 0 ? topApps[0].usageTimeMin : 0;
 
     // ── Render ────────────────────────────────────────────────────────────────
 
     return (
         <View style={[styles.container, { paddingTop: Math.max(insets.top, 16) }]}>
 
-            {/* ── Header: app name (centered) + settings icon ─────────────── */}
+            {/* ── Header: app name (centred) + settings icon ─────────────── */}
             <View style={styles.header}>
-                {/* Left spacer to balance settings icon */}
                 <View style={styles.headerSpacer} />
 
                 <Text style={styles.appName}>BREQK</Text>
@@ -223,15 +242,85 @@ const Home = ({ navigation }) => {
                 </TouchableOpacity>
             </View>
 
-            {/* ── Main stats section ──────────────────────────────────────── */}
-            <View style={styles.statsSection}>
-                <Text style={styles.saveEventsText}>
-                    {saveEvents} Save Events Today
-                </Text>
-                <Text style={styles.timeSavedText}>
-                    Total time saved: {formatTime(timeSavedMin)}
-                </Text>
-            </View>
+            {/* ── Main scrollable content ─────────────────────────────────── */}
+            <ScrollView
+                style={styles.scrollView}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+            >
+
+                {/* ── Summary stat cards ────────────────────────────────── */}
+                <View style={styles.statsRow}>
+                    <StatCard
+                        label="Screen Time"
+                        value={formatTime(stats.totalScreenTimeMin)}
+                        loading={loading}
+                    />
+                    {/* Only show unlock card if value is available (API 28+) */}
+                    {(!loading && stats.unlockCount !== null) || loading ? (
+                        <StatCard
+                            label="Unlocks"
+                            value={formatCount(stats.unlockCount)}
+                            loading={loading}
+                        />
+                    ) : null}
+                    {/* Only show notification card if value is available */}
+                    {(!loading && stats.notificationCount !== null) || loading ? (
+                        <StatCard
+                            label="Notifications"
+                            value={formatCount(stats.notificationCount)}
+                            loading={loading}
+                        />
+                    ) : null}
+                </View>
+
+                {/* ── Error state ───────────────────────────────────────── */}
+                {error && error !== 'usage_permission_missing' && (
+                    <TouchableOpacity style={styles.errorRow} onPress={refresh}>
+                        <Text style={styles.errorText}>Could not load stats. Tap to retry.</Text>
+                    </TouchableOpacity>
+                )}
+
+                {/* ── Top Apps section ──────────────────────────────────── */}
+                <View style={styles.topAppsSection}>
+                    {/* Section header: title left, total time right */}
+                    <View style={styles.topAppsSectionHeader}>
+                        <Text style={styles.sectionTitle}>Today's Top Apps</Text>
+                        {stats.totalScreenTimeMin != null && (
+                            <Text style={styles.topAppsTotalTime}>
+                                Total: {formatTime(stats.totalScreenTimeMin)}
+                            </Text>
+                        )}
+                    </View>
+
+                    {loading ? (
+                        // Loading skeleton rows
+                        [0, 1, 2].map((i) => (
+                            <View key={i} style={styles.appUsageRow}>
+                                <View style={styles.appUsageInfo}>
+                                    <View style={[styles.skeletonText, { width: '55%' }]} />
+                                    <View style={[styles.skeletonText, { width: '20%' }]} />
+                                </View>
+                                <View style={styles.usageBar}>
+                                    <View style={[styles.usageBarFill, { width: `${60 - i * 15}%` }]} />
+                                </View>
+                            </View>
+                        ))
+                    ) : topApps.length === 0 ? (
+                        <Text style={styles.emptyText}>No usage data available yet</Text>
+                    ) : (
+                        topApps.map((app) => (
+                            <AppUsageRow
+                                key={app.packageName}
+                                appName={app.appName}
+                                usageTimeMin={app.usageTimeMin}
+                                maxTimeMin={maxTopAppTime}
+                            />
+                        ))
+                    )}
+                </View>
+
+            </ScrollView>
 
             {/* ── Footer: action button + caption ────────────────────────── */}
             <View style={styles.footer}>
@@ -263,19 +352,17 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: L.bg,
-        paddingHorizontal: 28,
         paddingBottom: 32,
-        justifyContent: 'space-between',
     },
 
-    // Header row
+    // ── Header ────────────────────────────────────────────────────────────────
     header: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingTop: 8,
+        paddingHorizontal: 28,
     },
-    // Spacer matches settings button width so app name stays centered
     headerSpacer: {
         width: 36,
     },
@@ -294,32 +381,136 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
 
-    // Stats section (vertically centered in remaining space)
-    statsSection: {
+    // ── Scroll ────────────────────────────────────────────────────────────────
+    scrollView: {
         flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
     },
-    // Large stat headline — fontWeight 300 (light) to match stitch screen
-    saveEventsText: {
-        fontSize: 36,
+    scrollContent: {
+        paddingHorizontal: 28,
+        paddingTop: 20,
+        paddingBottom: 12,
+        gap: 20,
+    },
+
+    // ── Summary stat cards ────────────────────────────────────────────────────
+    statsRow: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    statCard: {
+        flex: 1,
+        backgroundColor: L.cardBg,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: L.cardBorder,
+        paddingVertical: 16,
+        paddingHorizontal: 10,
+        alignItems: 'center',
+        gap: 4,
+    },
+    statValue: {
+        fontSize: 22,
         fontWeight: '300',
         color: L.charcoal,
-        textAlign: 'center',
-        lineHeight: 44,
         letterSpacing: -0.5,
     },
-    timeSavedText: {
-        marginTop: 8,
-        fontSize: 14,
+    statLabel: {
+        fontSize: 10,
+        fontWeight: '600',
         color: L.muted,
+        textTransform: 'uppercase',
+        letterSpacing: 0.8,
         textAlign: 'center',
     },
 
-    // Footer
+    // ── Skeleton placeholders ─────────────────────────────────────────────────
+    skeletonValue: {
+        height: 24,
+        width: '60%',
+        backgroundColor: 'rgba(0,0,0,0.08)',
+        borderRadius: 6,
+    },
+    skeletonText: {
+        height: 12,
+        backgroundColor: 'rgba(0,0,0,0.07)',
+        borderRadius: 4,
+    },
+
+    // ── Error ─────────────────────────────────────────────────────────────────
+    errorRow: {
+        paddingVertical: 10,
+        alignItems: 'center',
+    },
+    errorText: {
+        fontSize: 13,
+        color: '#C62828',
+    },
+
+    // ── Top apps section ──────────────────────────────────────────────────────
+    topAppsSection: {
+        gap: 10,
+    },
+    topAppsSectionHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    topAppsTotalTime: {
+        fontSize: 12,
+        fontWeight: '500',
+        color: L.charcoal,
+        fontVariant: ['tabular-nums'],
+    },
+    sectionTitle: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: L.muted,
+        textTransform: 'uppercase',
+        letterSpacing: 1.2,
+    },
+    appUsageRow: {
+        gap: 6,
+    },
+    appUsageInfo: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+    },
+    appUsageName: {
+        fontSize: 14,
+        fontWeight: '400',
+        color: L.charcoal,
+        flex: 1,
+        marginRight: 8,
+    },
+    appUsageTime: {
+        fontSize: 13,
+        color: L.muted,
+        fontVariant: ['tabular-nums'],
+    },
+    usageBar: {
+        height: 4,
+        backgroundColor: L.barBg,
+        borderRadius: 2,
+        overflow: 'hidden',
+    },
+    usageBarFill: {
+        height: '100%',
+        backgroundColor: L.barFill,
+        borderRadius: 2,
+    },
+    emptyText: {
+        fontSize: 14,
+        color: L.muted,
+        textAlign: 'center',
+        paddingVertical: 16,
+    },
+
+    // ── Footer ────────────────────────────────────────────────────────────────
     footer: {
         gap: 10,
         alignItems: 'center',
+        paddingHorizontal: 28,
     },
     primaryButton: {
         backgroundColor: L.ctaBg,

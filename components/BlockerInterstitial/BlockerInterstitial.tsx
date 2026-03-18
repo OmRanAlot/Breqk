@@ -45,6 +45,16 @@ type Props = {
   onComplete?: () => void;
   /** Called when "Continue" is tapped (after countdown expires) */
   onForceClose?: () => void;
+  /**
+   * When true, shows the budget-exhausted variant:
+   *   - Title changes to "Scroll time is up!"
+   *   - Continue button is hidden
+   *   - A live countdown to nextScrollAtMs is shown
+   * Used only for Customize screen preview — actual lockout is the native overlay.
+   */
+  budgetExhausted?: boolean;
+  /** Epoch ms when the next scroll window opens (used when budgetExhausted=true) */
+  nextScrollAtMs?: number;
 };
 
 // ─── Ring animation helper ────────────────────────────────────────────────────
@@ -86,9 +96,15 @@ const BlockerInterstitial: React.FC<Props> = ({
   duration = 3,
   onComplete,
   onForceClose,
+  budgetExhausted = false,
+  nextScrollAtMs,
 }) => {
   const [countdown, setCountdown] = useState(duration);
   const [continueEnabled, setContinueEnabled] = useState(false);
+  // Live countdown for budget-exhausted variant (ms until next scroll window)
+  const [budgetCountdownMs, setBudgetCountdownMs] = useState(
+    nextScrollAtMs ? Math.max(0, nextScrollAtMs - Date.now()) : 0,
+  );
 
   // Two ring animation values, staggered so they feel like continuous waves
   const ring1 = useRef(new Animated.Value(0)).current;
@@ -121,10 +137,20 @@ const BlockerInterstitial: React.FC<Props> = ({
       });
     }, 1000);
 
+    // Budget countdown tick (only when budgetExhausted=true)
+    let budgetInterval: ReturnType<typeof setInterval> | undefined;
+    if (budgetExhausted && nextScrollAtMs) {
+      budgetInterval = setInterval(() => {
+        setBudgetCountdownMs(Math.max(0, nextScrollAtMs - Date.now()));
+      }, 1000);
+      console.log('[BlockerInterstitial] budget countdown started');
+    }
+
     return () => {
       loop1.stop();
       loop2.stop();
       clearInterval(interval);
+      if (budgetInterval) clearInterval(budgetInterval);
       console.log('[BlockerInterstitial] unmounted — animations and countdown stopped');
     };
   }, []); // mount-only
@@ -151,6 +177,16 @@ const BlockerInterstitial: React.FC<Props> = ({
 
   const continueLabel = continueEnabled ? 'Continue' : `Continue (Wait ${countdown}s)`;
 
+  // Budget countdown label for exhausted variant
+  const budgetCountdownLabel = (() => {
+    if (!budgetExhausted) return '';
+    if (budgetCountdownMs <= 0) return 'Ready to scroll again!';
+    const totalSec = Math.floor(budgetCountdownMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `You can scroll again in ${min}:${String(sec).padStart(2, '0')}`;
+  })();
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <View style={styles.backdrop} accessibilityViewIsModal accessibilityLabel="Blocker overlay">
@@ -172,10 +208,15 @@ const BlockerInterstitial: React.FC<Props> = ({
           ]}
         />
 
-        {/* Static message text — does not animate */}
+        {/* Title: changes based on variant */}
         <Text style={styles.questionText} accessibilityRole="text">
-          Is this intentional?
+          {budgetExhausted ? 'Scroll time is up!' : 'Is this intentional?'}
         </Text>
+
+        {/* Budget countdown (only in budget-exhausted variant) */}
+        {budgetExhausted && (
+          <Text style={styles.budgetCountdownText}>{budgetCountdownLabel}</Text>
+        )}
       </View>
 
       {/* ── Bottom: action buttons ─────────────────────────────────────────── */}
@@ -191,20 +232,22 @@ const BlockerInterstitial: React.FC<Props> = ({
           <Text style={styles.primaryButtonText}>Back to Reality</Text>
         </TouchableOpacity>
 
-        {/* Ghost: Continue with countdown */}
-        <TouchableOpacity
-          style={[styles.ghostButton, continueEnabled && styles.ghostButtonEnabled]}
-          activeOpacity={continueEnabled ? 0.75 : 1}
-          onPress={handleContinue}
-          disabled={!continueEnabled}
-          accessibilityRole="button"
-          accessibilityLabel={continueLabel}
-          accessibilityState={{ disabled: !continueEnabled }}
-        >
-          <Text style={[styles.ghostButtonText, continueEnabled && styles.ghostButtonTextEnabled]}>
-            {continueLabel}
-          </Text>
-        </TouchableOpacity>
+        {/* Ghost: Continue with countdown — hidden when budget is exhausted */}
+        {!budgetExhausted && (
+          <TouchableOpacity
+            style={[styles.ghostButton, continueEnabled && styles.ghostButtonEnabled]}
+            activeOpacity={continueEnabled ? 0.75 : 1}
+            onPress={handleContinue}
+            disabled={!continueEnabled}
+            accessibilityRole="button"
+            accessibilityLabel={continueLabel}
+            accessibilityState={{ disabled: !continueEnabled }}
+          >
+            <Text style={[styles.ghostButtonText, continueEnabled && styles.ghostButtonTextEnabled]}>
+              {continueLabel}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -255,6 +298,15 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     // Constrain width so text wraps within the ring's diameter
     maxWidth: RING_SIZE - 16,
+  },
+
+  // Budget countdown shown below the title when budgetExhausted=true
+  budgetCountdownText: {
+    marginTop: 16,
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.65)',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
 
   // ── Bottom buttons ──────────────────────────────────────────────────────────

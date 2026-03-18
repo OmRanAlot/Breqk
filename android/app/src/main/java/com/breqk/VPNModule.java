@@ -618,6 +618,102 @@ public class VPNModule extends ReactContextBaseJavaModule {
      *
      * @param threshold Number of scrolls within Reels/Shorts before the intervention popup fires (1–20).
      */
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Digital Wellbeing bridge methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * getDigitalWellbeingStats — Returns comprehensive today stats for the Home screen.
+     *
+     * Resolves with a map containing:
+     *   totalScreenTimeMin  (double) — total foreground time today in minutes
+     *   unlockCount         (int)    — device unlocks today; -1 if API < 28
+     *   notificationCount   (int)    — notifications seen today; -1 if unavailable
+     *   startTime           (double) — start of today in epoch ms
+     *   endTime             (double) — now in epoch ms
+     *
+     * Logging: [WELLBEING]
+     */
+    @ReactMethod
+    public void getDigitalWellbeingStats(Promise promise) {
+        Log.d(TAG, "[WELLBEING] getDigitalWellbeingStats called");
+        try {
+            Map<String, Object> rawStats = screenTimeTracker.getComprehensiveStats();
+
+            WritableMap result = Arguments.createMap();
+            result.putDouble("totalScreenTimeMin",
+                    rawStats.containsKey("totalScreenTimeMin")
+                            ? ((Number) rawStats.get("totalScreenTimeMin")).doubleValue() : 0.0);
+            result.putInt("unlockCount",
+                    rawStats.containsKey("unlockCount")
+                            ? ((Number) rawStats.get("unlockCount")).intValue() : -1);
+            result.putInt("notificationCount",
+                    rawStats.containsKey("notificationCount")
+                            ? ((Number) rawStats.get("notificationCount")).intValue() : -1);
+            result.putDouble("startTime",
+                    rawStats.containsKey("startTime")
+                            ? ((Number) rawStats.get("startTime")).doubleValue() : 0.0);
+            result.putDouble("endTime",
+                    rawStats.containsKey("endTime")
+                            ? ((Number) rawStats.get("endTime")).doubleValue() : 0.0);
+
+            Log.d(TAG, "[WELLBEING] Resolved: totalScreenTimeMin=" +
+                    result.getDouble("totalScreenTimeMin") +
+                    " unlocks=" + result.getInt("unlockCount") +
+                    " notifications=" + result.getInt("notificationCount"));
+            promise.resolve(result);
+        } catch (Exception e) {
+            Log.e(TAG, "[WELLBEING] Error: " + e.getMessage(), e);
+            promise.reject("WELLBEING_ERROR", "Failed to get digital wellbeing stats: " + e.getMessage());
+        }
+    }
+
+    /**
+     * getTopAppsToday — Returns top N apps by foreground usage today for the Home screen.
+     *
+     * Resolves with an array where each element is a map containing:
+     *   packageName   (String) — e.g. "com.instagram.android"
+     *   appName       (String) — human-readable label
+     *   usageTimeMin  (double) — foreground minutes today
+     *
+     * @param limit Maximum number of apps to return (recommended: 5)
+     *
+     * Logging: [TOP_APPS_TODAY]
+     */
+    @ReactMethod
+    public void getTopAppsToday(int limit, Promise promise) {
+        Log.d(TAG, "[TOP_APPS_TODAY] getTopAppsToday called, limit=" + limit);
+        try {
+            // Build today's time range (midnight → now)
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            long endTime = cal.getTimeInMillis();
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0);
+            cal.set(java.util.Calendar.MINUTE, 0);
+            cal.set(java.util.Calendar.SECOND, 0);
+            cal.set(java.util.Calendar.MILLISECOND, 0);
+            long startTime = cal.getTimeInMillis();
+
+            List<Map<String, Object>> perAppStats =
+                    screenTimeTracker.getPerAppStats(startTime, endTime, limit);
+
+            WritableArray appArray = Arguments.createArray();
+            for (Map<String, Object> appStats : perAppStats) {
+                WritableMap appMap = Arguments.createMap();
+                appMap.putString("packageName", (String) appStats.get("packageName"));
+                appMap.putString("appName", (String) appStats.get("appName"));
+                appMap.putDouble("usageTimeMin",
+                        ((Number) appStats.get("usageTimeMin")).doubleValue());
+                appArray.pushMap(appMap);
+            }
+
+            Log.d(TAG, "[TOP_APPS_TODAY] Returning " + appArray.size() + " apps");
+            promise.resolve(appArray);
+        } catch (Exception e) {
+            Log.e(TAG, "[TOP_APPS_TODAY] Error: " + e.getMessage(), e);
+            promise.reject("TOP_APPS_ERROR", "Failed to get top apps: " + e.getMessage());
+        }
+    }
+
     @ReactMethod
     public void setScrollThreshold(int threshold, Promise promise) {
         try {
@@ -653,6 +749,97 @@ public class VPNModule extends ReactContextBaseJavaModule {
         } catch (Exception e) {
             Log.e(TAG, "[SET_POPUP_DELAY] Failed to set popup delay", e);
             promise.reject("SET_POPUP_DELAY_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * setScrollBudget — Called from React Native when user changes scroll budget settings.
+     *
+     * Saves to SharedPreferences so the budget survives restarts, then sends
+     * SET_SCROLL_BUDGET intent to MyVpnService to update its running monitor instance.
+     *
+     * @param allowanceMinutes Minutes of scroll allowed per window (1–30)
+     * @param windowMinutes    Window duration in minutes (15–120)
+     */
+    @ReactMethod
+    public void setScrollBudget(int allowanceMinutes, int windowMinutes, Promise promise) {
+        try {
+            Log.d(TAG, "[setScrollBudget] allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
+
+            // Persist so AppUsageMonitor.loadScrollBudgetFromPrefs() picks up on restart
+            SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+            prefs.edit()
+                    .putInt("scroll_allowance_minutes", Math.max(1, allowanceMinutes))
+                    .putInt("scroll_window_minutes", Math.max(15, windowMinutes))
+                    .apply();
+
+            // Notify MyVpnService's running monitor instance via intent
+            Intent serviceIntent = new Intent(reactContext, MyVpnService.class);
+            serviceIntent.setAction("SET_SCROLL_BUDGET");
+            serviceIntent.putExtra("allowanceMinutes", allowanceMinutes);
+            serviceIntent.putExtra("windowMinutes", windowMinutes);
+            reactContext.startService(serviceIntent);
+
+            Log.d(TAG, "[setScrollBudget] Scroll budget updated and intent sent to service");
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[setScrollBudget] Failed", e);
+            promise.reject("SET_SCROLL_BUDGET_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * getScrollBudgetStatus — Called from React Native (Home screen) to show live budget status.
+     *
+     * Reads state from SharedPreferences, which MyVpnService's AppUsageMonitor persists
+     * periodically and on state changes. Returns:
+     *   { allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs, remainingMs }
+     */
+    @ReactMethod
+    public void getScrollBudgetStatus(Promise promise) {
+        try {
+            SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+            int allowanceMinutes = prefs.getInt("scroll_allowance_minutes", 5);
+            int windowMinutes = prefs.getInt("scroll_window_minutes", 60);
+            long scrollTimeUsedMs = prefs.getLong("scroll_time_used_ms", 0);
+            long windowStartTime = prefs.getLong("scroll_window_start_time", 0);
+            long budgetExhaustedAt = prefs.getLong("scroll_budget_exhausted_at", 0);
+
+            long allowanceMs = allowanceMinutes * 60 * 1000L;
+            long now = System.currentTimeMillis();
+            boolean canScroll = (budgetExhaustedAt == 0);
+            long nextScrollAtMs = 0;
+            long remainingMs = 0;
+
+            if (!canScroll && windowStartTime > 0) {
+                long windowMs = windowMinutes * 60 * 1000L;
+                nextScrollAtMs = windowStartTime + windowMs;
+                // Check if the window has already expired (service may not have reset yet)
+                if (now >= nextScrollAtMs) {
+                    canScroll = true;
+                    remainingMs = allowanceMs;
+                    nextScrollAtMs = 0;
+                }
+            }
+
+            if (canScroll) {
+                remainingMs = Math.max(0, allowanceMs - scrollTimeUsedMs);
+            }
+
+            WritableMap status = Arguments.createMap();
+            status.putInt("allowanceMinutes", allowanceMinutes);
+            status.putInt("windowMinutes", windowMinutes);
+            status.putDouble("usedMs", scrollTimeUsedMs);
+            status.putBoolean("canScroll", canScroll);
+            status.putDouble("nextScrollAtMs", nextScrollAtMs);
+            status.putDouble("remainingMs", remainingMs);
+
+            Log.d(TAG, "[getScrollBudgetStatus] canScroll=" + canScroll +
+                    " remainingMs=" + remainingMs + " usedMs=" + scrollTimeUsedMs);
+            promise.resolve(status);
+        } catch (Exception e) {
+            Log.e(TAG, "[getScrollBudgetStatus] Failed", e);
+            promise.reject("GET_SCROLL_BUDGET_STATUS_ERROR", e.getMessage());
         }
     }
 

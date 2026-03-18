@@ -4,18 +4,23 @@ package com.breqk;
  * ReelsInterventionService
  * -------------------------
  * AccessibilityService that monitors Instagram Reels and YouTube Shorts scroll behavior.
- * When the user scrolls beyond a configurable threshold, it shows an intervention popup
- * that asks "Still here intentionally?" with two options:
- *   - "Lock In"      → exits to Android home screen (GLOBAL_ACTION_HOME), resets counter to 0
- *   - "Take a Break" → deep-links to instagram://feed (home feed), resets counter to 0
+ * When the scroll budget time is exhausted (tracked by AppUsageMonitor via SharedPreferences),
+ * it shows a "Time is up!" intervention popup with a single "Lock In" button that exits
+ * the user to the Android home screen.
+ *
+ * The popup does NOT fire based on scroll count — it only fires when the scroll budget
+ * (configured in Customize → Scroll Budget) is exhausted. Setting the budget allowance to
+ * 0 minutes causes the popup to fire immediately on every Reels/Shorts scroll.
  *
  * Filter logcat with: adb logcat -s REELS_WATCH
- * For a one-line decision trace per scroll: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
+ * For budget-related decisions: adb logcat -s REELS_WATCH | grep BUDGET
+ * For scroll decisions: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
  *
  * Architecture:
  *   AccessibilityService (this) → onAccessibilityEvent → handleReelsScrollEvent
  *     → isFullScreenReelsViewPager (visibility + bounds check — core false-positive fix)
  *     → isReelsLayout / isShortsLayout (view ID search + full-screen verification)
+ *     → checks SharedPreferences for scroll budget exhaustion
  *     → triggerIntervention → WindowManager overlay (overlay_reels_intervention.xml)
  *
  * IMPORTANT: The popup ONLY fires when the user is in the full-screen Reels viewer
@@ -34,9 +39,10 @@ package com.breqk;
  *   2. Slow path: full accessibility tree traversal for Reels view IDs
  *   Both paths gate through isFullScreenReelsViewPager() before confirming.
  *
- * Scroll threshold is persisted in SharedPreferences ("breqk_prefs", key "scroll_threshold")
- * and can be updated from React Native via SettingsModule.saveScrollThreshold() or
- * VPNModule.setScrollThreshold() without restarting the service.
+ * Scroll budget status is read from SharedPreferences ("breqk_prefs"):
+ *   - scroll_budget_exhausted_at (long): >0 means budget is exhausted
+ *   - scroll_window_start_time (long): when the current budget window started
+ *   - scroll_window_minutes (int): duration of the budget window
  *
  * Config: res/xml/reels_intervention_service_config.xml
  * Registered in: AndroidManifest.xml
@@ -66,28 +72,19 @@ import java.util.List;
 public class ReelsInterventionService extends AccessibilityService {
 
     // Filter logcat with: adb logcat -s REELS_WATCH
-    // One-line decision trace: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
+    // Budget decisions: adb logcat -s REELS_WATCH | grep BUDGET
+    // Scroll decisions: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
     private static final String TAG = "REELS_WATCH";
 
     // Target package names
     private static final String PKG_INSTAGRAM = "com.instagram.android";
     private static final String PKG_YOUTUBE   = "com.google.android.youtube";
-    private Runnable autoDismissRunnable = null;
 
     /**
-     * Default scroll count before showing the intervention popup.
-     * Overridable via SharedPreferences key "scroll_threshold" (range 1-20).
-     *
-     * To tune during testing: change this constant and rebuild, or write to
-     * SharedPreferences via SettingsModule.saveScrollThreshold() from React Native.
-     */
-    private static final int DEFAULT_SCROLL_THRESHOLD = 4;
-
-    /**
-     * Minimum milliseconds between two counted scroll events.
+     * Minimum milliseconds between two processed scroll events.
      *
      * A single physical Reel swipe fires 3–4 TYPE_VIEW_SCROLLED events within ~100–200 ms.
-     * Any event that arrives within this window after the last counted scroll is treated as
+     * Any event that arrives within this window after the last processed scroll is treated as
      * a duplicate from the same physical swipe and is ignored.
      *
      * 600 ms is chosen because real inter-swipe time is always >600 ms in practice,
@@ -116,24 +113,21 @@ public class ReelsInterventionService extends AccessibilityService {
 
     // --- Scroll tracking state ---
 
-    /** Running scroll count within the current Reels/Shorts session. */
-    private int reelsScrollCount = 0;
-
     /**
-     * Timestamp of the last scroll event that was counted toward the threshold.
+     * Timestamp of the last scroll event that was processed (after debounce).
      * Used to debounce duplicate events from a single physical swipe.
      */
     private long lastScrollTimestamp = 0;
 
     /**
      * True when user was in a Reels/Shorts layout on the last event.
-     * Lets us detect when they navigate away and reset the counter.
+     * Lets us detect when they navigate away and reset state.
      */
     private boolean wasInReelsLayout = false;
 
     /**
      * Guard against stacking multiple overlays if scroll events fire
-     * rapidly around the threshold.
+     * rapidly around the budget exhaustion boundary.
      */
     private boolean interventionShowing = false;
 
@@ -142,6 +136,25 @@ public class ReelsInterventionService extends AccessibilityService {
 
     /** Handler on main looper — WindowManager calls must be on the UI thread. */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // --- Reels state persistence (shared with AppUsageMonitor) ---
+
+    /** SharedPreferences key: whether user is currently viewing Reels/Shorts */
+    private static final String PREF_IS_IN_REELS = "is_in_reels";
+    /** SharedPreferences key: timestamp of last Reels state update (for staleness check) */
+    private static final String PREF_IS_IN_REELS_TIMESTAMP = "is_in_reels_timestamp";
+    /** SharedPreferences key: which app is in Reels (package name) */
+    private static final String PREF_IS_IN_REELS_PACKAGE = "is_in_reels_package";
+
+    /**
+     * Heartbeat interval: how often we refresh the Reels state timestamp while
+     * the user stays in Reels without scrolling. Must be less than the staleness
+     * threshold in AppUsageMonitor (5s) to avoid false expiration.
+     */
+    private static final long REELS_HEARTBEAT_INTERVAL_MS = 2000;
+
+    /** Runnable that periodically refreshes the Reels state timestamp. */
+    private Runnable reelsHeartbeatRunnable = null;
 
     // =========================================================================
     // Service lifecycle
@@ -152,7 +165,7 @@ public class ReelsInterventionService extends AccessibilityService {
         AccessibilityServiceInfo info = getServiceInfo();
         if (info == null) info = new AccessibilityServiceInfo();
 
-        // TYPE_VIEW_SCROLLED: needed to count scrolls within Reels/Shorts
+        // TYPE_VIEW_SCROLLED: needed to detect scrolls within Reels/Shorts
         // TYPE_WINDOW_STATE_CHANGED: needed to detect layout changes (entering/leaving Reels)
         // TYPE_WINDOW_CONTENT_CHANGED is intentionally excluded — too noisy, causes false positives
         // on home feed embeds; layout re-check only happens on STATE_CHANGED (tab navigation)
@@ -167,8 +180,7 @@ public class ReelsInterventionService extends AccessibilityService {
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching: " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
-        Log.d(TAG, "  scroll threshold (default): " + DEFAULT_SCROLL_THRESHOLD
-                + " (override via breqk_prefs/scroll_threshold)");
+        Log.d(TAG, "  trigger: scroll budget exhaustion (from SharedPreferences)");
         Log.d(TAG, "  full-screen thresholds: widthRatio>=" + MIN_WIDTH_RATIO
                 + " heightRatio>=" + MIN_HEIGHT_RATIO + " topOffset<=" + MAX_TOP_OFFSET_PX + "px");
         Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded)");
@@ -192,28 +204,29 @@ public class ReelsInterventionService extends AccessibilityService {
     public void onInterrupt() {
         // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
-        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed");
+        // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
+        persistReelsState(false, "");
+        stopReelsHeartbeat();
+        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed, reels state cleared");
     }
 
     // =========================================================================
-    // Scroll detection
+    // Scroll detection + budget check
     // =========================================================================
 
     /**
      * Core routing method. Determines if the user is in a Reels/Shorts layout,
-     * maintains the scroll counter, and triggers the intervention when needed.
+     * checks whether the scroll budget is exhausted, and triggers the intervention
+     * when the budget is used up.
      *
-     * IMPORTANT: Scroll events are only counted when the user is actively watching
+     * IMPORTANT: Scroll events are only processed when the user is actively watching
      * Reels (Instagram) or Shorts (YouTube). "Reels" means a full-screen vertical
      * video with like/comment/share buttons on the right and account info, music,
      * and caption at the bottom. Scrolling anywhere else in Instagram (home feed,
-     * Explore, DMs, profiles, stories) does NOT count.
+     * Explore, DMs, profiles, stories) does NOT trigger the popup.
      *
-     * Detection is re-verified on EVERY scroll event to prevent false positives
-     * from Instagram's back-stack caching. Two strategies are used:
-     *   1. Fast path: check if the scroll event source itself is the Reels ViewPager,
-     *      then verify it is truly full-screen via isFullScreenReelsViewPager()
-     *   2. Slow path: traverse the accessibility tree from root, then verify full-screen
+     * The popup fires based on scroll budget exhaustion (time-based), NOT scroll count.
+     * Budget state is read from SharedPreferences, written by AppUsageMonitor.
      *
      * One SCROLL_DECISION log line is emitted per scroll event for easy debugging:
      *   adb logcat -s REELS_WATCH | grep SCROLL_DECISION
@@ -238,7 +251,7 @@ public class ReelsInterventionService extends AccessibilityService {
             }
             wasInReelsLayout = inReelsLayout;
             Log.d(TAG, "STATE_CHANGED: wasInReelsLayout=" + wasInReelsLayout + " pkg=" + packageName);
-            return; // don't count navigation events as scrolls
+            return; // don't process navigation events as scrolls
         }
 
         // TYPE_VIEW_SCROLLED: re-verify Reels layout on EVERY scroll to prevent false positives
@@ -286,7 +299,7 @@ public class ReelsInterventionService extends AccessibilityService {
         // Update cached layout state and apply decision
         if (!confirmedInReels) {
             if (wasInReelsLayout) {
-                Log.d(TAG, "Scroll outside Reels/Shorts — resetting scroll count");
+                Log.d(TAG, "Scroll outside Reels/Shorts — resetting state");
                 resetReelsState();
             }
             // Emit SCROLL_DECISION line even for ignored scrolls (useful for debugging false positives)
@@ -297,6 +310,12 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
         }
 
+        // Persist Reels state for AppUsageMonitor to gate scroll budget accumulation
+        if (!wasInReelsLayout) {
+            // Just entered Reels — persist state and start heartbeat
+            persistReelsState(true, packageName);
+            startReelsHeartbeat(packageName);
+        }
         wasInReelsLayout = true;
 
         // --- Debounce: ignore rapid-fire duplicate events from the same physical swipe ---
@@ -306,24 +325,82 @@ public class ReelsInterventionService extends AccessibilityService {
             Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
                     + " fastPath=" + usedFastPath
                     + " confirmedInReels=true"
-                    + " DEBOUNCED (elapsed=" + elapsed + "ms < " + SCROLL_DEBOUNCE_MS + "ms)"
-                    + " count=" + reelsScrollCount + "/" + getScrollThreshold());
+                    + " DEBOUNCED (elapsed=" + elapsed + "ms < " + SCROLL_DEBOUNCE_MS + "ms)");
             return;
         }
         lastScrollTimestamp = now;
-        reelsScrollCount++;
+
+        // --- Check scroll budget exhaustion from SharedPreferences ---
+        // AppUsageMonitor persists budget state; we read it here to decide whether to intervene.
+        boolean budgetExhausted = isScrollBudgetExhausted(now);
 
         Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
                 + " fastPath=" + usedFastPath
                 + " confirmedInReels=true"
-                + " count=" + reelsScrollCount + "/" + getScrollThreshold()
+                + " budgetExhausted=" + budgetExhausted
                 + " interventionShowing=" + interventionShowing);
 
-        if (reelsScrollCount >= getScrollThreshold() && !interventionShowing) {
+        if (budgetExhausted && !interventionShowing) {
             interventionShowing = true;
-            Log.i(TAG, "Scroll threshold reached — triggering intervention for " + packageName);
+            Log.i(TAG, "[BUDGET] Scroll budget exhausted — triggering intervention for " + packageName);
             triggerIntervention(packageName);
+        } else if (!budgetExhausted) {
+            Log.d(TAG, "[BUDGET] Budget OK — allowing scroll in " + packageName);
         }
+    }
+
+    // =========================================================================
+    // Scroll budget check (reads from SharedPreferences)
+    // =========================================================================
+
+    /**
+     * Reads scroll budget state from SharedPreferences to determine if the budget
+     * is exhausted. The budget is tracked and persisted by AppUsageMonitor; this
+     * service only reads the persisted state.
+     *
+     * Budget is considered exhausted when:
+     *   1. scroll_budget_exhausted_at > 0 (AppUsageMonitor flagged it)
+     *   2. AND the current window hasn't expired yet (window hasn't rolled over)
+     *
+     * If the window has expired (now - windowStart >= windowDuration), the budget
+     * is considered available again even if exhausted_at > 0, because AppUsageMonitor
+     * will reset it on its next tick.
+     *
+     * SharedPreferences keys read:
+     *   - scroll_budget_exhausted_at (long): timestamp when budget was exhausted, 0 = not exhausted
+     *   - scroll_window_start_time (long): when the current budget window started
+     *   - scroll_window_minutes (int): window duration in minutes
+     *
+     * @param now Current system time in milliseconds
+     * @return true if scroll budget is exhausted and window hasn't expired
+     */
+    private boolean isScrollBudgetExhausted(long now) {
+        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        long exhaustedAt = prefs.getLong("scroll_budget_exhausted_at", 0);
+
+        // If budget hasn't been flagged as exhausted, it's available
+        if (exhaustedAt == 0) {
+            Log.d(TAG, "[BUDGET] exhaustedAt=0 → budget available");
+            return false;
+        }
+
+        // Budget was flagged as exhausted — check if the window has rolled over
+        long windowStart = prefs.getLong("scroll_window_start_time", 0);
+        int windowMinutes = prefs.getInt("scroll_window_minutes", 60);
+        long windowMs = windowMinutes * 60 * 1000L;
+
+        if (windowStart > 0 && (now - windowStart) >= windowMs) {
+            // Window has expired — AppUsageMonitor will reset on its next tick
+            Log.d(TAG, "[BUDGET] Window expired (windowStart=" + windowStart
+                    + " windowMin=" + windowMinutes
+                    + " elapsed=" + (now - windowStart) + "ms) → budget available (pending reset)");
+            return false;
+        }
+
+        Log.d(TAG, "[BUDGET] Budget exhausted (exhaustedAt=" + exhaustedAt
+                + " windowStart=" + windowStart
+                + " windowMin=" + windowMinutes + ")");
+        return true;
     }
 
     // =========================================================================
@@ -337,7 +414,7 @@ public class ReelsInterventionService extends AccessibilityService {
      * This is the PRIMARY guard against false positives. Instagram keeps
      * clips_viewer_view_pager in memory on its back stack even when the user navigates
      * to the home feed, DMs, stories, profiles, or Explore. Without this check, any
-     * scroll in those screens would be wrongly counted.
+     * scroll in those screens would be wrongly processed.
      *
      * Three signals must ALL pass:
      *
@@ -551,24 +628,18 @@ public class ReelsInterventionService extends AccessibilityService {
         return false;
     }
 
-    /** Clears all scroll tracking state. Called on layout exit or intervention resolution. */
+    /**
+     * Clears all scroll tracking state. Called on layout exit or intervention resolution.
+     * Note: reelsScrollCount has been removed — budget is time-based, not count-based.
+     */
     private void resetReelsState() {
-        reelsScrollCount = 0;
         wasInReelsLayout = false;
         interventionShowing = false;
         lastScrollTimestamp = 0;
-        Log.d(TAG, "resetReelsState: cleared (count=0, wasInReels=false, interventionShowing=false, lastScrollTimestamp=0)");
-    }
-
-    /**
-     * Reads the scroll threshold from SharedPreferences.
-     * Default: DEFAULT_SCROLL_THRESHOLD. Clamped to 1-20.
-     * Key: "scroll_threshold" in "breqk_prefs".
-     */
-    private int getScrollThreshold() {
-        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        int threshold = prefs.getInt("scroll_threshold", DEFAULT_SCROLL_THRESHOLD);
-        return Math.max(1, Math.min(20, threshold));
+        // Clear Reels state in SharedPreferences so AppUsageMonitor stops accumulating budget
+        persistReelsState(false, "");
+        stopReelsHeartbeat();
+        Log.d(TAG, "resetReelsState: cleared (wasInReels=false, interventionShowing=false, lastScrollTimestamp=0, reelsState=false)");
     }
 
     // =========================================================================
@@ -576,30 +647,26 @@ public class ReelsInterventionService extends AccessibilityService {
     // =========================================================================
 
     /**
-     * Shows the intervention popup card CENTERED on the screen via WindowManager.
+     * Shows the "Time is up!" intervention popup via WindowManager.
      *
      * Uses TYPE_ACCESSIBILITY_OVERLAY (no SYSTEM_ALERT_WINDOW needed; AccessibilityServices
      * get this permission automatically).
      *
      * Layout structure: FrameLayout (full screen, transparent) wraps the card LinearLayout,
-     * which is centered via layout_gravity="center". This is the correct pattern for
-     * WindowManager overlays — margins on the root view are not respected by WindowManager,
-     * so the inner card carries the horizontal margins (24dp each side).
+     * which is bottom-aligned. This is the correct pattern for WindowManager overlays.
+     *
+     * The overlay shows:
+     *   - Title: "Time is up!"
+     *   - Single button: "Lock In" → fires GLOBAL_ACTION_HOME (exits to Android home screen)
+     *   - The second button (btn_take_break) is hidden (View.GONE)
      *
      * FLAG_NOT_TOUCH_MODAL + FLAG_WATCH_OUTSIDE_TOUCH: overlay captures its own touches
      * while passing outside-overlay touches through to the app beneath.
      * FLAG_NOT_FOCUSABLE is intentionally absent — without focus the buttons are untappable.
      *
-     * Button behaviors:
-     *   "Lock In"      → dismiss, fire GLOBAL_ACTION_HOME (exits to Android home screen), reset counter
-     *   "Take a Break" → dismiss, deep-link instagram://feed (fallback: GLOBAL_ACTION_BACK), reset counter
-     *   [ignored 8s]   → auto-dismiss, reset state, fire GLOBAL_ACTION_BACK
-     *
-     * @param pkg PKG_INSTAGRAM or PKG_YOUTUBE — used for platform-specific subtitle text
+     * @param pkg PKG_INSTAGRAM or PKG_YOUTUBE — used for logging context
      */
     private void triggerIntervention(final String pkg) {
-        final int scrollCountSnapshot = reelsScrollCount;
-
         mainHandler.post(() -> {
             WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
             if (windowManager == null) {
@@ -610,7 +677,6 @@ public class ReelsInterventionService extends AccessibilityService {
 
             // MATCH_PARENT so the FrameLayout fills the screen.
             // Gravity.BOTTOM: the inner bottom sheet LinearLayout rises from the bottom edge.
-            // Design matches stitch_screens/3_reels_intervention.jpg.
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -625,65 +691,29 @@ public class ReelsInterventionService extends AccessibilityService {
             interventionView = LayoutInflater.from(this)
                     .inflate(R.layout.overlay_reels_intervention, null);
 
-            // Update headline to be platform-specific ("Reels Detected" / "Shorts Detected")
+            // --- Title: "Time is up!" ---
             TextView titleView = interventionView.findViewById(R.id.intervention_title);
-            String contentType = pkg.equals(PKG_YOUTUBE) ? "Shorts" : "Reels";
-            titleView.setText(contentType + " Detected");
-            Log.d(TAG, "triggerIntervention: title set to '" + contentType + " Detected'");
+            titleView.setText("Time is up!");
+            Log.d(TAG, "triggerIntervention: title set to 'Time is up!'");
 
-            /*
-             * btn_lock_in → "Return to Feed"
-             * --------------------------------
-             * NEW behavior (swapped from old "Take a Break"):
-             *   Deep-link to the app's home feed (instagram://feed or youtube://).
-             *   Lets the user continue using the app in a less addictive section.
-             */
+            // --- "Lock In" button: exit to Android home screen ---
+            // This is the ONLY visible button — forces user to leave the app
             Button btnLockIn = interventionView.findViewById(R.id.btn_lock_in);
-            btnLockIn.setText("Return to Feed");
+            btnLockIn.setText("Lock In");
             btnLockIn.setOnClickListener(v -> {
-                Log.i(TAG, "return_to_feed tapped for " + pkg + " — navigating to home feed");
-                dismissIntervention();
-                resetReelsState();
-
-                // Deep-link to the app's home feed
-                String feedUri = pkg.equals(PKG_YOUTUBE) ? "youtube://" : "instagram://feed";
-                android.content.Intent feedIntent = new android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse(feedUri));
-                feedIntent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                try {
-                    startActivity(feedIntent);
-                    Log.d(TAG, "return_to_feed: launched deep link " + feedUri);
-                } catch (Exception e) {
-                    Log.w(TAG, "return_to_feed: deep link failed, firing GLOBAL_ACTION_BACK", e);
-                    performGlobalAction(GLOBAL_ACTION_BACK);
-                }
-            });
-
-            /*
-             * btn_take_break → "Force Close <AppName>"
-             * ------------------------------------------
-             * NEW behavior (swapped from old "Lock In"):
-             *   Fire GLOBAL_ACTION_HOME to exit the app entirely to the Android home screen.
-             *   Button text is set dynamically to name the specific app being closed.
-             */
-            Button btnTakeBreak = interventionView.findViewById(R.id.btn_take_break);
-            String appDisplayName = pkg.equals(PKG_YOUTUBE) ? "YouTube" : "Instagram";
-            btnTakeBreak.setText("Force Close " + appDisplayName);
-            btnTakeBreak.setOnClickListener(v -> {
-                Log.i(TAG, "force_close tapped for " + pkg + " — going to Android home screen");
+                Log.i(TAG, "lock_in tapped for " + pkg + " — going to Android home screen");
                 dismissIntervention();
                 resetReelsState();
                 performGlobalAction(GLOBAL_ACTION_HOME);
             });
 
-            // No auto-dismiss — user must make an explicit choice (cleaner UX)
+            // --- Hide the second button entirely ---
+            // Only one action available: Lock In (go home)
+            Button btnTakeBreak = interventionView.findViewById(R.id.btn_take_break);
+            btnTakeBreak.setVisibility(View.GONE);
 
             windowManager.addView(interventionView, params);
-            Log.i(TAG, "overlay shown (bottom-sheet) for " + pkg
-                    + " contentType=" + contentType
-                    + " count=" + scrollCountSnapshot
-                    + " threshold=" + getScrollThreshold());
+            Log.i(TAG, "[BUDGET] Overlay shown (Time is up!) for " + pkg);
         });
     }
 
@@ -703,10 +733,68 @@ public class ReelsInterventionService extends AccessibilityService {
         }
         interventionView = null;
         interventionShowing = false;
+    }
 
-        if (autoDismissRunnable != null) {
-            mainHandler.removeCallbacks(autoDismissRunnable);
-            autoDismissRunnable = null;
+    // =========================================================================
+    // Reels state persistence (shared with AppUsageMonitor via SharedPreferences)
+    // =========================================================================
+
+    /**
+     * Writes the current Reels/Shorts viewing state to SharedPreferences so that
+     * AppUsageMonitor can gate scroll budget accumulation to only Reels time.
+     *
+     * Three keys are written atomically:
+     *   - is_in_reels (boolean): whether the user is currently in Reels/Shorts
+     *   - is_in_reels_timestamp (long): System.currentTimeMillis() of this write
+     *   - is_in_reels_package (String): which app (e.g. com.instagram.android)
+     *
+     * AppUsageMonitor reads these keys and treats the flag as stale if the timestamp
+     * is older than 5 seconds, so the heartbeat must keep it fresh.
+     *
+     * @param inReels true when entering Reels, false when leaving
+     * @param packageName the app package currently in Reels (ignored when inReels=false)
+     */
+    private void persistReelsState(boolean inReels, String packageName) {
+        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        prefs.edit()
+                .putBoolean(PREF_IS_IN_REELS, inReels)
+                .putLong(PREF_IS_IN_REELS_TIMESTAMP, System.currentTimeMillis())
+                .putString(PREF_IS_IN_REELS_PACKAGE, inReels ? packageName : "")
+                .apply();
+        Log.d(TAG, "[REELS_STATE] persistReelsState: inReels=" + inReels
+                + " pkg=" + packageName
+                + " timestamp=" + System.currentTimeMillis());
+    }
+
+    /**
+     * Starts a repeating heartbeat that refreshes the Reels state timestamp every 2s.
+     * This prevents AppUsageMonitor from treating the flag as stale when the user
+     * is sitting on one Reel without scrolling (no scroll events = no timestamp updates).
+     *
+     * @param packageName the app currently in Reels
+     */
+    private void startReelsHeartbeat(String packageName) {
+        stopReelsHeartbeat(); // cancel any existing heartbeat first
+        reelsHeartbeatRunnable = new Runnable() {
+            @Override
+            public void run() {
+                persistReelsState(true, packageName);
+                Log.d(TAG, "[REELS_STATE] Heartbeat: refreshed timestamp for " + packageName);
+                mainHandler.postDelayed(this, REELS_HEARTBEAT_INTERVAL_MS);
+            }
+        };
+        mainHandler.postDelayed(reelsHeartbeatRunnable, REELS_HEARTBEAT_INTERVAL_MS);
+        Log.d(TAG, "[REELS_STATE] Heartbeat started (interval=" + REELS_HEARTBEAT_INTERVAL_MS + "ms) for " + packageName);
+    }
+
+    /**
+     * Stops the Reels state heartbeat. Safe to call when no heartbeat is active.
+     */
+    private void stopReelsHeartbeat() {
+        if (reelsHeartbeatRunnable != null) {
+            mainHandler.removeCallbacks(reelsHeartbeatRunnable);
+            reelsHeartbeatRunnable = null;
+            Log.d(TAG, "[REELS_STATE] Heartbeat stopped");
         }
     }
 

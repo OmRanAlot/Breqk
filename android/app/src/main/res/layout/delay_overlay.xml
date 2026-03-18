@@ -79,6 +79,22 @@
         android:paddingBottom="64dp">
 
         <!--
+            countdownText: shown ONLY in budget-exhausted overlay variant.
+            Hidden by default (visibility="gone"); showBudgetExhaustedOverlay() sets it to VISIBLE
+            and startBudgetCountdown() updates it every second with "You can scroll again in MM:SS".
+        -->
+        <TextView
+            android:id="@+id/countdownText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="You can scroll again in 00:00"
+            android:textSize="16sp"
+            android:textColor="#CCFFFFFF"
+            android:textAlignment="center"
+            android:paddingBottom="24dp"
+            android:visibility="gone" />
+
+        <!--
             backButton: "Back to Reality" (primary)
             White pill, black text. Dismisses overlay, sends user to Android home screen.
         -->

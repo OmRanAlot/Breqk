@@ -91,6 +91,9 @@ public class MyVpnService extends VpnService {
          *  - Owns lifecycle of AppUsageMonitor and blocked apps persistence.
          *  - Listener hooks are available for future event routing.
          */
+        // Load scroll budget configuration from SharedPreferences and apply to monitor
+        loadScrollBudgetIntoMonitor(monitor);
+
         // Set up listener as before
         monitor.setListener(new AppUsageMonitor.AppDetectionListener() {
             @Override
@@ -153,6 +156,14 @@ public class MyVpnService extends VpnService {
                         monitor.setPopupDelayMinutes(minutes);
                     }
                     break;
+                case "SET_SCROLL_BUDGET":
+                    int allowanceMinutes = intent.getIntExtra("allowanceMinutes", 5);
+                    int windowMinutes = intent.getIntExtra("windowMinutes", 60);
+                    Log.d(TAG, "[CMD] SET_SCROLL_BUDGET received: allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
+                    if (monitor != null) {
+                        monitor.setScrollBudget(allowanceMinutes, windowMinutes);
+                    }
+                    break;
                 default:
                     Log.w(TAG, "[CMD] Unknown action: " + action);
             }
@@ -173,6 +184,7 @@ public class MyVpnService extends VpnService {
                 monitor.setBlockedApps(savedBlockedApps);
             }
         }
+        loadScrollBudgetIntoMonitor(monitor);
         monitor.startMonitoring();
         Log.d(TAG, "Monitoring started with " + (monitor.getBlockedApps() != null ? monitor.getBlockedApps().size() : 0) + " blocked apps");
     }
@@ -323,6 +335,22 @@ public class MyVpnService extends VpnService {
         if (monitor != null) {
             monitor.setBlockedApps(blockedApps);
         }
+    }
+
+    /**
+     * Loads scroll budget configuration from SharedPreferences and applies it to the given monitor.
+     * Called on onCreate() and inside startMonitoring() to ensure the budget is always in sync.
+     *
+     * Log tag: [MyVpnService] SET_SCROLL_BUDGET or [CREATE]
+     */
+    private void loadScrollBudgetIntoMonitor(AppUsageMonitor targetMonitor) {
+        if (targetMonitor == null) return;
+        int allowanceMin = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE)
+                .getInt("scroll_allowance_minutes", 5);
+        int windowMin = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE)
+                .getInt("scroll_window_minutes", 60);
+        targetMonitor.setScrollBudget(allowanceMin, windowMin);
+        Log.d(TAG, "[BUDGET] loadScrollBudgetIntoMonitor: allowance=" + allowanceMin + "min window=" + windowMin + "min");
     }
 
     private void saveBlockedApps(Set<String> blockedApps) {

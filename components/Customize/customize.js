@@ -4,6 +4,7 @@
  * Settings screen layout (stitch screen 2):
  *   • Sticky header: back button + "Customize" title
  *   • "Intervention Modes" section — two toggles
+ *   • "Scroll Budget" section — only visible when Reels Detection is on
  *   • "Intercept Message" section — text input, duration slider, preview button
  *   • Version footer
  *
@@ -12,7 +13,7 @@
  * Logging prefix: [Customize]
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     View,
     Text,
@@ -23,6 +24,7 @@ import {
     ScrollView,
     NativeModules,
     Modal,
+    Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
@@ -44,6 +46,20 @@ const L = {
     previewBorder: '#E5E5E5',
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Format milliseconds as "M:SS" for the scroll budget countdown display.
+ * e.g. 125000 → "2:05"
+ */
+const formatBudgetTime = (ms) => {
+    if (ms == null || ms <= 0) return '0:00';
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${min}:${String(sec).padStart(2, '0')}`;
+};
+
 // ─── Back arrow icon ──────────────────────────────────────────────────────────
 const BackIcon = ({ color, size }) => (
     <Svg width={size} height={size} fill="none" stroke={color} strokeWidth={1.5}
@@ -62,6 +78,13 @@ const Customize = ({ navigation }) => {
     const [isMonitoringEnabled, setIsMonitoringEnabled] = useState(true);
     // "Reels Detection" = redirect Instagram to safe browser
     const [reelsDetection, setReelsDetection] = useState(true);
+
+    // ── Scroll budget state (only used when reelsDetection is on) ─────────────
+    // allowance = minutes of scroll allowed per window; window = window duration in minutes
+    const [scrollAllowance, setScrollAllowance] = useState(5);
+    const [scrollWindow, setScrollWindow] = useState(60);
+    // budgetStatus = { canScroll, remainingMs, nextScrollAtMs, usedMs, allowanceMinutes, windowMinutes }
+    const [budgetStatus, setBudgetStatus] = useState(null);
     // Intercept message shown on the pause overlay
     const [interceptMessage, setInterceptMessage] = useState('Is this intentional?');
     // Forced pause duration in seconds (1–30)
@@ -70,6 +93,27 @@ const Customize = ({ navigation }) => {
     const [sliderValue, setSliderValue] = useState(5);
     // Preview modal visibility
     const [previewVisible, setPreviewVisible] = useState(false);
+
+    // "Saved" toast — fades in on save, auto-dismisses after 1.8s
+    const savedOpacity = useRef(new Animated.Value(0)).current;
+    const savedTimer = useRef(null);
+
+    const showSaved = useCallback(() => {
+        // Cancel any in-flight dismiss timer so rapid saves don't stack
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+        Animated.timing(savedOpacity, {
+            toValue: 1,
+            duration: 150,
+            useNativeDriver: true,
+        }).start();
+        savedTimer.current = setTimeout(() => {
+            Animated.timing(savedOpacity, {
+                toValue: 0,
+                duration: 300,
+                useNativeDriver: true,
+            }).start();
+        }, 1800);
+    }, [savedOpacity]);
 
     // ── Load saved settings ───────────────────────────────────────────────────
 
@@ -84,6 +128,19 @@ const Customize = ({ navigation }) => {
                 setIsMonitoringEnabled(monitoring !== false);
                 setReelsDetection(redirect !== false);
                 console.log('[Customize] settings loaded — monitoring:', monitoring, 'redirect:', redirect);
+
+                // Load saved scroll budget config and apply to native layer
+                await new Promise((resolve) => {
+                    SettingsModule.getScrollBudget((allowance, window) => {
+                        setScrollAllowance(allowance);
+                        setScrollWindow(window);
+                        VPNModule.setScrollBudget(allowance, window).catch((e) =>
+                            console.warn('[Customize] setScrollBudget failed:', e),
+                        );
+                        resolve();
+                    });
+                });
+                console.log('[Customize] scroll budget loaded');
             } catch (e) {
                 console.warn('[Customize] load settings error:', e);
             }
@@ -103,6 +160,7 @@ const Customize = ({ navigation }) => {
             }
             setIsMonitoringEnabled(value);
             SettingsModule.saveMonitoringEnabled(value);
+            showSaved();
         } catch (e) {
             console.error('[Customize] monitoring toggle failed:', e);
         }
@@ -112,7 +170,61 @@ const Customize = ({ navigation }) => {
         console.log('[Customize] reels detection toggle →', value);
         setReelsDetection(value);
         SettingsModule.saveRedirectInstagramToBrowser(value);
+        showSaved();
     };
+
+    // ── Scroll budget adjustment handlers ─────────────────────────────────────
+
+    /** Step the allowance by `delta` minutes (clamped 0–30; 0 = always block immediately). */
+    const adjustAllowance = useCallback(
+        (delta) => {
+            const next = Math.max(0, Math.min(30, scrollAllowance + delta));
+            setScrollAllowance(next);
+            VPNModule.setScrollBudget(next, scrollWindow).catch((e) =>
+                console.warn('[Customize] setScrollBudget failed:', e),
+            );
+            SettingsModule.saveScrollBudget(next, scrollWindow);
+            console.log('[Customize] scroll allowance changed to', next, 'min');
+            showSaved();
+        },
+        [scrollAllowance, scrollWindow, showSaved],
+    );
+
+    /** Step the window duration by `delta` minutes (clamped 15–120). */
+    const adjustWindow = useCallback(
+        (delta) => {
+            const next = Math.max(15, Math.min(120, scrollWindow + delta));
+            setScrollWindow(next);
+            VPNModule.setScrollBudget(scrollAllowance, next).catch((e) =>
+                console.warn('[Customize] setScrollBudget failed:', e),
+            );
+            SettingsModule.saveScrollBudget(scrollAllowance, next);
+            console.log('[Customize] scroll window changed to', next, 'min');
+            showSaved();
+        },
+        [scrollAllowance, scrollWindow, showSaved],
+    );
+
+    // ── Scroll budget polling (every 5s when reels detection is on) ───────────
+    // Reads from SharedPreferences via VPNModule so the displayed status reflects
+    // what MyVpnService's monitor has accumulated (avoids cross-instance reads).
+    useEffect(() => {
+        if (!reelsDetection) {
+            setBudgetStatus(null);
+            return;
+        }
+        const poll = async () => {
+            try {
+                const status = await VPNModule.getScrollBudgetStatus();
+                setBudgetStatus(status);
+            } catch (e) {
+                console.warn('[Customize] getScrollBudgetStatus failed:', e);
+            }
+        };
+        poll(); // initial fetch
+        const interval = setInterval(poll, 5000);
+        return () => clearInterval(interval);
+    }, [reelsDetection]);
 
     // ── Duration slider handlers ──────────────────────────────────────────────
 
@@ -129,6 +241,7 @@ const Customize = ({ navigation }) => {
         console.log('[Customize] pause duration set to', rounded, 'seconds');
         try {
             await VPNModule.setDelayTime(rounded);
+            showSaved();
         } catch (e) {
             console.warn('[Customize] setDelayTime error:', e);
         }
@@ -140,6 +253,7 @@ const Customize = ({ navigation }) => {
         console.log('[Customize] saving intercept message:', interceptMessage);
         try {
             await VPNModule.setDelayMessage(interceptMessage);
+            showSaved();
         } catch (e) {
             console.warn('[Customize] setDelayMessage error:', e);
         }
@@ -217,6 +331,85 @@ const Customize = ({ navigation }) => {
                     </View>
                 </View>
 
+                {/* ── Scroll Budget — only shown when Reels Detection is on */}
+                {reelsDetection && (
+                    <View style={styles.section}>
+                        <Text style={styles.sectionLabel}>Scroll Budget</Text>
+
+                        {/* Stepper controls: allow X min every Y min */}
+                        <View style={styles.budgetControls}>
+                            <View style={styles.stepperGroup}>
+                                <TouchableOpacity
+                                    style={styles.stepperBtn}
+                                    onPress={() => adjustAllowance(-1)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Decrease allowance"
+                                >
+                                    <Text style={styles.stepperBtnText}>−</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{scrollAllowance}m</Text>
+                                <TouchableOpacity
+                                    style={styles.stepperBtn}
+                                    onPress={() => adjustAllowance(1)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Increase allowance"
+                                >
+                                    <Text style={styles.stepperBtnText}>+</Text>
+                                </TouchableOpacity>
+                            </View>
+
+                            <Text style={styles.budgetDivider}>per</Text>
+
+                            <View style={styles.stepperGroup}>
+                                <TouchableOpacity
+                                    style={styles.stepperBtn}
+                                    onPress={() => adjustWindow(-15)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Decrease window"
+                                >
+                                    <Text style={styles.stepperBtnText}>−</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{scrollWindow}m</Text>
+                                <TouchableOpacity
+                                    style={styles.stepperBtn}
+                                    onPress={() => adjustWindow(15)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Increase window"
+                                >
+                                    <Text style={styles.stepperBtnText}>+</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        {/* Live status row */}
+                        {budgetStatus && (() => {
+                            const canScroll = budgetStatus.canScroll;
+                            const statusColor = canScroll ? '#4CAF50' : '#E53935';
+                            const statusLabel = canScroll
+                                ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
+                                : `Scroll again in ${formatBudgetTime(budgetStatus.nextScrollAtMs - Date.now())}`;
+                            const filledRatio = canScroll
+                                ? Math.min(1, (budgetStatus.usedMs / (scrollAllowance * 60 * 1000)) || 0)
+                                : 1;
+                            return (
+                                <View style={styles.budgetStatusSection}>
+                                    <View style={styles.budgetStatusRow}>
+                                        <View style={[styles.budgetDot, { backgroundColor: statusColor }]} />
+                                        <Text style={[styles.budgetStatusText, { color: statusColor }]}>
+                                            {statusLabel}
+                                        </Text>
+                                    </View>
+                                    {/* Progress bar: filled = time used, unfilled = time remaining */}
+                                    <View style={styles.budgetProgressBg}>
+                                        <View style={{ flex: filledRatio, backgroundColor: statusColor, borderRadius: 2 }} />
+                                        <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
+                                    </View>
+                                </View>
+                            );
+                        })()}
+                    </View>
+                )}
+
                 {/* ── Intercept Message ─────────────────────────────────── */}
                 <View style={styles.section}>
                     <Text style={styles.sectionLabel}>Intercept Message</Text>
@@ -277,6 +470,15 @@ const Customize = ({ navigation }) => {
                 <Text style={styles.footer}>v1.0 • Minimal Design</Text>
 
             </ScrollView>
+
+            {/* ── Saved toast ───────────────────────────────────────────── */}
+            <Animated.View
+                style={[styles.savedToast, { opacity: savedOpacity }]}
+                pointerEvents="none"
+                accessibilityLiveRegion="polite"
+            >
+                <Text style={styles.savedToastText}>✓  Saved</Text>
+            </Animated.View>
 
             {/* ── Preview modal ─────────────────────────────────────────── */}
             <Modal
@@ -445,6 +647,95 @@ const styles = StyleSheet.create({
         fontSize: 15,
         color: L.charcoal,
         fontWeight: '500',
+    },
+
+    // "Saved" toast bubble — floats at bottom centre, pointer-events: none
+    savedToast: {
+        position: 'absolute',
+        bottom: 80,
+        alignSelf: 'center',
+        backgroundColor: '#1A1A1A',
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        borderRadius: 9999,
+        // Lift it above the scroll content visually
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 8,
+        elevation: 6,
+    },
+    savedToastText: {
+        color: '#FFFFFF',
+        fontSize: 14,
+        fontWeight: '500',
+        letterSpacing: 0.2,
+    },
+
+    // ── Scroll Budget ─────────────────────────────────────────────────────────
+    budgetControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 12,
+        marginBottom: 8,
+    },
+    stepperGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    stepperBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 8,
+        backgroundColor: 'rgba(0,0,0,0.06)',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    stepperBtnText: {
+        fontSize: 18,
+        color: L.charcoal,
+        fontWeight: '400',
+        lineHeight: 22,
+    },
+    stepperValue: {
+        fontSize: 16,
+        fontWeight: '500',
+        color: L.charcoal,
+        minWidth: 36,
+        textAlign: 'center',
+        fontVariant: ['tabular-nums'],
+    },
+    budgetDivider: {
+        fontSize: 12,
+        color: L.muted,
+        fontWeight: '500',
+    },
+    budgetStatusSection: {
+        gap: 6,
+    },
+    budgetStatusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    budgetDot: {
+        width: 7,
+        height: 7,
+        borderRadius: 4,
+    },
+    budgetStatusText: {
+        fontSize: 13,
+        fontWeight: '500',
+        fontVariant: ['tabular-nums'],
+    },
+    budgetProgressBg: {
+        height: 4,
+        flexDirection: 'row',
+        backgroundColor: 'rgba(0,0,0,0.07)',
+        borderRadius: 2,
+        overflow: 'hidden',
     },
 
     // Footer caption

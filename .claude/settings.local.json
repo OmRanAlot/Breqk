@@ -18,7 +18,10 @@
       "Bash(mkdir:*)",
       "Bash(for f:*)",
       "Bash(do sed:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(./gradlew build:*)",
+      "Bash(./gradlew compileDebugJavaWithJavac)"
     ]
   },
   "enabledPlugins": {

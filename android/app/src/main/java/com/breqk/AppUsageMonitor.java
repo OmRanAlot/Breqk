@@ -91,6 +91,39 @@ public class AppUsageMonitor {
     // ObjectAnimator for the breathing circle on the delay overlay — cancelled in removeOverlay()
     private ObjectAnimator breathingAnimator = null;
 
+    // ─── Scroll Budget ─────────────────────────────────────────────────────────
+    // Configuration (loaded from SharedPreferences via loadScrollBudgetFromPrefs, updated by setScrollBudget)
+    private int scrollAllowanceMinutes = 5;    // minutes allowed per window
+    private int scrollWindowMinutes = 60;      // window duration in minutes
+    private boolean scrollBudgetEnabled = true; // master on/off toggle
+
+    // In-memory tracking (persisted to SharedPreferences periodically and on state change)
+    // windowStartTime = 0 means no active window (lazy-started on first scroll)
+    // budgetExhaustedAt = 0 means budget is not exhausted
+    private long scrollTimeUsedMs = 0;
+    private long windowStartTime = 0;
+    private long budgetExhaustedAt = 0;
+
+    // Countdown runnable for the live "scroll again in MM:SS" timer shown on budget exhausted overlay
+    private Runnable budgetCountdownRunnable = null;
+
+    // Write scroll state to SharedPreferences every N ticks (to survive service restarts)
+    private int scrollPersistCounter = 0;
+    private static final int SCROLL_PERSIST_INTERVAL = 10; // every 10 seconds during active scroll
+
+    // ─── Reels State Detection ────────────────────────────────────────────────
+    // ReelsInterventionService writes is_in_reels / is_in_reels_timestamp / is_in_reels_package
+    // to SharedPreferences. We read those here to gate scroll budget accumulation to only
+    // the time the user is actually viewing Reels/Shorts (not the entire Instagram app).
+
+    /**
+     * Maximum age (in ms) of the Reels state timestamp before we treat it as stale.
+     * ReelsInterventionService refreshes the timestamp via heartbeat every 2s, so
+     * 5s gives ~2 missed heartbeats of tolerance before we assume the service crashed
+     * or the user left Reels without a clean exit event.
+     */
+    private static final long REELS_STATE_STALENESS_MS = 5000;
+
     public interface AppDetectionListener {
         void onAppDetected(String packageName, String appName);
 
@@ -144,6 +177,7 @@ public class AppUsageMonitor {
             Log.d(TAG, "Overlay permission OK");
 
             loadBlockedAppsFromPrefs();
+            loadScrollBudgetFromPrefs();
             Log.d(TAG, "Loaded blocked apps count=" + (blockedApps != null ? blockedApps.size() : 0));
             if (blockedApps != null && !blockedApps.isEmpty()) {
                 Log.d(TAG, "Blocked apps list: " + blockedApps.toString());
@@ -214,6 +248,43 @@ public class AppUsageMonitor {
                             }
                         }
 
+                        // [ScrollBudget] Reset window if it has expired
+                        if (scrollBudgetEnabled && windowStartTime > 0) {
+                            long windowMs = scrollWindowMinutes * 60 * 1000L;
+                            if ((now - windowStartTime) >= windowMs) {
+                                Log.i(TAG, "[ScrollBudget] Scroll window reset. New window starts now.");
+                                resetScrollWindow();
+                                persistScrollBudgetStatus();
+                            }
+                        }
+
+                        // [ScrollBudget] Accumulate scroll time only while user is in Reels/Shorts
+                        // isAllowed = user tapped Continue on the interstitial for this session
+                        // isCurrentlyInReels = ReelsInterventionService reports user is in full-screen Reels viewer
+                        boolean inReelsNow = isCurrentlyInReels(foregroundApp);
+                        if (scrollBudgetEnabled && isBlocked && isAllowed && inReelsNow) {
+                            if (windowStartTime == 0) {
+                                windowStartTime = now;
+                                Log.d(TAG, "[ScrollBudget] New scroll window started at " + windowStartTime);
+                            }
+                            scrollTimeUsedMs += 1000;
+                            long allowanceMs = scrollAllowanceMinutes * 60 * 1000L;
+                            Log.d(TAG, "[ScrollBudget] Scroll budget: used " + scrollTimeUsedMs + "ms / " + allowanceMs + "ms allowance");
+
+                            scrollPersistCounter++;
+                            if (scrollPersistCounter >= SCROLL_PERSIST_INTERVAL) {
+                                persistScrollBudgetStatus();
+                                scrollPersistCounter = 0;
+                            }
+
+                            if (scrollTimeUsedMs >= allowanceMs && !isScrollBudgetExhausted()) {
+                                budgetExhaustedAt = now;
+                                allowedThisSession.remove(foregroundApp);
+                                persistScrollBudgetStatus();
+                                Log.i(TAG, "[ScrollBudget] Scroll budget exhausted! Showing lockout overlay for " + foregroundApp);
+                            }
+                        }
+
                         // Check if we should show the overlay
                         // CRITICAL: Check for second popup even if app is in allowedThisSession
                         // allowedThisSession only prevents FIRST popup, not second popup
@@ -270,6 +341,15 @@ public class AppUsageMonitor {
                                         "Overlay debounce active for " + foregroundApp + "; skipping overlay creation");
                             } else if (lastShown != null && (now - lastShown) < POPUP_COOLDOWN_MS) {
                                 Log.d(TAG, "Cooldown active for " + foregroundApp + ", skipping overlay");
+                            } else if (scrollBudgetEnabled && isScrollBudgetExhausted() && inReelsNow) {
+                                // [ScrollBudget] Budget exhausted AND user is in Reels — show lockout overlay (takes priority over normal popup)
+                                synchronized (overlayLock) {
+                                    if (overlayView == null) {
+                                        Log.i(TAG, "[ScrollBudget] Budget exhausted, showing lockout overlay for " + foregroundApp);
+                                        overlayPendingUntil = now + OVERLAY_DEBOUNCE_MS;
+                                        showBudgetExhaustedOverlay(foregroundApp);
+                                    }
+                                }
                             } else if (shouldShowPopup) {
                                 synchronized (overlayLock) {
                                     if (overlayView != null) {
@@ -610,6 +690,9 @@ public class AppUsageMonitor {
     }
 
     private void removeOverlay() {
+        // Cancel budget countdown if running (budget exhausted overlay variant)
+        cancelBudgetCountdown();
+
         // Cancel breathing animation before removing view to avoid animating a detached view
         if (breathingAnimator != null) {
             breathingAnimator.cancel();
@@ -845,6 +928,292 @@ public class AppUsageMonitor {
         long endTime = System.currentTimeMillis();
         long startTime = endTime - (24 * 60 * 60 * 1000); // Last 24 hours
         return getAppUsageTime(packageName, startTime, endTime);
+    }
+
+    // ─── Scroll Budget Methods ────────────────────────────────────────────────
+
+    /**
+     * Load scroll budget configuration from SharedPreferences.
+     * Called on startMonitoring() so settings survive app restarts.
+     */
+    private void loadScrollBudgetFromPrefs() {
+        SharedPreferences prefs = context.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        scrollAllowanceMinutes = prefs.getInt("scroll_allowance_minutes", 5);
+        scrollWindowMinutes = prefs.getInt("scroll_window_minutes", 60);
+        // Restore in-progress window state (survives short service interruptions)
+        scrollTimeUsedMs = prefs.getLong("scroll_time_used_ms", 0);
+        windowStartTime = prefs.getLong("scroll_window_start_time", 0);
+        budgetExhaustedAt = prefs.getLong("scroll_budget_exhausted_at", 0);
+        Log.d(TAG, "[ScrollBudget] Loaded from prefs: allowance=" + scrollAllowanceMinutes +
+                "min window=" + scrollWindowMinutes + "min usedMs=" + scrollTimeUsedMs +
+                " windowStart=" + windowStartTime + " exhaustedAt=" + budgetExhaustedAt);
+    }
+
+    /**
+     * Persist current scroll budget state to SharedPreferences.
+     * Called on state changes and every SCROLL_PERSIST_INTERVAL ticks during scroll sessions.
+     * Allows MyVpnService's monitor to survive short Android kills and lets
+     * VPNModule.getScrollBudgetStatus() read live data without cross-instance communication.
+     */
+    private void persistScrollBudgetStatus() {
+        context.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putLong("scroll_time_used_ms", scrollTimeUsedMs)
+                .putLong("scroll_window_start_time", windowStartTime)
+                .putLong("scroll_budget_exhausted_at", budgetExhaustedAt)
+                .apply();
+        Log.d(TAG, "[ScrollBudget] Persisted: usedMs=" + scrollTimeUsedMs +
+                " windowStart=" + windowStartTime + " exhaustedAt=" + budgetExhaustedAt);
+    }
+
+    /**
+     * Update scroll budget configuration.
+     * If the new allowance is already exceeded by current usage, triggers exhausted state.
+     *
+     * @param allowanceMin Minutes of scroll allowed per window (≥0; 0 = always block immediately)
+     * @param windowMin    Window duration in minutes (≥15)
+     */
+    public void setScrollBudget(int allowanceMin, int windowMin) {
+        this.scrollAllowanceMinutes = Math.max(0, allowanceMin);
+        this.scrollWindowMinutes = Math.max(15, windowMin);
+        Log.d(TAG, "[ScrollBudget] Budget updated: allowance=" + scrollAllowanceMinutes +
+                "min window=" + scrollWindowMinutes + "min");
+
+        // If used time already exceeds the new (smaller) allowance, exhaust immediately
+        long allowanceMs = scrollAllowanceMinutes * 60 * 1000L;
+        if (windowStartTime > 0 && scrollTimeUsedMs >= allowanceMs && !isScrollBudgetExhausted()) {
+            budgetExhaustedAt = System.currentTimeMillis();
+            Log.i(TAG, "[ScrollBudget] New allowance immediately exhausted (usedMs=" + scrollTimeUsedMs + " >= allowanceMs=" + allowanceMs + ")");
+        }
+    }
+
+    /**
+     * Returns a WritableMap with current scroll budget status.
+     * Called by VPNModule.getScrollBudgetStatus() for the JS bridge.
+     *
+     * Fields: allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs, remainingMs
+     */
+    public com.facebook.react.bridge.WritableMap getScrollBudgetStatus() {
+        com.facebook.react.bridge.WritableMap status = com.facebook.react.bridge.Arguments.createMap();
+        long allowanceMs = scrollAllowanceMinutes * 60 * 1000L;
+        boolean canScroll = !isScrollBudgetExhausted();
+        long remainingMs = canScroll ? Math.max(0, allowanceMs - scrollTimeUsedMs) : 0;
+        long nextScrollAtMs = isScrollBudgetExhausted() ? (windowStartTime + scrollWindowMinutes * 60 * 1000L) : 0;
+
+        status.putInt("allowanceMinutes", scrollAllowanceMinutes);
+        status.putInt("windowMinutes", scrollWindowMinutes);
+        status.putDouble("usedMs", scrollTimeUsedMs);
+        status.putBoolean("canScroll", canScroll);
+        status.putDouble("nextScrollAtMs", nextScrollAtMs);
+        status.putDouble("remainingMs", remainingMs);
+        return status;
+    }
+
+    /** Returns true if the scroll budget has been exhausted for the current window. */
+    public boolean isScrollBudgetExhausted() {
+        return budgetExhaustedAt > 0;
+    }
+
+    /**
+     * Checks whether the user is currently viewing Reels/Shorts in the given foreground app.
+     *
+     * Reads state written by ReelsInterventionService via SharedPreferences:
+     *   - is_in_reels (boolean): flag set by the accessibility service
+     *   - is_in_reels_timestamp (long): when the flag was last updated
+     *   - is_in_reels_package (String): which app is in Reels
+     *
+     * Returns false (not in Reels) when:
+     *   - The flag is false
+     *   - The timestamp is stale (older than REELS_STATE_STALENESS_MS = 5s)
+     *   - The package doesn't match the current foreground app
+     *
+     * This gates scroll budget accumulation so that only time spent in Reels/Shorts
+     * counts against the budget, not general Instagram/YouTube browsing.
+     *
+     * @param foregroundApp package name of the current foreground app
+     * @return true if user is actively viewing Reels/Shorts in foregroundApp
+     */
+    private boolean isCurrentlyInReels(String foregroundApp) {
+        SharedPreferences prefs = context.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        boolean inReels = prefs.getBoolean("is_in_reels", false);
+        long timestamp = prefs.getLong("is_in_reels_timestamp", 0);
+        String reelsPackage = prefs.getString("is_in_reels_package", "");
+
+        // Not in Reels at all
+        if (!inReels) {
+            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: flag=false → not in Reels");
+            return false;
+        }
+
+        // Staleness check: if ReelsInterventionService hasn't updated in 5s, assume it crashed
+        // or the user left Reels without a clean exit event
+        long age = System.currentTimeMillis() - timestamp;
+        if (age > REELS_STATE_STALENESS_MS) {
+            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: stale (age=" + age + "ms > " + REELS_STATE_STALENESS_MS + "ms) → not in Reels");
+            return false;
+        }
+
+        // Package mismatch: Reels state is for a different app than the foreground app
+        if (!reelsPackage.equals(foregroundApp)) {
+            Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: package mismatch (reels=" + reelsPackage + " fg=" + foregroundApp + ") → not in Reels");
+            return false;
+        }
+
+        Log.d(TAG, "[REELS_STATE] isCurrentlyInReels: YES (pkg=" + foregroundApp + " age=" + age + "ms)");
+        return true;
+    }
+
+    /** Returns ms until the next scroll window opens. 0 if not exhausted or window start unknown. */
+    public long getTimeUntilNextScroll() {
+        if (windowStartTime == 0 || budgetExhaustedAt == 0) return 0;
+        long windowMs = scrollWindowMinutes * 60 * 1000L;
+        return Math.max(0, (windowStartTime + windowMs) - System.currentTimeMillis());
+    }
+
+    /** Resets window counters. Called when the window duration has expired. */
+    private void resetScrollWindow() {
+        scrollTimeUsedMs = 0;
+        windowStartTime = 0;
+        budgetExhaustedAt = 0;
+        scrollPersistCounter = 0;
+    }
+
+    /**
+     * Shows the budget-exhausted lockout overlay.
+     * Reuses delay_overlay.xml but with a different title, hidden Continue button,
+     * and a live countdown showing time until the next scroll window.
+     */
+    private void showBudgetExhaustedOverlay(final String appPackage) {
+        synchronized (overlayLock) {
+            if (isOverlayActive) {
+                Log.d(TAG, "[ScrollBudget] Overlay already active; skipping budget exhausted overlay");
+                return;
+            }
+            lastAppPackage = appPackage;
+            isOverlayActive = true;
+            if (overlayView == null) {
+                overlayView = new View(context); // sentinel to block duplicate guard checks
+            }
+            overlayPendingUntil = System.currentTimeMillis() + OVERLAY_DEBOUNCE_MS;
+        }
+
+        Log.i(TAG, "[ScrollBudget] Preparing budget exhausted overlay for " + appPackage);
+
+        handler.post(() -> {
+            try {
+                // Clean up any lingering overlay
+                if (overlayView != null && overlayView.getParent() != null) {
+                    try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
+                }
+
+                LayoutInflater inflater = LayoutInflater.from(context);
+                overlayView = inflater.inflate(R.layout.delay_overlay, null);
+
+                TextView titleText = overlayView.findViewById(R.id.title);
+                Button continueButton = overlayView.findViewById(R.id.continueButton);
+                Button backButton = overlayView.findViewById(R.id.backButton);
+                TextView countdownText = overlayView.findViewById(R.id.countdownText);
+
+                // Budget exhausted variant — different title, no Continue, live countdown
+                titleText.setText("Scroll time is up!");
+                continueButton.setVisibility(View.GONE);
+                if (countdownText != null) {
+                    countdownText.setVisibility(View.VISIBLE);
+                }
+
+                WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                                : WindowManager.LayoutParams.TYPE_PHONE,
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
+                                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                        PixelFormat.TRANSLUCENT);
+                params.gravity = Gravity.CENTER;
+
+                overlayView.setFocusable(true);
+                overlayView.setFocusableInTouchMode(true);
+                overlayView.requestFocus();
+
+                windowManager.addView(overlayView, params);
+
+                synchronized (overlayLock) {
+                    overlayPendingUntil = 0L;
+                }
+
+                // Start ripple animation (same visual as normal overlay)
+                View breathingCircle = overlayView.findViewById(R.id.pulse_ring);
+                startRippleAnimation(breathingCircle);
+
+                // Start live countdown timer
+                startBudgetCountdown(countdownText);
+
+                // Back to Reality → home screen (no Continue option)
+                backButton.setOnClickListener(v -> {
+                    Log.i(TAG, "[ScrollBudget] Back clicked on budget exhausted overlay for " + appPackage);
+                    removeOverlay(); // also calls cancelBudgetCountdown()
+                    Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+                    homeIntent.addCategory(Intent.CATEGORY_HOME);
+                    homeIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(homeIntent);
+                });
+
+                Log.i(TAG, "[ScrollBudget] Budget exhausted overlay shown for " + appPackage);
+            } catch (Exception e) {
+                Log.e(TAG, "[ScrollBudget] Error showing budget exhausted overlay", e);
+                synchronized (overlayLock) {
+                    overlayPendingUntil = 0L;
+                    isOverlayActive = false;
+                    lastAppPackage = "";
+                    overlayView = null;
+                }
+            }
+        });
+    }
+
+    /**
+     * Starts the live countdown displayed on the budget exhausted overlay.
+     * Updates countdownText every second. When time reaches 0, resets the window and removes overlay.
+     */
+    private void startBudgetCountdown(final TextView countdownText) {
+        cancelBudgetCountdown();
+        budgetCountdownRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (overlayView == null) return; // overlay was removed
+
+                long timeUntilMs = getTimeUntilNextScroll();
+                if (timeUntilMs <= 0) {
+                    // Window expired — reset and dismiss lockout
+                    Log.i(TAG, "[ScrollBudget] Window expired during countdown — resetting");
+                    resetScrollWindow();
+                    persistScrollBudgetStatus();
+                    removeOverlay();
+                    return;
+                }
+
+                long minutes = timeUntilMs / 60000;
+                long seconds = (timeUntilMs % 60000) / 1000;
+                String label = String.format(java.util.Locale.US, "You can scroll again in %02d:%02d", minutes, seconds);
+                if (countdownText != null) {
+                    countdownText.setText(label);
+                }
+                Log.d(TAG, "[ScrollBudget] Countdown: " + label);
+                handler.postDelayed(budgetCountdownRunnable, 1000);
+            }
+        };
+        handler.post(budgetCountdownRunnable);
+    }
+
+    /** Stops the budget countdown runnable if it is running. */
+    private void cancelBudgetCountdown() {
+        if (budgetCountdownRunnable != null) {
+            handler.removeCallbacks(budgetCountdownRunnable);
+            budgetCountdownRunnable = null;
+            Log.d(TAG, "[ScrollBudget] Budget countdown cancelled");
+        }
     }
 
     // Helper class to hold app usage information
