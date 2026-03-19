@@ -96,6 +96,15 @@ const VPNSwitch = () => {
  
   const restartMonitoring = async () => {
     try {
+      // Check monitoring_enabled before restarting — respects "App Open Intercept" toggle.
+      // Without this guard, returning to foreground would re-enable monitoring even if off.
+      const monitoringEnabled = await new Promise((resolve) => {
+        SettingsModule.getMonitoringEnabled((v) => resolve(v));
+      });
+      if (monitoringEnabled === false) {
+        console.log('[VPNSwitch] restartMonitoring skipped — monitoring disabled by user');
+        return;
+      }
       await VPNModule.stopMonitoring();
       setTimeout(async () => {
         await VPNModule.startMonitoring();

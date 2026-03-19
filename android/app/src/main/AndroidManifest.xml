@@ -38,9 +38,9 @@
             </intent-filter>
         </service>
 
-        <!-- Browser URL-based blocking (porn sites) -->
+        <!-- Browser URL-based content filtering -->
         <service
-            android:name=".PornBlockerService"
+            android:name=".ContentFilterService"
             android:exported="true"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
@@ -48,7 +48,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.accessibilityservice"
-                android:resource="@xml/porn_blocker_accessibility_config" />
+                android:resource="@xml/content_filter_accessibility_config" />
         </service>
 
         <!-- Instagram Reels and YouTube Shorts scroll intervention -->

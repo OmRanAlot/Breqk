@@ -115,12 +115,57 @@ const AppUsageRow = ({ appName, usageTimeMin, maxTimeMin }) => {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+// ─── Scroll budget helper ────────────────────────────────────────────────────
+
+/** Format milliseconds as "M:SS" for the scroll budget countdown display. */
+const formatBudgetTime = (ms) => {
+    if (ms == null || ms <= 0) return '0:00';
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${min}:${String(sec).padStart(2, '0')}`;
+};
+
 const Home = ({ navigation }) => {
     const insets = useSafeAreaInsets();
     const [isMonitoring, setIsMonitoring] = useState(false);
 
     // ── Digital Wellbeing data ────────────────────────────────────────────────
     const { stats, topApps, loading, error, refresh } = useDigitalWellbeing();
+
+    // ── Scroll budget status (polled every 5s) ───────────────────────────────
+    // Reads from SharedPreferences via VPNModule so the displayed status reflects
+    // what MyVpnService's monitor has accumulated.
+    const [budgetStatus, setBudgetStatus] = useState(null);
+    const appStateRefBudget = useRef(AppState.currentState);
+
+    useEffect(() => {
+        const pollBudget = async () => {
+            try {
+                const status = await VPNModule.getScrollBudgetStatus();
+                setBudgetStatus(status);
+                console.log('[Home] scroll budget polled: canScroll=' + status.canScroll +
+                    ' remainingMs=' + status.remainingMs + ' usedMs=' + status.usedMs);
+            } catch (e) {
+                console.warn('[Home] getScrollBudgetStatus failed:', e);
+            }
+        };
+        pollBudget(); // initial fetch
+        const interval = setInterval(pollBudget, 5000);
+
+        // Also refresh on foreground resume for immediate accuracy
+        const sub = AppState.addEventListener('change', (nextState) => {
+            if (appStateRefBudget.current.match(/inactive|background/) && nextState === 'active') {
+                pollBudget();
+            }
+            appStateRefBudget.current = nextState;
+        });
+
+        return () => {
+            clearInterval(interval);
+            sub?.remove();
+        };
+    }, []);
 
     // ── Monitoring lifecycle refs ─────────────────────────────────────────────
     const appStateRef = useRef(AppState.currentState);
@@ -142,6 +187,15 @@ const Home = ({ navigation }) => {
 
     const restartMonitoring = useCallback(async () => {
         try {
+            // Check monitoring_enabled before restarting — respects "App Open Intercept" toggle.
+            // Without this guard, returning to foreground would re-enable monitoring even if off.
+            const monitoringEnabled = await new Promise((resolve) => {
+                SettingsModule.getMonitoringEnabled((v) => resolve(v));
+            });
+            if (monitoringEnabled === false) {
+                console.log('[Home] restartMonitoring skipped — monitoring disabled by user');
+                return;
+            }
             await VPNModule.stopMonitoring();
             setTimeout(async () => {
                 await VPNModule.startMonitoring();
@@ -174,8 +228,20 @@ const Home = ({ navigation }) => {
                 });
                 if (updated) SettingsModule.saveBlockedApps(Array.from(appsSet));
 
-                // Start blocking overlay
-                await startMonitoring(appsSet);
+                // Check if monitoring is enabled before starting — respects the
+                // "App Open Intercept" toggle in Customize. Without this check,
+                // monitoring would restart on every Home mount even if toggled off.
+                const monitoringEnabled = await new Promise((resolve) => {
+                    SettingsModule.getMonitoringEnabled((v) => resolve(v));
+                });
+                console.log('[Home] monitoring_enabled preference:', monitoringEnabled);
+
+                if (monitoringEnabled !== false) {
+                    await startMonitoring(appsSet);
+                } else {
+                    console.log('[Home] monitoring disabled by user — skipping start');
+                    setIsMonitoring(false);
+                }
 
                 // Sync widget if available
                 if (Platform.OS === 'android' && SettingsModule.updateWidgetStats) {
@@ -273,6 +339,45 @@ const Home = ({ navigation }) => {
                         />
                     ) : null}
                 </View>
+
+                {/* ── Scroll Budget card ─────────────────────────────── */}
+                {/* Shows time remaining in the current scroll budget window.
+                    Green = budget available, Red = exhausted (with countdown to reset). */}
+                {budgetStatus && (() => {
+                    const canScroll = budgetStatus.canScroll;
+                    const statusColor = canScroll ? L.accentGreen : '#E53935';
+                    const allowanceMs = budgetStatus.allowanceMinutes * 60 * 1000;
+                    const statusLabel = canScroll
+                        ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
+                        : `Resets in ${formatBudgetTime(budgetStatus.nextScrollAtMs - Date.now())}`;
+                    const filledRatio = canScroll
+                        ? Math.min(1, (budgetStatus.usedMs / allowanceMs) || 0)
+                        : 1;
+
+                    return (
+                        <View style={styles.budgetCard}>
+                            <View style={styles.budgetHeader}>
+                                <Text style={styles.sectionTitle}>Scroll Budget</Text>
+                                <View style={[styles.budgetDot, { backgroundColor: statusColor }]} />
+                            </View>
+                            <Text style={[styles.budgetStatusLabel, { color: statusColor }]}>
+                                {statusLabel}
+                            </Text>
+                            {/* Progress bar: filled = time used, unfilled = time remaining */}
+                            <View style={styles.budgetProgressBg}>
+                                <View style={{
+                                    flex: filledRatio,
+                                    backgroundColor: statusColor,
+                                    borderRadius: 2,
+                                }} />
+                                <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
+                            </View>
+                            <Text style={styles.budgetCaption}>
+                                {budgetStatus.allowanceMinutes}m allowed per {budgetStatus.windowMinutes}m window
+                            </Text>
+                        </View>
+                    );
+                })()}
 
                 {/* ── Error state ───────────────────────────────────────── */}
                 {error && error !== 'usage_permission_missing' && (
@@ -504,6 +609,43 @@ const styles = StyleSheet.create({
         color: L.muted,
         textAlign: 'center',
         paddingVertical: 16,
+    },
+
+    // ── Scroll Budget card ──────────────────────────────────────────────────
+    budgetCard: {
+        backgroundColor: L.cardBg,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: L.cardBorder,
+        padding: 16,
+        gap: 8,
+    },
+    budgetHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    budgetDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+    },
+    budgetStatusLabel: {
+        fontSize: 16,
+        fontWeight: '500',
+        fontVariant: ['tabular-nums'],
+    },
+    budgetProgressBg: {
+        height: 4,
+        flexDirection: 'row',
+        backgroundColor: L.barBg,
+        borderRadius: 2,
+        overflow: 'hidden',
+    },
+    budgetCaption: {
+        fontSize: 11,
+        color: L.muted,
+        fontVariant: ['tabular-nums'],
     },
 
     // ── Footer ────────────────────────────────────────────────────────────────

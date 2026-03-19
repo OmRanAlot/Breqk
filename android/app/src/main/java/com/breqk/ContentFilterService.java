@@ -1,10 +1,10 @@
 package com.breqk;
 
 /*
- * PornBlockerService
+ * ContentFilterService
  * -------------------
  * AccessibilityService that monitors browser URL bars and redirects away
- * from blocked domains (porn sites).
+ * from blocked domains.
  *
  * Filter logcat with: adb logcat -s BROWSER_WATCH
  *
@@ -14,7 +14,7 @@ package com.breqk;
  *     → findBlockedDomain
  *     → redirect (random Pinterest image, 2s cooldown)
  *
- * Config: res/xml/porn_blocker_accessibility_config.xml
+ * Config: res/xml/content_filter_accessibility_config.xml
  * Registered in: AndroidManifest.xml
  *
  * See also: ReelsInterventionService — handles Instagram/YouTube scroll detection separately.
@@ -36,7 +36,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Random;
 
-public class PornBlockerService extends AccessibilityService {
+public class ContentFilterService extends AccessibilityService {
 
     // Filter logcat with: adb logcat -s BROWSER_WATCH
     private static final String TAG = "BROWSER_WATCH";
@@ -91,15 +91,17 @@ public class PornBlockerService extends AccessibilityService {
         AccessibilityServiceInfo info = getServiceInfo();
         if (info == null)
             info = new AccessibilityServiceInfo();
+
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
                 | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
         info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
                 | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+
         info.notificationTimeout = 200;
         setServiceInfo(info);
 
-        Log.d(TAG, "=== PornBlockerService CONNECTED ===");
+        Log.d(TAG, "=== ContentFilterService CONNECTED ===");
         Log.d(TAG, "  eventTypes: WINDOW_CONTENT_CHANGED | WINDOW_STATE_CHANGED");
         Log.d(TAG, "  flags: FLAG_REPORT_VIEW_IDS | FLAG_RETRIEVE_INTERACTIVE_WINDOWS");
         Log.d(TAG, "  notificationTimeout: 200ms");

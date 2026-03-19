@@ -157,39 +157,28 @@ public class ScreenTimeTracker {
 
             Log.d(TAG, "[COMPREHENSIVE] Querying range: " + startTime + " → " + endTime);
 
-            // ── Step 1: Total screen time via queryUsageStats ─────────────────
-            List<UsageStats> stats = usageStatsManager.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY, startTime, endTime);
-
-            // Android INTERVAL_DAILY can return yesterday's bucket (its end == our startTime).
-            // Filter to entries where getLastTimeUsed() >= startTime so we only count
-            // apps that were actually used today (midnight → now).
-            // Additionally, only count user-facing apps (excludes home launchers and system
-            // services like SystemUI that accumulate foreground time invisibly).
+            // ── Step 1: Total screen time via UsageEvents (accurate) ────────
+            // Uses MOVE_TO_FOREGROUND / MOVE_TO_BACKGROUND events for exact per-app time.
+            // The previous INTERVAL_DAILY approach inflated totals by including time from
+            // overlapping daily buckets (yesterday + today summed together).
             PackageManager pm = context.getPackageManager();
+            Map<String, Long> perAppMs = getPerAppForegroundTimeFromEvents(startTime, endTime);
             long totalMs = 0;
-            int skippedStale = 0;
             int skippedSystem = 0;
-            for (UsageStats usageStats : stats) {
-                if (usageStats.getLastTimeUsed() < startTime) {
-                    skippedStale++;
-                    continue;
-                }
-                String pkg = usageStats.getPackageName();
-                if (!isUserFacingApp(pm, pkg)) {
-                    // Skip home launchers and background system services
+            for (Map.Entry<String, Long> entry : perAppMs.entrySet()) {
+                if (!isUserFacingApp(pm, entry.getKey())) {
                     skippedSystem++;
                     if (VERBOSE_LOGGING) {
-                        Log.v(TAG, "[COMPREHENSIVE] Skipping system/launcher: " + pkg);
+                        Log.v(TAG, "[COMPREHENSIVE] Skipping system/launcher: " + entry.getKey());
                     }
                     continue;
                 }
-                totalMs += usageStats.getTotalTimeInForeground();
+                totalMs += entry.getValue();
             }
             double totalScreenTimeMin = (double) totalMs / 60_000.0;
             Log.d(TAG, "[COMPREHENSIVE] totalScreenTimeMin=" + totalScreenTimeMin +
-                    " (from " + stats.size() + " UsageStats entries, skipped " + skippedStale +
-                    " stale, " + skippedSystem + " system/launcher)");
+                    " (from events, " + perAppMs.size() + " apps total, skipped " +
+                    skippedSystem + " system/launcher)");
 
             // ── Step 2: Unlock + notification counts via UsageEvents ──────────
             int unlockCount = -1;
@@ -314,35 +303,14 @@ public class ScreenTimeTracker {
         List<Map<String, Object>> results = new ArrayList<>();
 
         try {
-            UsageStatsManager usageStatsManager =
-                    (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
+            // Use UsageEvents (MOVE_TO_FOREGROUND / MOVE_TO_BACKGROUND) for accurate per-app time.
+            // The previous INTERVAL_DAILY approach returned daily buckets whose
+            // getTotalTimeInForeground() covers the ENTIRE bucket period, not just the
+            // portion overlapping the query range. This caused inflated times when
+            // yesterday's bucket was included (e.g., 2h30m instead of 40m for Instagram).
+            Map<String, Long> usageMap = getPerAppForegroundTimeFromEvents(startTime, endTime);
 
-            List<UsageStats> stats = usageStatsManager.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY, startTime, endTime);
-
-            // Group by package name and sum up usage time.
-            // Filter by getLastTimeUsed() >= startTime to exclude yesterday's INTERVAL_DAILY
-            // bucket (Android can return it because its end timestamp equals our startTime).
-            Map<String, Long> usageMap = new HashMap<>();
-            for (UsageStats stat : stats) {
-                if (stat.getLastTimeUsed() < startTime) {
-                    // Stale bucket from before today — skip to avoid double-counting
-                    if (VERBOSE_LOGGING) {
-                        Log.v(TAG, "[PER_APP] Skipping stale bucket for " + stat.getPackageName() +
-                                " lastUsed=" + stat.getLastTimeUsed() + " startTime=" + startTime);
-                    }
-                    continue;
-                }
-                String pkg = stat.getPackageName();
-                long time = stat.getTotalTimeInForeground();
-                if (time > 0) {
-                    usageMap.put(pkg, usageMap.containsKey(pkg)
-                            ? usageMap.get(pkg) + time
-                            : time);
-                }
-            }
-
-            Log.d(TAG, "[PER_APP] Aggregated " + usageMap.size() + " apps with usage > 0");
+            Log.d(TAG, "[PER_APP] Events-based: " + usageMap.size() + " apps with usage > 0");
 
             PackageManager pm = context.getPackageManager();
 
@@ -500,6 +468,104 @@ public class ScreenTimeTracker {
             Log.e(TAG, "[NOTIF_COUNT] Error: " + e.getMessage(), e);
             return -1;
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Events-based per-app foreground time (accurate, no bucket overlap issues)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Computes per-app foreground time by processing MOVE_TO_FOREGROUND (type 1) and
+     * MOVE_TO_BACKGROUND (type 2) events from UsageEvents. This is more accurate than
+     * queryUsageStats(INTERVAL_DAILY) because:
+     *   1. Events have exact timestamps — no daily-bucket overlap / double-counting
+     *   2. Only time within [startTime, endTime] is counted
+     *   3. This matches what Android's Digital Wellbeing app uses internally
+     *
+     * Edge cases handled:
+     *   - App still in foreground at endTime: session capped at endTime
+     *   - App in foreground before startTime: session starts at startTime (via first BG event)
+     *   - Multiple foreground events without intervening background: last FG wins (reset)
+     *
+     * @param startTime Query start in epoch ms (inclusive)
+     * @param endTime   Query end in epoch ms (exclusive)
+     * @return Map of packageName → total foreground milliseconds. Never null.
+     */
+    private Map<String, Long> getPerAppForegroundTimeFromEvents(long startTime, long endTime) {
+        Log.d(TAG, "[EVENTS] getPerAppForegroundTimeFromEvents range=" + startTime + "→" + endTime);
+        Map<String, Long> foregroundTimes = new HashMap<>();
+
+        try {
+            UsageStatsManager usm =
+                    (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
+            UsageEvents events = usm.queryEvents(startTime, endTime);
+            UsageEvents.Event event = new UsageEvents.Event();
+
+            // Track when each app most recently moved to foreground
+            // Key = packageName, Value = timestamp of MOVE_TO_FOREGROUND
+            Map<String, Long> fgStartTimes = new HashMap<>();
+
+            // UsageEvents.Event type constants:
+            //   MOVE_TO_FOREGROUND = 1 (activity resumed / became visible)
+            //   MOVE_TO_BACKGROUND = 2 (activity paused / went invisible)
+            final int MOVE_TO_FG = 1;
+            final int MOVE_TO_BG = 2;
+
+            int processedEvents = 0;
+
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event);
+                int type = event.getEventType();
+
+                if (type != MOVE_TO_FG && type != MOVE_TO_BG) continue;
+
+                processedEvents++;
+                String pkg = event.getPackageName();
+                long ts = event.getTimeStamp();
+
+                if (type == MOVE_TO_FG) {
+                    // App came to foreground — record session start
+                    fgStartTimes.put(pkg, ts);
+                } else { // MOVE_TO_BG
+                    // App went to background — compute session duration
+                    Long sessionStart = fgStartTimes.remove(pkg);
+                    if (sessionStart != null) {
+                        long duration = ts - sessionStart;
+                        if (duration > 0) {
+                            Long existing = foregroundTimes.get(pkg);
+                            foregroundTimes.put(pkg, (existing != null ? existing : 0L) + duration);
+                        }
+                    } else {
+                        // BG event without a preceding FG event in our range:
+                        // App was in foreground before startTime. Count from startTime.
+                        long duration = ts - startTime;
+                        if (duration > 0) {
+                            Long existing = foregroundTimes.get(pkg);
+                            foregroundTimes.put(pkg, (existing != null ? existing : 0L) + duration);
+                        }
+                    }
+                }
+            }
+
+            // Handle apps still in foreground at endTime (no MOVE_TO_BG yet)
+            for (Map.Entry<String, Long> entry : fgStartTimes.entrySet()) {
+                String pkg = entry.getKey();
+                long sessionStart = entry.getValue();
+                long duration = endTime - sessionStart;
+                if (duration > 0) {
+                    Long existing = foregroundTimes.get(pkg);
+                    foregroundTimes.put(pkg, (existing != null ? existing : 0L) + duration);
+                }
+            }
+
+            Log.d(TAG, "[EVENTS] Processed " + processedEvents + " FG/BG events, " +
+                    foregroundTimes.size() + " apps with usage > 0");
+
+        } catch (Exception e) {
+            Log.e(TAG, "[EVENTS] Error computing foreground time from events: " + e.getMessage(), e);
+        }
+
+        return foregroundTimes;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

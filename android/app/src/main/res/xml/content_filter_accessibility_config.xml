@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- porn_blocker_accessibility_config.xml
-     Config for PornBlockerService (browser URL monitoring only).
+<!-- content_filter_accessibility_config.xml
+     Config for ContentFilterService (browser URL monitoring only).
      For Reels/Shorts scroll detection, see reels_intervention_service_config.xml.
 -->
 <accessibility-service

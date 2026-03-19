@@ -67,7 +67,7 @@ Background monitoring starts separately:
 | **SettingsModule.java** | SharedPreferences bridge. Persists blocked apps list, monitoring toggle, redirect flag, scroll budget config, scroll threshold. |
 | **ScreenTimeTracker.java** | Aggregates 24-hour foreground time across all apps via `UsageStatsManager`. Returns total screen time, unlock count, notification count, per-app usage. |
 | **ReelsInterventionService.java** | AccessibilityService monitoring Instagram Reels / YouTube Shorts. Counts scrolls; shows intervention popup after scroll threshold is reached. |
-| **PornBlockerService.java** | Browser-based URL blocking service. |
+| **ContentFilterService.java** | Browser-based URL blocking service. |
 | **MainActivity.java** | Standard ReactActivity host. Handles VPN permission results via `onActivityResult()`. |
 | **AccessibilityPermissionActivity.java** | Gate screen requiring ReelsInterventionService to be enabled before entering the app. |
 | **BreqkWidgetProvider.java** | Broadcast receiver for home screen widget updates. |

@@ -21,7 +21,11 @@
       "Bash(done)",
       "Bash(./gradlew assembleDebug)",
       "Bash(./gradlew build:*)",
-      "Bash(./gradlew compileDebugJavaWithJavac)"
+      "Bash(./gradlew compileDebugJavaWithJavac)",
+      "Bash(find /c/Users/omran/code/DoomScrollStopper -type f \\\\\\(-name *.js -o -name *.tsx \\\\\\) -path */components/*)",
+      "Bash(adb logcat:*)",
+      "Bash(adb shell:*)",
+      "Bash(./gradlew installDebug)"
     ]
   },
   "enabledPlugins": {

@@ -2,6 +2,8 @@
 
 A reference for all log tags, message prefixes, filter commands, and conventions across the native Android and React Native layers.
 
+> **Windows Users:** All filter examples in this document support Windows PowerShell and cmd.exe. Look for **PowerShell** and **cmd.exe** labeled sections for platform-specific commands. PowerShell examples use `Select-String` and cmd.exe examples use `findstr`.
+
 ---
 
 ## Quick Start
@@ -24,12 +26,12 @@ adb logcat -s VPNModule:E AppUsageMonitor:E ScreenTimeTracker:E MyVpnService:E *
 ### React Native JS logs (Metro terminal)
 JS logs appear in the **Metro bundler terminal** (`npm start`) automatically.
 To filter by prefix:
-```bash
-# macOS / Linux
-npx react-native start 2>&1 | grep "\[Home\]"
-
+```powershell
 # Windows PowerShell
 npx react-native start | Select-String '\[Home\]'
+
+# Windows cmd.exe (findstr)
+npx react-native start | findstr "[Home]"
 ```
 
 ---
@@ -41,12 +43,12 @@ Filter with: `adb logcat -s <TAG>`
 
 | TAG | File | What it covers |
 |-----|------|----------------|
-| `AppUsageMonitor` | `AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget enforcement |
+| `AppUsageMonitor` | `AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync |
 | `ScreenTimeTracker` | `ScreenTimeTracker.java` | Daily screen time totals, per-app usage, unlock count, notification count |
 | `VPNModule` | `VPNModule.java` | JS↔Android bridge: permissions, monitoring, blocked apps, budget status, wellbeing stats |
 | `MyVpnService` | `MyVpnService.java` | Foreground service lifecycle, intent dispatch, scroll budget persistence |
-| `REELS_WATCH` | `ReelsInterventionService.java` | Reels/Shorts scroll detection, intervention popup |
-| `BROWSER_WATCH` | `PornBlockerService.java` | Browser URL extraction, blocking, cooldown |
+| `REELS_WATCH` | `ReelsInterventionService.java` | Reels/Shorts scroll detection, intervention popup, scroll budget accumulation & enforcement (sole writer) |
+| `BROWSER_WATCH` | `ContentFilterService.java` | Browser URL extraction, blocking, cooldown |
 | `SettingsModule` | `SettingsModule.java` | SharedPreferences reads/writes: blocked apps, monitoring toggle, scroll budget config |
 | `BreqkWidget` | `BreqkWidgetProvider.java` | Home screen widget update events |
 | `ACC_PERM_GATE` | `AccessibilityPermissionActivity.java` | Accessibility permission gate screen lifecycle |
@@ -87,6 +89,7 @@ adb logcat -s VPNModule
 | `[SCREEN_TIME]` | `getScreenTimeStats()` — 24h rolling total (legacy API) |
 | `[COMPREHENSIVE]` | `getComprehensiveStats()` — single-pass screen time + unlocks + notifications |
 | `[PER_APP]` | `getPerAppStats()` — per-app breakdown for top-apps list |
+| `[EVENTS]` | `getPerAppForegroundTimeFromEvents()` — UsageEvents-based accurate per-app foreground time |
 | `[UNLOCK_COUNT]` | `getUnlockCount()` — KEYGUARD_HIDDEN events; warns when API < 28 |
 | `[NOTIF_COUNT]` | `getNotificationCount()` — NOTIFICATION_SEEN events; warns on OEM restriction |
 
@@ -96,9 +99,14 @@ Common warning patterns:
 - `[PER_APP] Skipping system app: com.android.systemui` → expected; system apps are filtered.
 
 Filter:
-```bash
+```powershell
 adb logcat -s ScreenTimeTracker
-# Debug stats: grep -E "\[COMPREHENSIVE\]|\[UNLOCK_COUNT\]|\[NOTIF_COUNT\]"
+
+# PowerShell - debug stats
+adb logcat -s ScreenTimeTracker | Select-String '\[COMPREHENSIVE\]|\[UNLOCK_COUNT\]|\[NOTIF_COUNT\]'
+
+# cmd.exe alternative
+adb logcat -s ScreenTimeTracker | findstr "[COMPREHENSIVE]" OR findstr "[UNLOCK_COUNT]" OR findstr "[NOTIF_COUNT]"
 ```
 
 ---
@@ -112,14 +120,19 @@ adb logcat -s ScreenTimeTracker
 | `[BLOCKED]` | Blocked app opened, intervention triggered |
 | `[ALLOW]` | User tapped "Continue" — app added to session allowlist |
 | `[COOLDOWN]` | Popup cooldown active, suppressing re-trigger |
-| `[SCROLL_BUDGET]` | Scroll time accumulation and budget-exhausted events *(scroll-time-limit feature)* |
+| `[ScrollBudget]` | Read-only budget sync from SharedPreferences (no longer accumulates — see REELS_WATCH) |
 | `[REELS_STATE]` | Reels state reads from SharedPreferences (isCurrentlyInReels check, gates scroll budget) |
 | `POPUP_MARKER` | Inline marker logged just before overlay is shown |
 
 Filter:
-```bash
+```powershell
 adb logcat -s AppUsageMonitor
-# Overlay only: grep -E "POPUP_MARKER|removeOverlay|cooldown"
+
+# PowerShell - overlay only
+adb logcat -s AppUsageMonitor | Select-String 'POPUP_MARKER|removeOverlay|cooldown'
+
+# cmd.exe alternative (find overlay markers)
+adb logcat -s AppUsageMonitor | findstr "POPUP_MARKER"
 ```
 
 ---
@@ -136,10 +149,18 @@ adb logcat -s AppUsageMonitor
 | `[MONITOR]` | Monitor start/stop inside the service |
 
 Filter:
-```bash
+```powershell
 adb logcat -s MyVpnService
-# Intent dispatch: grep "\[CMD\]"
-# Budget: grep "\[BUDGET\]"
+
+# PowerShell - intent dispatch
+adb logcat -s MyVpnService | Select-String '\[CMD\]'
+
+# PowerShell - budget
+adb logcat -s MyVpnService | Select-String '\[BUDGET\]'
+
+# cmd.exe alternatives
+adb logcat -s MyVpnService | findstr "[CMD]"
+adb logcat -s MyVpnService | findstr "[BUDGET]"
 ```
 
 ---
@@ -167,6 +188,10 @@ adb logcat -s SettingsModule
 | `[BUDGET]` | Scroll budget check result — exhausted or OK, overlay shown |
 | `[REELS_STATE]` | Reels state persistence: enter/exit Reels, heartbeat refresh, SharedPreferences writes |
 | `STATE_CHANGED` | Reels/Shorts layout enter/exit detection |
+| `TIER1` / `TIER2` | YouTube Shorts detection tier results (known IDs / structural heuristic) |
+| `YT_TREE_DUMP` | YouTube accessibility tree dump when all Shorts detection tiers fail (rate-limited 10s) |
+| `return_to_feed` | User tapped "Return to Feed" — GLOBAL_ACTION_BACK fired, budget preserved |
+| `lock_in` | User tapped "Lock In" — GLOBAL_ACTION_HOME fired, reels state reset |
 
 Logs one line per scroll event in `SCROLL_DECISION` format:
 ```
@@ -174,25 +199,49 @@ SCROLL_DECISION pkg=<packageName> fastPath=<bool> confirmedInReels=<bool> budget
 ```
 
 The popup triggers based on scroll budget exhaustion (time-based), NOT scroll count.
-Budget state is read from SharedPreferences (`scroll_budget_exhausted_at`).
+ReelsInterventionService is the **sole writer** of scroll budget state (`scroll_time_used_ms`,
+`scroll_budget_exhausted_at`, `scroll_window_start_time`) via its heartbeat. AppUsageMonitor
+only reads these values for the JS bridge. Budget overlay is triggered immediately when
+budget exhausts (via heartbeat) or on Reels entry if already exhausted.
 
 Also logs ViewPager visibility checks and screen bounds.
 
 Filter:
-```bash
+```powershell
 # Per-scroll decisions only
-adb logcat -s REELS_WATCH | grep SCROLL_DECISION
+adb logcat -s REELS_WATCH | Select-String 'SCROLL_DECISION'
 
 # Budget decisions (exhausted / OK)
-adb logcat -s REELS_WATCH | grep BUDGET
+adb logcat -s REELS_WATCH | Select-String 'BUDGET'
+
+# YouTube Shorts view ID discovery (when detection fails)
+adb logcat -s REELS_WATCH | Select-String 'YT_TREE_DUMP'
+
+# YouTube Shorts detection tier results
+adb logcat -s REELS_WATCH | Select-String 'TIER1|TIER2|isShortsLayout'
 
 # Full output (bounds, visibility)
 adb logcat -s REELS_WATCH
 ```
 
+**cmd.exe alternatives:**
+```batch
+REM Per-scroll decisions only
+adb logcat -s REELS_WATCH | findstr "SCROLL_DECISION"
+
+REM Budget decisions
+adb logcat -s REELS_WATCH | findstr "BUDGET"
+
+REM YouTube Shorts view ID discovery
+adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
+
+REM YouTube Shorts tier results (note: findstr doesn't support |, use multiple findstr)
+adb logcat -s REELS_WATCH | findstr "TIER1 TIER2"
+```
+
 ---
 
-### PornBlockerService.java — Tag: `BROWSER_WATCH`
+### ContentFilterService.java — Tag: `BROWSER_WATCH`
 
 Filter:
 ```bash
@@ -221,25 +270,28 @@ adb logcat -s BreqkWidget
 
 ## Special Markers
 
-These markers appear inline inside log messages for grep-based filtering across tags.
+These markers appear inline inside log messages for filtering across tags.
 
-| Marker | Location | Filter command |
-|--------|----------|----------------|
-| `POPUP_MARKER` | `AppUsageMonitor.java` | `adb logcat \| grep POPUP_MARKER` |
-| `SCROLL_DECISION` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| grep SCROLL_DECISION` |
-| `[BUDGET]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| grep BUDGET` |
-| `[REELS_STATE]` | `ReelsInterventionService.java`, `AppUsageMonitor.java` | `adb logcat -s REELS_WATCH AppUsageMonitor \| grep REELS_STATE` |
-| `[INIT]` | `VPNModule.java`, `SettingsModule.java`, `ScreenTimeTracker.java` | `adb logcat \| grep "\[INIT\]"` |
-| `[CREATE]` | `MyVpnService.java` | `adb logcat \| grep "\[CREATE\]"` |
-| `[CMD]` | `MyVpnService.java` | `adb logcat -s MyVpnService \| grep "\[CMD\]"` |
-| `[BUDGET]` | `MyVpnService.java` | `adb logcat -s MyVpnService \| grep "\[BUDGET\]"` |
-| `[COMPREHENSIVE]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| grep "\[COMPREHENSIVE\]"` |
-| `[PER_APP]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| grep "\[PER_APP\]"` |
-| `[UNLOCK_COUNT]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| grep "\[UNLOCK_COUNT\]"` |
-| `[NOTIF_COUNT]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| grep "\[NOTIF_COUNT\]"` |
-| `[WELLBEING]` | `VPNModule.java` | `adb logcat -s VPNModule \| grep "\[WELLBEING\]"` |
-| `[TOP_APPS_TODAY]` | `VPNModule.java` | `adb logcat -s VPNModule \| grep "\[TOP_APPS_TODAY\]"` |
-| `DEBUG:` | `VPNSwitch.js` | In Metro output, search for `DEBUG:` |
+| Marker | Location | PowerShell Filter | cmd.exe Filter |
+|--------|----------|-------------------|-----------------|
+| `POPUP_MARKER` | `AppUsageMonitor.java` | `adb logcat \| Select-String 'POPUP_MARKER'` | `adb logcat \| findstr "POPUP_MARKER"` |
+| `SCROLL_DECISION` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'SCROLL_DECISION'` | `adb logcat -s REELS_WATCH \| findstr "SCROLL_DECISION"` |
+| `[BUDGET]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'BUDGET'` | `adb logcat -s REELS_WATCH \| findstr "BUDGET"` |
+| `TIER1` / `TIER2` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'TIER1\|TIER2'` | `adb logcat -s REELS_WATCH \| findstr "TIER1 TIER2"` |
+| `YT_TREE_DUMP` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'YT_TREE_DUMP'` | `adb logcat -s REELS_WATCH \| findstr "YT_TREE_DUMP"` |
+| `[REELS_STATE]` | `ReelsInterventionService.java`, `AppUsageMonitor.java` | `adb logcat -s REELS_WATCH AppUsageMonitor \| Select-String 'REELS_STATE'` | `adb logcat -s REELS_WATCH AppUsageMonitor \| findstr "REELS_STATE"` |
+| `[INIT]` | `VPNModule.java`, `SettingsModule.java`, `ScreenTimeTracker.java` | `adb logcat \| Select-String '\[INIT\]'` | `adb logcat \| findstr "[INIT]"` |
+| `[CREATE]` | `MyVpnService.java` | `adb logcat \| Select-String '\[CREATE\]'` | `adb logcat \| findstr "[CREATE]"` |
+| `[CMD]` | `MyVpnService.java` | `adb logcat -s MyVpnService \| Select-String '\[CMD\]'` | `adb logcat -s MyVpnService \| findstr "[CMD]"` |
+| `[BUDGET]` | `MyVpnService.java` | `adb logcat -s MyVpnService \| Select-String '\[BUDGET\]'` | `adb logcat -s MyVpnService \| findstr "[BUDGET]"` |
+| `[COMPREHENSIVE]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[COMPREHENSIVE\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[COMPREHENSIVE]"` |
+| `[PER_APP]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[PER_APP\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[PER_APP]"` |
+| `[EVENTS]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[EVENTS\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[EVENTS]"` |
+| `[UNLOCK_COUNT]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[UNLOCK_COUNT\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[UNLOCK_COUNT]"` |
+| `[NOTIF_COUNT]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[NOTIF_COUNT\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[NOTIF_COUNT]"` |
+| `[WELLBEING]` | `VPNModule.java` | `adb logcat -s VPNModule \| Select-String '\[WELLBEING\]'` | `adb logcat -s VPNModule \| findstr "[WELLBEING]"` |
+| `[TOP_APPS_TODAY]` | `VPNModule.java` | `adb logcat -s VPNModule \| Select-String '\[TOP_APPS_TODAY\]'` | `adb logcat -s VPNModule \| findstr "[TOP_APPS_TODAY]"` |
+| `DEBUG:` | `VPNSwitch.js` | In Metro output, use `Select-String 'DEBUG:'` | In Metro output, use `findstr "DEBUG:"` |
 
 ---
 
@@ -261,24 +313,37 @@ JS logs use `console.log('[Prefix] message')` so you can grep Metro output.
 
 ### Filter JS logs in Metro terminal
 
-```bash
+**PowerShell:**
+```powershell
 # All Home screen logs
-npx react-native start 2>&1 | grep "\[Home\]"
+npx react-native start | Select-String '\[Home\]'
 
 # Digital wellbeing hook (cache hits, fetch times, stat values)
-npx react-native start 2>&1 | grep "\[useDigitalWellbeing\]"
+npx react-native start | Select-String '\[useDigitalWellbeing\]'
 
 # All permission flow logs
-npx react-native start 2>&1 | grep "\[PermissionsScreen\]"
+npx react-native start | Select-String '\[PermissionsScreen\]'
 
 # All customize screen logs
-npx react-native start 2>&1 | grep "\[Customize\]"
+npx react-native start | Select-String '\[Customize\]'
 
 # Everything with a prefix
-npx react-native start 2>&1 | grep -E "\[(Home|useDigitalWellbeing|Customize|PermissionsScreen|BlockerInterstitial|App|WebView|Progress)\]"
+npx react-native start | Select-String '\[(Home|useDigitalWellbeing|Customize|PermissionsScreen|BlockerInterstitial|App|WebView|Progress)\]'
+```
 
-# Windows PowerShell
-npx react-native start | Select-String '\[Home\]'
+**cmd.exe (findstr):**
+```batch
+REM All Home screen logs
+npx react-native start | findstr "[Home]"
+
+REM Digital wellbeing hook
+npx react-native start | findstr "[useDigitalWellbeing]"
+
+REM All permission flow logs
+npx react-native start | findstr "[PermissionsScreen]"
+
+REM All customize screen logs
+npx react-native start | findstr "[Customize]"
 ```
 
 ---
@@ -286,8 +351,12 @@ npx react-native start | Select-String '\[Home\]'
 ## Useful adb Combos
 
 ### Watch overlay events in real time
-```bash
-adb logcat -s AppUsageMonitor | grep -E "POPUP_MARKER|removeOverlay|cooldown"
+```powershell
+# PowerShell
+adb logcat -s AppUsageMonitor | Select-String 'POPUP_MARKER|removeOverlay|cooldown'
+
+# cmd.exe
+adb logcat -s AppUsageMonitor | findstr "POPUP_MARKER"
 ```
 
 ### Watch the full detection pipeline (detection → overlay → dismiss)
@@ -296,13 +365,21 @@ adb logcat -s AppUsageMonitor VPNModule MyVpnService
 ```
 
 ### Debug Home screen stats (screen time, unlocks, notifications, top apps)
-```bash
-adb logcat -s ScreenTimeTracker VPNModule | grep -E "\[COMPREHENSIVE\]|\[PER_APP\]|\[UNLOCK_COUNT\]|\[NOTIF_COUNT\]|\[WELLBEING\]|\[TOP_APPS_TODAY\]"
+```powershell
+# PowerShell
+adb logcat -s ScreenTimeTracker VPNModule | Select-String '\[COMPREHENSIVE\]|\[PER_APP\]|\[UNLOCK_COUNT\]|\[NOTIF_COUNT\]|\[WELLBEING\]|\[TOP_APPS_TODAY\]'
+
+# cmd.exe
+adb logcat -s ScreenTimeTracker VPNModule | findstr "[COMPREHENSIVE]" OR findstr "[PER_APP]" OR findstr "[WELLBEING]"
 ```
 
 ### Watch scroll budget enforcement
-```bash
-adb logcat -s AppUsageMonitor MyVpnService | grep -E "budget|BUDGET|exhausted"
+```powershell
+# PowerShell
+adb logcat -s AppUsageMonitor MyVpnService | Select-String 'budget|BUDGET|exhausted'
+
+# cmd.exe
+adb logcat -s AppUsageMonitor MyVpnService | findstr "budget BUDGET exhausted"
 ```
 
 ### Watch Reels intervention only
@@ -311,8 +388,12 @@ adb logcat -s REELS_WATCH
 ```
 
 ### Watch Reels state sharing (ReelsInterventionService ↔ AppUsageMonitor)
-```bash
-adb logcat -s REELS_WATCH AppUsageMonitor | grep REELS_STATE
+```powershell
+# PowerShell
+adb logcat -s REELS_WATCH AppUsageMonitor | Select-String 'REELS_STATE'
+
+# cmd.exe
+adb logcat -s REELS_WATCH AppUsageMonitor | findstr "REELS_STATE"
 ```
 
 ### Watch settings persistence

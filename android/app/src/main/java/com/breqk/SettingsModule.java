@@ -114,7 +114,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     /**
      * Persists the scroll threshold for Reels/Shorts intervention.
-     * Read by PornBlockerService.getScrollThreshold() at runtime.
+     * Read by ContentFilterService.getScrollThreshold() at runtime.
      *
      * @param threshold Number of scrolls before intervention popup fires (1–20).
      */

@@ -614,7 +614,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * setScrollThreshold — Called from React Native (Customize screen) when user adjusts scroll sensitivity.
-     * Persists to SharedPreferences so PornBlockerService reads the new threshold at next scroll event.
+     * Persists to SharedPreferences so ContentFilterService reads the new threshold at next scroll event.
      *
      * @param threshold Number of scrolls within Reels/Shorts before the intervention popup fires (1–20).
      */
