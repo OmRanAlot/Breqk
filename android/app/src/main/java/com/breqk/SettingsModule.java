@@ -12,7 +12,6 @@ package com.breqk;
  */
 
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.SharedPreferences;
 import android.appwidget.AppWidgetManager;
 
@@ -46,8 +45,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getBlockedApps(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getBlockedApps called");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        Set<String> blockedApps = prefs.getStringSet("blocked_apps", new HashSet<>());
+        Set<String> blockedApps = BreqkPrefs.getBlockedApps(reactContext);
         Log.d(TAG, "[GET] returning " + blockedApps.size() + " apps: " + blockedApps.toString());
 
         // CRITICAL FIX: Convert Set to WritableArray so React Native receives a proper
@@ -65,17 +63,17 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveMonitoringEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveMonitoringEnabled called with enabled=" + enabled);
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        prefs.edit().putBoolean("monitoring_enabled", enabled).apply();
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        prefs.edit().putBoolean(BreqkPrefs.KEY_MONITORING_ENABLED, enabled).apply();
         Log.d(TAG, "[SAVE] monitoring_enabled=" + enabled + " saved");
     }
 
     @ReactMethod
     public void getMonitoringEnabled(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getMonitoringEnabled called");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
         // Default to true so that after onboarding the blocker starts as ON
-        boolean enabled = prefs.getBoolean("monitoring_enabled", true);
+        boolean enabled = prefs.getBoolean(BreqkPrefs.KEY_MONITORING_ENABLED, true);
         Log.d(TAG, "[GET] monitoring_enabled=" + enabled);
         callback.invoke(enabled);
     }
@@ -83,9 +81,9 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getRedirectInstagramToBrowser(Callback callback) {
         Log.d(TAG, "[GET] getRedirectInstagramToBrowser called");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
         // Default to true so current behavior (always redirect to Reels-free browser) is unchanged
-        boolean value = prefs.getBoolean("redirect_instagram_to_browser", true);
+        boolean value = prefs.getBoolean(BreqkPrefs.KEY_REDIRECT_INSTAGRAM, true);
         Log.d(TAG, "[GET] redirect_instagram_to_browser=" + value);
         callback.invoke(value);
     }
@@ -93,8 +91,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveRedirectInstagramToBrowser(boolean value) {
         Log.d(TAG, "[SAVE] saveRedirectInstagramToBrowser called with value=" + value);
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        prefs.edit().putBoolean("redirect_instagram_to_browser", value).apply();
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        prefs.edit().putBoolean(BreqkPrefs.KEY_REDIRECT_INSTAGRAM, value).apply();
         Log.d(TAG, "[SAVE] redirect_instagram_to_browser=" + value + " saved");
     }
 
@@ -123,8 +121,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         // Clamp to sane range before persisting
         int clamped = Math.max(1, Math.min(20, threshold));
         Log.d(TAG, "[SAVE] saveScrollThreshold called with threshold=" + threshold + " (clamped=" + clamped + ")");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        prefs.edit().putInt("scroll_threshold", clamped).apply();
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        prefs.edit().putInt(BreqkPrefs.KEY_SCROLL_THRESHOLD, clamped).apply();
         Log.d(TAG, "[SAVE] scroll_threshold=" + clamped + " saved");
     }
 
@@ -135,8 +133,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getScrollThreshold(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getScrollThreshold called");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        int threshold = prefs.getInt("scroll_threshold", 4);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        int threshold = prefs.getInt(BreqkPrefs.KEY_SCROLL_THRESHOLD, 4);
         Log.d(TAG, "[GET] scroll_threshold=" + threshold);
         callback.invoke(threshold);
     }
@@ -153,10 +151,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         int clampedAllowance = Math.max(1, Math.min(30, allowanceMinutes));
         int clampedWindow = Math.max(15, Math.min(120, windowMinutes));
         Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window=" + clampedWindow + "min");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
         prefs.edit()
-                .putInt("scroll_allowance_minutes", clampedAllowance)
-                .putInt("scroll_window_minutes", clampedWindow)
+                .putInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, clampedAllowance)
+                .putInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, clampedWindow)
                 .apply();
         Log.d(TAG, "[SAVE] scroll budget saved");
     }
@@ -169,17 +167,43 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getScrollBudget(Callback callback) {
         Log.d(TAG, "[GET] getScrollBudget called");
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        int allowanceMinutes = prefs.getInt("scroll_allowance_minutes", 5);
-        int windowMinutes = prefs.getInt("scroll_window_minutes", 60);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        int allowanceMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, 5);
+        int windowMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, 60);
         Log.d(TAG, "[GET] scroll budget: allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
         callback.invoke(allowanceMinutes, windowMinutes);
+    }
+
+    /**
+     * Persists the "20-Min Free Break" feature toggle.
+     * When false (default), the break button is hidden on the Home screen.
+     */
+    @ReactMethod
+    public void saveFreeBreakEnabled(boolean enabled) {
+        Log.d(TAG, "[SAVE] saveFreeBreakEnabled called with enabled=" + enabled);
+        BreqkPrefs.get(reactContext).edit()
+                .putBoolean(BreqkPrefs.KEY_FREE_BREAK_ENABLED, enabled)
+                .apply();
+        Log.d(TAG, "[SAVE] free_break_enabled=" + enabled + " saved");
+    }
+
+    /**
+     * Retrieves the "20-Min Free Break" feature toggle.
+     * Defaults to false so existing users are unaffected on first launch.
+     */
+    @ReactMethod
+    public void getFreeBreakEnabled(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getFreeBreakEnabled called");
+        boolean enabled = BreqkPrefs.get(reactContext)
+                .getBoolean(BreqkPrefs.KEY_FREE_BREAK_ENABLED, false);
+        Log.d(TAG, "[GET] free_break_enabled=" + enabled);
+        callback.invoke(enabled);
     }
 
     @ReactMethod
     public void saveBlockedApps(ReadableArray apps) {
         Log.d(TAG, "[SAVE] saveBlockedApps called with size=" + apps.size());
-        SharedPreferences prefs = reactContext.getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
         SharedPreferences.Editor editor = prefs.edit();
         Set<String> appSet = new HashSet<>();
 
@@ -189,7 +213,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
         Log.d(TAG, "[SAVE] saving set size=" + appSet.size() + " data=" + appSet.toString());
 
-        editor.putStringSet("blocked_apps", appSet);
+        editor.putStringSet(BreqkPrefs.KEY_BLOCKED_APPS, appSet);
         editor.apply();
         Log.d(TAG, "[SAVE] apply complete");
     }

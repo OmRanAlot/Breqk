@@ -36,7 +36,6 @@ import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.Build;
@@ -484,7 +483,8 @@ public class ScreenTimeTracker {
      *
      * Edge cases handled:
      *   - App still in foreground at endTime: session capped at endTime
-     *   - App in foreground before startTime: session starts at startTime (via first BG event)
+     *   - App in foreground before startTime with BG event in range: orphan BG skipped
+     *     (previously counted from startTime, but this inflated times for bg services)
      *   - Multiple foreground events without intervening background: last FG wins (reset)
      *
      * @param startTime Query start in epoch ms (inclusive)
@@ -536,12 +536,15 @@ public class ScreenTimeTracker {
                             foregroundTimes.put(pkg, (existing != null ? existing : 0L) + duration);
                         }
                     } else {
-                        // BG event without a preceding FG event in our range:
-                        // App was in foreground before startTime. Count from startTime.
-                        long duration = ts - startTime;
-                        if (duration > 0) {
-                            Long existing = foregroundTimes.get(pkg);
-                            foregroundTimes.put(pkg, (existing != null ? existing : 0L) + duration);
+                        // BG event without a preceding FG event in our range.
+                        // Previously we counted from startTime (midnight), but this caused massive
+                        // inflation (e.g. Camera showing 20h) because foreground services and
+                        // background processes emit MOVE_TO_BG events without a matching FG event
+                        // visible in today's window. Skipping these orphan events is much more
+                        // accurate for actual on-screen time.
+                        if (VERBOSE_LOGGING) {
+                            Log.v(TAG, "[EVENTS] Skipping orphan BG event for " + pkg +
+                                    " at t=" + ts + " (no FG event in window — likely bg service)");
                         }
                     }
                 }
@@ -612,15 +615,9 @@ public class ScreenTimeTracker {
 
     /**
      * Resolves a package name to a human-readable app label.
-     * Falls back to the package name itself if the label cannot be resolved.
+     * Delegates to AppNameResolver which maintains an LRU cache.
      */
     private String getAppName(PackageManager pm, String packageName) {
-        try {
-            ApplicationInfo appInfo = pm.getApplicationInfo(packageName, 0);
-            return pm.getApplicationLabel(appInfo).toString();
-        } catch (PackageManager.NameNotFoundException e) {
-            // App may have been uninstalled; return raw package name as fallback
-            return packageName;
-        }
+        return AppNameResolver.resolve(pm, packageName);
     }
 }

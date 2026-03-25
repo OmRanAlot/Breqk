@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- reels_intervention_service_config.xml
      Config for ReelsInterventionService.
-     Watches only Instagram and YouTube (not browsers).
+     Primarily watches Instagram and YouTube for scroll/reels detection.
+     packageNames is intentionally OMITTED so that TYPE_WINDOW_STATE_CHANGED events
+     from other apps (e.g., the launcher) can be received — this lets the service
+     detect when the user leaves Instagram/YouTube via Home button or app switcher,
+     preventing false-positive budget accumulation on the home screen.
+     The Java code in onAccessibilityEvent() filters non-target packages efficiently.
      typeViewScrolled required for scroll counting.
      flagReportViewIds required for findAccessibilityNodeInfosByViewId to return results.
 -->
@@ -13,5 +18,4 @@
     android:canRetrieveWindowContent="true"
     android:description="@string/app_name"
     android:notificationTimeout="100"
-    android:packageNames="com.instagram.android,com.google.android.youtube"
     android:settingsActivity="" />

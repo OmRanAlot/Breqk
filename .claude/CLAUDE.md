@@ -72,6 +72,9 @@ Background monitoring starts separately:
 | **AccessibilityPermissionActivity.java** | Gate screen requiring ReelsInterventionService to be enabled before entering the app. |
 | **BreqkWidgetProvider.java** | Broadcast receiver for home screen widget updates. |
 | **AppBlockerPackage.java** | Registers all native modules with the React Native bridge. |
+| **BreqkPrefs.java** | Centralized SharedPreferences constants and cached accessor. Single source of truth for all pref keys. |
+| **AppNameResolver.java** | Package name → app label resolution with LRU cache (100 entries). Used by AppUsageMonitor and ScreenTimeTracker. |
+| **ServiceHelper.java** | `startForegroundServiceCompat()` — compatibility helper for starting foreground services across API levels. |
 
 ### Important: Dual Monitor Instances
 

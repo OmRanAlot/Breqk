@@ -49,6 +49,8 @@ public class ContentFilterService extends AccessibilityService {
 
     private static final long REDIRECT_COOLDOWN_MS = 2000;
     private long lastRedirectTime = 0;
+    // Reuse a single Random instance instead of creating one per redirect call
+    private final Random random = new Random();
 
     private static final Set<String> BLOCKED_DOMAINS = new HashSet<>(Arrays.asList(
             "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com",
@@ -236,8 +238,7 @@ public class ContentFilterService extends AccessibilityService {
     }
 
     private void redirect() {
-        Random rand = new Random();
-        int index = rand.nextInt(REDIRECT_URL.length);
+        int index = random.nextInt(REDIRECT_URL.length);
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(REDIRECT_URL[index]));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);

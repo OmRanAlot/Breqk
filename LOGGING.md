@@ -15,12 +15,12 @@ adb logcat
 
 ### See only Breqk logs
 ```bash
-adb logcat -s AppUsageMonitor ScreenTimeTracker VPNModule MyVpnService REELS_WATCH BROWSER_WATCH SettingsModule BreqkWidget ACC_PERM_GATE
+adb logcat -s AppUsageMonitor ScreenTimeTracker VPNModule MyVpnService REELS_WATCH BROWSER_WATCH SettingsModule BreqkWidget ACC_PERM_GATE AppNameResolver ServiceHelper
 ```
 
 ### All errors across Breqk tags
 ```bash
-adb logcat -s VPNModule:E AppUsageMonitor:E ScreenTimeTracker:E MyVpnService:E *:S
+adb logcat -s VPNModule:E AppUsageMonitor:E ScreenTimeTracker:E MyVpnService:E ServiceHelper:E AppNameResolver:E *:S
 ```
 
 ### React Native JS logs (Metro terminal)
@@ -46,12 +46,15 @@ Filter with: `adb logcat -s <TAG>`
 | `AppUsageMonitor` | `AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync |
 | `ScreenTimeTracker` | `ScreenTimeTracker.java` | Daily screen time totals, per-app usage, unlock count, notification count |
 | `VPNModule` | `VPNModule.java` | JS↔Android bridge: permissions, monitoring, blocked apps, budget status, wellbeing stats |
+| `VPNModule:FreeBreak` | `VPNModule.java` | Free break start/end/status — separate sub-tag for easy isolation |
 | `MyVpnService` | `MyVpnService.java` | Foreground service lifecycle, intent dispatch, scroll budget persistence |
 | `REELS_WATCH` | `ReelsInterventionService.java` | Reels/Shorts scroll detection, intervention popup, scroll budget accumulation & enforcement (sole writer) |
 | `BROWSER_WATCH` | `ContentFilterService.java` | Browser URL extraction, blocking, cooldown |
 | `SettingsModule` | `SettingsModule.java` | SharedPreferences reads/writes: blocked apps, monitoring toggle, scroll budget config |
 | `BreqkWidget` | `BreqkWidgetProvider.java` | Home screen widget update events |
 | `ACC_PERM_GATE` | `AccessibilityPermissionActivity.java` | Accessibility permission gate screen lifecycle |
+| `AppNameResolver` | `AppNameResolver.java` | Package name to app label resolution (LRU cache) |
+| `ServiceHelper` | `ServiceHelper.java` | Foreground service start compatibility helper |
 
 ---
 
@@ -123,16 +126,19 @@ adb logcat -s ScreenTimeTracker | findstr "[COMPREHENSIVE]" OR findstr "[UNLOCK_
 | `[ScrollBudget]` | Read-only budget sync from SharedPreferences (no longer accumulates — see REELS_WATCH) |
 | `[REELS_STATE]` | Reels state reads from SharedPreferences (isCurrentlyInReels check, gates scroll budget) |
 | `POPUP_MARKER` | Inline marker logged just before overlay is shown |
+| `[AUTO_DISMISS]` | Overlay auto-dismissed because user left the blocked app (navigated home, switched apps, incoming call) |
+| `[SAFETY_DISMISS]` | Overlay auto-dismissed after exceeding max duration (customDelayTimeSeconds + 30s failsafe) |
+| `[FG_DETECT]` | Enhanced foreground detection — background transitions, launcher resolution |
 
 Filter:
 ```powershell
 adb logcat -s AppUsageMonitor
 
 # PowerShell - overlay only
-adb logcat -s AppUsageMonitor | Select-String 'POPUP_MARKER|removeOverlay|cooldown'
+adb logcat -s AppUsageMonitor | Select-String 'POPUP_MARKER|removeOverlay|cooldown|AUTO_DISMISS|SAFETY_DISMISS'
 
 # cmd.exe alternative (find overlay markers)
-adb logcat -s AppUsageMonitor | findstr "POPUP_MARKER"
+adb logcat -s AppUsageMonitor | findstr "POPUP_MARKER AUTO_DISMISS SAFETY_DISMISS"
 ```
 
 ---
@@ -187,6 +193,8 @@ adb logcat -s SettingsModule
 | `SCROLL_DECISION` | Per-scroll event: confirmed in Reels?, budget exhausted?, action taken |
 | `[BUDGET]` | Scroll budget check result — exhausted or OK, overlay shown |
 | `[REELS_STATE]` | Reels state persistence: enter/exit Reels, heartbeat refresh, SharedPreferences writes |
+| `[STILL_IN_REELS]` | Heartbeat foreground verification — checks active window package + Reels layout before accumulating budget |
+| `[APP_SWITCH]` | Detected app switch while in Reels (e.g., Home button, recents) — triggers Reels state reset to prevent false positives |
 | `STATE_CHANGED` | Reels/Shorts layout enter/exit detection |
 | `TIER1` / `TIER2` | YouTube Shorts detection tier results (known IDs / structural heuristic) |
 | `YT_TREE_DUMP` | YouTube accessibility tree dump when all Shorts detection tiers fail (rate-limited 10s) |
@@ -280,6 +288,8 @@ These markers appear inline inside log messages for filtering across tags.
 | `TIER1` / `TIER2` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'TIER1\|TIER2'` | `adb logcat -s REELS_WATCH \| findstr "TIER1 TIER2"` |
 | `YT_TREE_DUMP` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'YT_TREE_DUMP'` | `adb logcat -s REELS_WATCH \| findstr "YT_TREE_DUMP"` |
 | `[REELS_STATE]` | `ReelsInterventionService.java`, `AppUsageMonitor.java` | `adb logcat -s REELS_WATCH AppUsageMonitor \| Select-String 'REELS_STATE'` | `adb logcat -s REELS_WATCH AppUsageMonitor \| findstr "REELS_STATE"` |
+| `[STILL_IN_REELS]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'STILL_IN_REELS'` | `adb logcat -s REELS_WATCH \| findstr "STILL_IN_REELS"` |
+| `[APP_SWITCH]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'APP_SWITCH'` | `adb logcat -s REELS_WATCH \| findstr "APP_SWITCH"` |
 | `[INIT]` | `VPNModule.java`, `SettingsModule.java`, `ScreenTimeTracker.java` | `adb logcat \| Select-String '\[INIT\]'` | `adb logcat \| findstr "[INIT]"` |
 | `[CREATE]` | `MyVpnService.java` | `adb logcat \| Select-String '\[CREATE\]'` | `adb logcat \| findstr "[CREATE]"` |
 | `[CMD]` | `MyVpnService.java` | `adb logcat -s MyVpnService \| Select-String '\[CMD\]'` | `adb logcat -s MyVpnService \| findstr "[CMD]"` |
@@ -291,6 +301,8 @@ These markers appear inline inside log messages for filtering across tags.
 | `[NOTIF_COUNT]` | `ScreenTimeTracker.java` | `adb logcat -s ScreenTimeTracker \| Select-String '\[NOTIF_COUNT\]'` | `adb logcat -s ScreenTimeTracker \| findstr "[NOTIF_COUNT]"` |
 | `[WELLBEING]` | `VPNModule.java` | `adb logcat -s VPNModule \| Select-String '\[WELLBEING\]'` | `adb logcat -s VPNModule \| findstr "[WELLBEING]"` |
 | `[TOP_APPS_TODAY]` | `VPNModule.java` | `adb logcat -s VPNModule \| Select-String '\[TOP_APPS_TODAY\]'` | `adb logcat -s VPNModule \| findstr "[TOP_APPS_TODAY]"` |
+| `[FREE_BREAK]` | `VPNModule.java`, `ReelsInterventionService.java`, `MyVpnService.java` | `adb logcat \| Select-String '\[FREE_BREAK\]'` | `adb logcat \| findstr "[FREE_BREAK]"` |
+| `FREE_BREAK_ALLOW` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'FREE_BREAK_ALLOW'` | `adb logcat -s REELS_WATCH \| findstr "FREE_BREAK_ALLOW"` |
 | `DEBUG:` | `VPNSwitch.js` | In Metro output, use `Select-String 'DEBUG:'` | In Metro output, use `findstr "DEBUG:"` |
 
 ---
@@ -432,6 +444,10 @@ adb logcat -s AppUsageMonitor VPNModule MyVpnService REELS_WATCH > session_logs.
 | `is_in_reels` | boolean | `false` | Whether user is currently viewing Reels/Shorts (written by ReelsInterventionService) |
 | `is_in_reels_timestamp` | long | `0` | When `is_in_reels` was last updated (for staleness check, refreshed every 2s) |
 | `is_in_reels_package` | String | `""` | Which app is in Reels (e.g. `com.instagram.android`) |
+| `free_break_enabled` | boolean | `false` | Feature toggle: whether the 20-min free break button is visible on Home |
+| `free_break_active` | boolean | `false` | Whether a free break is currently running (written by VPNModule) |
+| `free_break_start_time` | long | `0` | Epoch ms when the current break started (0 = no active break) |
+| `free_break_last_used_date` | String | `""` | "yyyy-MM-dd" of last break usage; resets at midnight (new calendar day) |
 
 ---
 

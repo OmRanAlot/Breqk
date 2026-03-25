@@ -78,6 +78,8 @@ const Customize = ({ navigation }) => {
     const [isMonitoringEnabled, setIsMonitoringEnabled] = useState(true);
     // "Reels Detection" = redirect Instagram to safe browser
     const [reelsDetection, setReelsDetection] = useState(true);
+    // "20-Min Free Break" — one daily window of unrestricted Reels/Shorts scrolling
+    const [freeBreakEnabled, setFreeBreakEnabled] = useState(false);
 
     // ── Scroll budget state (only used when reelsDetection is on) ─────────────
     // allowance = minutes of scroll allowed per window; window = window duration in minutes
@@ -121,13 +123,15 @@ const Customize = ({ navigation }) => {
         const load = async () => {
             console.log('[Customize] loading saved settings');
             try {
-                const [monitoring, redirect] = await Promise.all([
+                const [monitoring, redirect, freeBreak] = await Promise.all([
                     new Promise((resolve) => SettingsModule.getMonitoringEnabled((v) => resolve(v))),
                     new Promise((resolve) => SettingsModule.getRedirectInstagramToBrowser((v) => resolve(v))),
+                    new Promise((resolve) => SettingsModule.getFreeBreakEnabled((v) => resolve(v))),
                 ]);
                 setIsMonitoringEnabled(monitoring !== false);
                 setReelsDetection(redirect !== false);
-                console.log('[Customize] settings loaded — monitoring:', monitoring, 'redirect:', redirect);
+                setFreeBreakEnabled(freeBreak === true);
+                console.log('[Customize] settings loaded — monitoring:', monitoring, 'redirect:', redirect, 'freeBreak:', freeBreak);
 
                 // Load saved scroll budget config and apply to native layer
                 await new Promise((resolve) => {
@@ -170,6 +174,13 @@ const Customize = ({ navigation }) => {
         console.log('[Customize] reels detection toggle →', value);
         setReelsDetection(value);
         SettingsModule.saveRedirectInstagramToBrowser(value);
+        showSaved();
+    };
+
+    const handleFreeBreakToggle = (value) => {
+        console.log('[Customize] free break toggle →', value);
+        setFreeBreakEnabled(value);
+        SettingsModule.saveFreeBreakEnabled(value);
         showSaved();
     };
 
@@ -329,6 +340,29 @@ const Customize = ({ navigation }) => {
                             ios_backgroundColor="#D6D6D6"
                         />
                     </View>
+
+                    {/* Toggle: 20-Min Free Break — only shown when Reels Detection is on */}
+                    {reelsDetection && (
+                        <>
+                            <View style={styles.divider} />
+                            <View style={styles.toggleRow}>
+                                <View style={styles.toggleLabelGroup}>
+                                    <Text style={styles.toggleLabel}>20-Min Free Break</Text>
+                                    <Text style={styles.toggleCaption}>
+                                        Once per day — scroll freely for 20 min with no interruptions or budget counting.
+                                    </Text>
+                                </View>
+                                <Switch
+                                    value={freeBreakEnabled}
+                                    onValueChange={handleFreeBreakToggle}
+                                    trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                                    thumbColor="#FFFFFF"
+                                    ios_backgroundColor="#D6D6D6"
+                                    accessibilityLabel="20-Minute Free Break toggle"
+                                />
+                            </View>
+                        </>
+                    )}
                 </View>
 
                 {/* ── Scroll Budget — only shown when Reels Detection is on */}
@@ -580,6 +614,17 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: L.charcoal,
         fontWeight: '400',
+    },
+    // Wraps label + caption text to allow the Switch to sit beside multi-line text
+    toggleLabelGroup: {
+        flex: 1,
+        marginRight: 12,
+    },
+    toggleCaption: {
+        fontSize: 12,
+        color: L.muted,
+        marginTop: 3,
+        lineHeight: 17,
     },
 
     // Thin divider between toggles

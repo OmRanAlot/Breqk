@@ -133,6 +133,10 @@ const Home = ({ navigation }) => {
     // ── Digital Wellbeing data ────────────────────────────────────────────────
     const { stats, topApps, loading, error, refresh } = useDigitalWellbeing();
 
+    // ── Free break status ─────────────────────────────────────────────────────
+    // { enabled, active, startTimeMs, durationMs, remainingMs, usedToday }
+    const [freeBreakStatus, setFreeBreakStatus] = useState(null);
+
     // ── Scroll budget status (polled every 5s) ───────────────────────────────
     // Reads from SharedPreferences via VPNModule so the displayed status reflects
     // what MyVpnService's monitor has accumulated.
@@ -159,6 +163,38 @@ const Home = ({ navigation }) => {
                 pollBudget();
             }
             appStateRefBudget.current = nextState;
+        });
+
+        return () => {
+            clearInterval(interval);
+            sub?.remove();
+        };
+    }, []);
+
+    // ── Free break polling (every 5s; also refreshes on foreground resume) ──────
+    useEffect(() => {
+        const appStateRefBreak = { current: AppState.currentState };
+
+        const pollFreeBreak = async () => {
+            try {
+                const status = await VPNModule.getFreeBreakStatus();
+                setFreeBreakStatus(status);
+                if (status.active) {
+                    console.log('[Home] free break active — remainingMs=' + status.remainingMs);
+                }
+            } catch (e) {
+                console.warn('[Home] getFreeBreakStatus failed:', e);
+            }
+        };
+
+        pollFreeBreak(); // initial fetch on mount
+        const interval = setInterval(pollFreeBreak, 5000);
+
+        const sub = AppState.addEventListener('change', (nextState) => {
+            if (appStateRefBreak.current.match(/inactive|background/) && nextState === 'active') {
+                pollFreeBreak();
+            }
+            appStateRefBreak.current = nextState;
         });
 
         return () => {
@@ -210,6 +246,32 @@ const Home = ({ navigation }) => {
         if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
         restartDebounceRef.current = setTimeout(restartMonitoring, 1000);
     }, [restartMonitoring]);
+
+    // ── Free break handlers ───────────────────────────────────────────────────
+
+    const handleStartFreeBreak = async () => {
+        console.log('[Home] starting 20-min free break');
+        try {
+            await VPNModule.startFreeBreak();
+            const status = await VPNModule.getFreeBreakStatus();
+            setFreeBreakStatus(status);
+            console.log('[Home] free break started — remainingMs=' + status.remainingMs);
+        } catch (e) {
+            console.error('[Home] startFreeBreak failed:', e);
+        }
+    };
+
+    const handleEndFreeBreak = async () => {
+        console.log('[Home] ending free break early (user-initiated)');
+        try {
+            await VPNModule.endFreeBreak();
+            const status = await VPNModule.getFreeBreakStatus();
+            setFreeBreakStatus(status);
+            console.log('[Home] free break ended early');
+        } catch (e) {
+            console.error('[Home] endFreeBreak failed:', e);
+        }
+    };
 
     // ── Initialise (monitoring + defaults) ────────────────────────────────────
 
@@ -276,7 +338,7 @@ const Home = ({ navigation }) => {
             stateSub?.remove();
             if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isMonitoring, debouncedRestart]);
 
     // ── Derived display values ────────────────────────────────────────────────
@@ -379,6 +441,70 @@ const Home = ({ navigation }) => {
                     );
                 })()}
 
+                {/* ── Free Break card / button ──────────────────────────── */}
+                {/* Only rendered when the 20-Min Free Break toggle is ON in Customize settings */}
+                {freeBreakStatus?.enabled && (() => {
+                    const { active, usedToday, remainingMs } = freeBreakStatus;
+
+                    if (active) {
+                        // Break in progress: green card with live countdown + early-end option
+                        return (
+                            <View style={styles.freeBreakCard}>
+                                <View style={styles.freeBreakCardHeader}>
+                                    <Text style={styles.freeBreakCardTitle}>Free Break Active</Text>
+                                    <View style={[styles.budgetDot, { backgroundColor: '#4CAF50' }]} />
+                                </View>
+                                <Text style={styles.freeBreakCountdown}>
+                                    {formatBudgetTime(remainingMs)} remaining
+                                </Text>
+                                <Text style={styles.freeBreakSubtext}>
+                                    Scroll freely — no interruptions until the timer ends.
+                                </Text>
+                                <TouchableOpacity
+                                    style={styles.freeBreakEndButton}
+                                    onPress={handleEndFreeBreak}
+                                    activeOpacity={0.75}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="End free break early"
+                                >
+                                    <Text style={styles.freeBreakEndButtonText}>End Break Early</Text>
+                                </TouchableOpacity>
+                            </View>
+                        );
+                    }
+
+                    if (usedToday) {
+                        // Already used today: disabled pill
+                        return (
+                            <TouchableOpacity
+                                style={[styles.freeBreakButton, styles.freeBreakButtonDisabled]}
+                                disabled={true}
+                                activeOpacity={1}
+                                accessibilityRole="button"
+                                accessibilityLabel="Free break already used today"
+                                accessibilityState={{ disabled: true }}
+                            >
+                                <Text style={styles.freeBreakButtonTextDisabled}>
+                                    Free Break Used Today
+                                </Text>
+                            </TouchableOpacity>
+                        );
+                    }
+
+                    // Available: primary action pill
+                    return (
+                        <TouchableOpacity
+                            style={styles.freeBreakButton}
+                            onPress={handleStartFreeBreak}
+                            activeOpacity={0.85}
+                            accessibilityRole="button"
+                            accessibilityLabel="Start 20-minute free break"
+                        >
+                            <Text style={styles.freeBreakButtonText}>Start 20-Min Free Break</Text>
+                        </TouchableOpacity>
+                    );
+                })()}
+
                 {/* ── Error state ───────────────────────────────────────── */}
                 {error && error !== 'usage_permission_missing' && (
                     <TouchableOpacity style={styles.errorRow} onPress={refresh}>
@@ -425,6 +551,14 @@ const Home = ({ navigation }) => {
                     )}
                 </View>
 
+                <View>
+                    <TouchableOpacity
+
+                    >
+
+                    </TouchableOpacity>
+                </View>
+
             </ScrollView>
 
             {/* ── Footer: action button + caption ────────────────────────── */}
@@ -454,6 +588,10 @@ export default Home;
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+
+    //Button for 20 minue break
+
+
     container: {
         flex: 1,
         backgroundColor: L.bg,
@@ -646,6 +784,81 @@ const styles = StyleSheet.create({
         fontSize: 11,
         color: L.muted,
         fontVariant: ['tabular-nums'],
+    },
+
+    // ── Free Break ──────────────────────────────────────────────────────────
+    freeBreakCard: {
+        backgroundColor: '#F0FAF1',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#A5D6A7',
+        padding: 16,
+        gap: 8,
+    },
+    freeBreakCardHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    freeBreakCardTitle: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#2E7D32',
+        textTransform: 'uppercase',
+        letterSpacing: 1.2,
+    },
+    freeBreakCountdown: {
+        fontSize: 26,
+        fontWeight: '300',
+        color: L.charcoal,
+        fontVariant: ['tabular-nums'],
+        letterSpacing: -0.5,
+    },
+    freeBreakSubtext: {
+        fontSize: 12,
+        color: '#555555',
+        lineHeight: 17,
+    },
+    freeBreakEndButton: {
+        marginTop: 4,
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 9999,
+        borderWidth: 1,
+        borderColor: '#A5D6A7',
+        alignSelf: 'flex-start',
+    },
+    freeBreakEndButtonText: {
+        fontSize: 13,
+        fontWeight: '500',
+        color: '#2E7D32',
+    },
+    freeBreakButton: {
+        backgroundColor: L.ctaBg,
+        borderRadius: 9999,
+        paddingVertical: 16,
+        paddingHorizontal: 32,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    freeBreakButtonText: {
+        color: L.ctaText,
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    freeBreakButtonDisabled: {
+        backgroundColor: 'rgba(0,0,0,0.08)',
+        shadowOpacity: 0,
+        elevation: 0,
+    },
+    freeBreakButtonTextDisabled: {
+        color: 'rgba(0,0,0,0.35)',
+        fontSize: 16,
+        fontWeight: '500',
     },
 
     // ── Footer ────────────────────────────────────────────────────────────────

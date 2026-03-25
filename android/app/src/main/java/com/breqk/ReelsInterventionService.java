@@ -28,11 +28,21 @@ package com.breqk;
  * at the bottom). Scrolling anywhere else in Instagram — home feed (including embedded
  * reel previews), DMs, stories, profiles, Explore — does NOT trigger the popup.
  *
- * Root cause of false positives (FIXED):
+ * Root cause of false positives (FIXED — two generations):
+ *
+ *   Generation 1 (back-stack nodes):
  *   Instagram keeps the Reels ViewPager in memory on its back stack even after the user
  *   navigates away. The old code only checked view ID existence; the new code additionally
  *   checks isVisibleToUser() and screen-coverage bounds to confirm the viewer is actually
  *   active and full-screen before counting any scroll.
+ *
+ *   Generation 2 (home screen / app switch):
+ *   When the user presses Home or switches apps, the heartbeat kept running because no
+ *   accessibility events from Instagram/YouTube fired. Fixed by:
+ *   (a) removing the packageNames filter from the XML config so TYPE_WINDOW_STATE_CHANGED
+ *       events from all apps are received — detecting app switches immediately;
+ *   (b) adding isStillInReels() verification to each heartbeat tick — if the active window
+ *       is no longer the Reels/Shorts app or layout, the heartbeat stops and state resets.
  *
  * Detection re-verified on every scroll event using two strategies:
  *   1. Fast path: check if scroll event source is clips_viewer_view_pager (O(1))
@@ -112,7 +122,9 @@ public class ReelsInterventionService extends AccessibilityService {
      * Used in Tier 2 heuristic detection when primary container IDs fail.
      */
     private static final String[] YOUTUBE_SHORTS_SECONDARY_IDS = {
-            "com.google.android.youtube:id/like_button",
+            // NOTE: "like_button" intentionally excluded — it's a generic YouTube ID that
+            // appears on home page video thumbnails, causing false positives. Only
+            // Shorts-specific IDs belong here.
             "com.google.android.youtube:id/reel_like_button",
             "com.google.android.youtube:id/shorts_like_button",
             "com.google.android.youtube:id/reel_comment_button",
@@ -268,10 +280,12 @@ public class ReelsInterventionService extends AccessibilityService {
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching: " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
+        Log.d(TAG, "  packageFilter: NONE (receives events from all apps for app-switch detection)");
         Log.d(TAG, "  trigger: scroll budget exhaustion (from SharedPreferences)");
         Log.d(TAG, "  full-screen thresholds: widthRatio>=" + MIN_WIDTH_RATIO
                 + " heightRatio>=" + MIN_HEIGHT_RATIO + " topOffset<=" + MAX_TOP_OFFSET_PX + "px");
         Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded)");
+        Log.d(TAG, "  false-positive guards: heartbeat isStillInReels() + app-switch detection");
     }
 
     @Override
@@ -284,7 +298,24 @@ public class ReelsInterventionService extends AccessibilityService {
 
         String packageName = pkg.toString();
 
-        // Only process events from Instagram or YouTube
+        // --- App-switch detection (defense in depth for false-positive fix) ---
+        // When the user is in Reels and a DIFFERENT app comes to foreground
+        // (e.g., Android launcher via Home button, or any other app via recents),
+        // immediately reset Reels state. Without this, the heartbeat would keep
+        // running and accumulating scroll budget on the home screen.
+        // Note: packageNames filter was removed from the XML config so we receive
+        // TYPE_WINDOW_STATE_CHANGED from all packages, not just Instagram/YouTube.
+        if (wasInReelsLayout
+                && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && !packageName.equals(PKG_INSTAGRAM)
+                && !packageName.equals(PKG_YOUTUBE)) {
+            Log.d(TAG, "[APP_SWITCH] Detected app switch while in Reels: newPkg=" + packageName
+                    + " — resetting Reels state to prevent false-positive budget accumulation");
+            resetReelsState();
+            return;
+        }
+
+        // Only process scroll/state events from Instagram or YouTube
         if (!packageName.equals(PKG_INSTAGRAM) && !packageName.equals(PKG_YOUTUBE))
             return;
 
@@ -439,6 +470,16 @@ public class ReelsInterventionService extends AccessibilityService {
         }
         wasInReelsLayout = true;
 
+        // [FREE_BREAK] If the user has an active free break, allow all scrolling without
+        // any intervention or budget accumulation. The heartbeat keeps running (to maintain
+        // is_in_reels state for AppUsageMonitor) but skips budget accumulation via its own
+        // guard inside accumulateScrollBudget().
+        if (isFreeBreakActive()) {
+            Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
+                    + " action=FREE_BREAK_ALLOW (break active — skipping budget/intervention)");
+            return;
+        }
+
         // --- Debounce: ignore rapid-fire duplicate events from the same physical swipe
         // ---
         long now = System.currentTimeMillis();
@@ -500,6 +541,13 @@ public class ReelsInterventionService extends AccessibilityService {
      * @return true if scroll budget is exhausted and window hasn't expired
      */
     private boolean isScrollBudgetExhausted(long now) {
+        // [FREE_BREAK] During an active free break the budget is never exhausted —
+        // the user has unrestricted scrolling access for the duration of the break.
+        if (isFreeBreakActive()) {
+            Log.d(TAG, "[BUDGET] [FREE_BREAK] isScrollBudgetExhausted: free break active → returning false");
+            return false;
+        }
+
         SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
         long exhaustedAt = prefs.getLong("scroll_budget_exhausted_at", 0);
 
@@ -723,10 +771,10 @@ public class ReelsInterventionService extends AccessibilityService {
      * Tier 1 — Known container IDs: Loop YOUTUBE_SHORTS_VIEW_IDS, find nodes,
      *          verify full-screen bounds via isFullScreenReelsViewPager().
      *
-     * Tier 2 — Structural heuristic: Check for secondary signal IDs (like button,
-     *          comment button) + ABSENCE of seekbar (seekbar exists in regular
-     *          videos, not Shorts). If both conditions met, search for a full-screen
-     *          scrollable container.
+     * Tier 2 — Structural heuristic: Check for Shorts-specific secondary signal IDs
+     *          (reel_like_button, shorts_like_button, reel_comment_button) + ABSENCE
+     *          of seekbar (seekbar exists in regular videos, not Shorts). Confirms
+     *          only if the secondary signal element itself is full-screen.
      *
      * Tier 3 — Diagnostic dump: If both tiers fail, dump all YouTube view IDs to
      *          logcat (rate-limited) so developers can discover the current IDs.
@@ -797,24 +845,19 @@ public class ReelsInterventionService extends AccessibilityService {
             if (seekbar != null) recycleAll(seekbar);
 
             if (!hasSeekbar) {
-                // If the secondary signal itself is full-screen, confirm Shorts directly
-                // (reel_time_bar covers the entire screen when Shorts is active)
+                // Only confirm Shorts if the secondary signal itself is full-screen
+                // (e.g., reel_time_bar covers the entire screen when Shorts is active).
+                // We intentionally do NOT fall back to findFullScreenScrollableContainer
+                // because YouTube's home feed RecyclerView is also full-screen and
+                // scrollable, which caused false positives on the home page.
                 if (secondaryIsFullScreen) {
                     Log.d(TAG, "isShortsLayout: TIER2 matched (secondary="
                             + matchedSecondaryId
                             + " is full-screen + no seekbar) → true");
                     return true;
                 }
-                // Fallback: check for a full-screen scrollable container (structural check)
-                boolean fullScreenScrollable = findFullScreenScrollableContainer(root);
-                if (fullScreenScrollable) {
-                    Log.d(TAG, "isShortsLayout: TIER2 matched (secondary="
-                            + matchedSecondaryId
-                            + " + no seekbar + full-screen scrollable) → true");
-                    return true;
-                }
                 Log.d(TAG, "isShortsLayout: TIER2 secondary found + no seekbar, "
-                        + "but no full-screen signal");
+                        + "but secondary not full-screen → false");
             } else {
                 Log.d(TAG, "isShortsLayout: TIER2 seekbar present → regular video, not Shorts");
             }
@@ -1036,6 +1079,19 @@ public class ReelsInterventionService extends AccessibilityService {
         reelsHeartbeatRunnable = new Runnable() {
             @Override
             public void run() {
+                // --- Heartbeat self-validation (primary false-positive fix) ---
+                // Before accumulating budget, verify the user is STILL in Reels.
+                // This catches the case where the user pressed Home or switched apps
+                // but no TYPE_WINDOW_STATE_CHANGED was received (e.g., quick gestures,
+                // split-screen, or picture-in-picture). If the active window is no
+                // longer the Reels/Shorts app or layout, stop the heartbeat and reset.
+                if (!isStillInReels(packageName)) {
+                    Log.d(TAG, "[REELS_STATE] Heartbeat: user no longer in Reels "
+                            + "(foreground check failed for " + packageName + ") — stopping heartbeat");
+                    resetReelsState();
+                    return; // don't reschedule — heartbeat is dead
+                }
+
                 persistReelsState(true, packageName);
                 // Accumulate scroll budget time on every heartbeat tick.
                 // accumulateScrollBudget() will trigger the intervention overlay immediately
@@ -1061,6 +1117,52 @@ public class ReelsInterventionService extends AccessibilityService {
         }
     }
 
+    /**
+     * Checks if the user is still actively viewing Reels/Shorts by inspecting
+     * the current active window. Used by the heartbeat to prevent false-positive
+     * budget accumulation when the user has left via Home button, app switcher,
+     * or any other navigation that didn't fire a target-package accessibility event.
+     *
+     * Two checks are performed:
+     * 1. The active window package matches the expected Reels/Shorts app
+     * 2. The Reels/Shorts full-screen layout is still present
+     *
+     * If either check fails, the caller should stop the heartbeat and reset state.
+     *
+     * Filter: adb logcat -s REELS_WATCH | grep STILL_IN_REELS
+     *
+     * @param expectedPackage the package we expect (PKG_INSTAGRAM or PKG_YOUTUBE)
+     * @return true if the active window is still showing full-screen Reels/Shorts
+     */
+    private boolean isStillInReels(String expectedPackage) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            Log.d(TAG, "[STILL_IN_REELS] root null (no active window) → false");
+            return false;
+        }
+
+        // Check that the active window belongs to the expected Reels/Shorts app.
+        // If the user pressed Home, this will be the launcher package instead.
+        CharSequence rootPkg = root.getPackageName();
+        if (rootPkg == null || !rootPkg.toString().equals(expectedPackage)) {
+            Log.d(TAG, "[STILL_IN_REELS] active window pkg="
+                    + (rootPkg != null ? rootPkg : "null")
+                    + " expected=" + expectedPackage + " → false (user left app)");
+            root.recycle();
+            return false;
+        }
+
+        // Package matches — verify the Reels/Shorts layout is still full-screen.
+        // The user might still be in Instagram but navigated away from Reels
+        // (e.g., tapped Home tab, opened DMs, etc.)
+        boolean inReels = expectedPackage.equals(PKG_INSTAGRAM)
+                ? isReelsLayout(root) : isShortsLayout(root);
+        root.recycle();
+
+        Log.d(TAG, "[STILL_IN_REELS] pkg=" + expectedPackage + " inReels=" + inReels);
+        return inReels;
+    }
+
     // =========================================================================
     // Scroll budget accumulation (runs inside the heartbeat)
     // =========================================================================
@@ -1081,7 +1183,47 @@ public class ReelsInterventionService extends AccessibilityService {
      * - scroll_window_minutes (int): window duration in minutes
      * - scroll_budget_exhausted_at (long): >0 when budget is exhausted
      */
+    /**
+     * Returns true if the user has an active 20-minute free break.
+     *
+     * During an active free break, ALL intervention and budget accumulation logic
+     * is bypassed, giving the user an uninterrupted scroll window (great for
+     * cardio sessions where mindless scrolling is genuinely fine).
+     *
+     * Includes stale-flag cleanup: if the 20-min window has elapsed but
+     * free_break_active was never cleared (e.g. process was killed), this
+     * method auto-clears the flag so we don't permanently suppress interventions.
+     *
+     * Log filter: adb logcat -s REELS_WATCH | grep FREE_BREAK
+     */
+    private boolean isFreeBreakActive() {
+        SharedPreferences prefs = BreqkPrefs.get(this);
+        boolean active = prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false);
+        if (!active) return false;
+
+        long startTime = prefs.getLong(BreqkPrefs.KEY_FREE_BREAK_START_TIME, 0);
+        long now = System.currentTimeMillis();
+        if (startTime > 0 && (now - startTime) >= BreqkPrefs.FREE_BREAK_DURATION_MS) {
+            // Break expired — auto-clear so interventions resume immediately
+            prefs.edit().putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
+            Log.i(TAG, "[FREE_BREAK] isFreeBreakActive: break expired (startTime=" + startTime
+                    + ") — auto-cleared, elapsed=" + (now - startTime) + "ms");
+            return false;
+        }
+
+        long remainingMs = (startTime + BreqkPrefs.FREE_BREAK_DURATION_MS) - now;
+        Log.d(TAG, "[FREE_BREAK] isFreeBreakActive: true — remainingMs=" + remainingMs);
+        return true;
+    }
+
     private void accumulateScrollBudget() {
+        // [FREE_BREAK] Skip all budget accumulation during an active free break.
+        // The user gets an uninterrupted 20-min window; budget is fully preserved.
+        if (isFreeBreakActive()) {
+            Log.d(TAG, "[FREE_BREAK] accumulateScrollBudget: skipping — free break active");
+            return;
+        }
+
         SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
 
         int allowanceMinutes = prefs.getInt(PREF_SCROLL_ALLOWANCE_MIN, 5);
@@ -1177,51 +1319,6 @@ public class ReelsInterventionService extends AccessibilityService {
         }
     }
 
-    /**
-     * Walks the top 3 levels of the accessibility tree looking for a scrollable
-     * node that passes the full-screen bounds check. Returns true if found.
-     *
-     * Used as a structural heuristic in Tier 2 of YouTube Shorts detection when
-     * known view IDs fail — Shorts always has a full-screen scrollable container.
-     *
-     * Max depth of 3 prevents performance issues on deep view hierarchies.
-     *
-     * @param root Root of the accessibility tree
-     * @return true if a scrollable, full-screen container was found
-     */
-    private boolean findFullScreenScrollableContainer(AccessibilityNodeInfo root) {
-        return findFullScreenScrollableHelper(root, 0, 6);
-    }
-
-    /**
-     * Recursive helper for findFullScreenScrollableContainer.
-     * BFS through the tree checking each node for scrollable + full-screen.
-     */
-    private boolean findFullScreenScrollableHelper(AccessibilityNodeInfo node, int depth,
-            int maxDepth) {
-        if (node == null || depth > maxDepth) return false;
-        int childCount = node.getChildCount();
-        for (int i = 0; i < childCount; i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            if (child == null) continue;
-            // Check if this child is a scrollable full-screen container
-            if (child.isScrollable() && isFullScreenReelsViewPager(child)) {
-                Log.d(TAG, "findFullScreenScrollableContainer: found scrollable full-screen node"
-                        + " id=" + child.getViewIdResourceName()
-                        + " class=" + child.getClassName()
-                        + " depth=" + depth + "." + i);
-                child.recycle();
-                return true;
-            }
-            // Recurse into children
-            if (findFullScreenScrollableHelper(child, depth + 1, maxDepth)) {
-                child.recycle();
-                return true;
-            }
-            child.recycle();
-        }
-        return false;
-    }
 
     /**
      * Logs all view IDs in the top 2 levels of YouTube's accessibility tree.
