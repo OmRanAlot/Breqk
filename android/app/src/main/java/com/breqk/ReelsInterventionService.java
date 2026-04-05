@@ -12,9 +12,16 @@ package com.breqk;
  * (configured in Customize → Scroll Budget) is exhausted. Setting the budget allowance to
  * 0 minutes causes the popup to fire immediately on every Reels/Shorts scroll.
  *
+ * GRACE PERIOD: On each fresh entry into Reels/Shorts, a grace period begins. The heartbeat
+ * and budget accumulation are deferred until the user's first scroll. This lets the user
+ * watch the first video they land on (YouTube auto-open, friend's link, home feed tap)
+ * without being blocked. The grace period ends on the first TYPE_VIEW_SCROLLED event.
+ * Filter: adb logcat -s REELS_WATCH | grep GRACE
+ *
  * Filter logcat with: adb logcat -s REELS_WATCH
  * For budget-related decisions: adb logcat -s REELS_WATCH | grep BUDGET
  * For scroll decisions: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
+ * For grace period: adb logcat -s REELS_WATCH | grep GRACE
  *
  * Architecture:
  *   AccessibilityService (this) → onAccessibilityEvent → handleReelsScrollEvent
@@ -84,10 +91,14 @@ import java.util.List;
 public class ReelsInterventionService extends AccessibilityService {
 
     // Filter logcat with: adb logcat -s REELS_WATCH
-    // Budget decisions: adb logcat -s REELS_WATCH | grep BUDGET
-    // Scroll decisions: adb logcat -s REELS_WATCH | grep SCROLL_DECISION
-    // YouTube Shorts view ID discovery: adb logcat -s REELS_WATCH | grep YT_TREE_DUMP
-    // YouTube Shorts tier decisions: adb logcat -s REELS_WATCH | grep -E "TIER1|TIER2"
+    // Budget decisions:          adb logcat -s REELS_WATCH | findstr "BUDGET"
+    // Scroll decisions:          adb logcat -s REELS_WATCH | findstr "SCROLL_DECISION"
+    // Grace period:              adb logcat -s REELS_WATCH | findstr "GRACE"
+    // Shorts active state:       adb logcat -s REELS_WATCH | findstr "SHORTS_ACTIVE"
+    // Shorts class discovery:    adb logcat -s REELS_WATCH | findstr "SHORTS_CLASS"
+    // Shorts text signal:        adb logcat -s REELS_WATCH | findstr "SHORTS_TEXT"
+    // YouTube tree dump:         adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
+    // YouTube tier decisions:    adb logcat -s REELS_WATCH | findstr "TIER"
     private static final String TAG = "REELS_WATCH";
 
     // Target package names
@@ -138,6 +149,25 @@ public class ReelsInterventionService extends AccessibilityService {
     private static final String YOUTUBE_SEEKBAR_ID = "com.google.android.youtube:id/youtube_controls_seekbar";
 
     /**
+     * YouTube Activity/Fragment class names that are unique to the Shorts player.
+     * When TYPE_WINDOW_STATE_CHANGED fires from YouTube, event.getClassName()
+     * returns the class name of the newly-active Activity or Fragment. If it
+     * matches an entry here, we confirm Shorts immediately without any tree
+     * traversal (TIER 0 — O(1) detection).
+     *
+     * HOW TO DISCOVER: These class names are logged as [SHORTS_CLASS] whenever
+     * YouTube fires a STATE_CHANGED event. Run:
+     *   adb logcat -s REELS_WATCH | findstr "SHORTS_CLASS"
+     * while navigating to the Shorts tab, then add the exact class name below.
+     *
+     * Currently empty — will be populated once class names are observed in logs.
+     */
+    private static final String[] YOUTUBE_SHORTS_CLASS_NAMES = {
+            // Example (add real names after observing [SHORTS_CLASS] logs):
+            // "com.google.android.apps.youtube.app.shorts.ShortsActivity",
+    };
+
+    /**
      * Minimum milliseconds between two processed scroll events.
      *
      * A single physical Reel swipe fires 3–4 TYPE_VIEW_SCROLLED events within
@@ -185,10 +215,30 @@ public class ReelsInterventionService extends AccessibilityService {
     private boolean wasInReelsLayout = false;
 
     /**
+     * Tracks whether YouTube Shorts was detected as active on the last check.
+     * Used by notifyShortsState() to emit [SHORTS_ACTIVE] only on transitions
+     * (false→true or true→false), not on every scroll event.
+     */
+    private boolean shortsCurrentlyDetected = false;
+
+    /**
      * Guard against stacking multiple overlays if scroll events fire
      * rapidly around the budget exhaustion boundary.
      */
     private boolean interventionShowing = false;
+
+    /**
+     * Grace period flag. When true, the user just entered Reels/Shorts and is
+     * watching the first video. Budget accumulation and heartbeat are deferred
+     * until the first TYPE_VIEW_SCROLLED event fires (indicating the user is
+     * actively scrolling to more content, not just watching a single video).
+     *
+     * Resets to true on each fresh entry into Reels/Shorts.
+     * Set to false on the first scroll event.
+     *
+     * Filter: adb logcat -s REELS_WATCH | findstr "GRACE"
+     */
+    private boolean inGracePeriod = false;
 
     /** Currently visible intervention overlay, or null. */
     private View interventionView = null;
@@ -305,13 +355,24 @@ public class ReelsInterventionService extends AccessibilityService {
         // running and accumulating scroll budget on the home screen.
         // Note: packageNames filter was removed from the XML config so we receive
         // TYPE_WINDOW_STATE_CHANGED from all packages, not just Instagram/YouTube.
+        //
+        // [P1-FIX] System overlays (IME / keyboard, status bar, etc.) fire
+        // TYPE_WINDOW_STATE_CHANGED with their own package name even though the user
+        // is still in YouTube Shorts or Instagram Reels. Treating these as a real
+        // app switch resets the heartbeat and prevents budget accumulation.
+        // isSystemOverlayPackage() exempts known system overlays from this reset.
         if (wasInReelsLayout
                 && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && !packageName.equals(PKG_INSTAGRAM)
                 && !packageName.equals(PKG_YOUTUBE)) {
-            Log.d(TAG, "[APP_SWITCH] Detected app switch while in Reels: newPkg=" + packageName
-                    + " — resetting Reels state to prevent false-positive budget accumulation");
-            resetReelsState();
+            if (isSystemOverlayPackage(packageName)) {
+                Log.d(TAG, "[APP_SWITCH] Ignoring system overlay package: " + packageName
+                        + " — Reels state preserved");
+            } else {
+                Log.i(TAG, "[APP_SWITCH] Detected app switch while in Reels: newPkg=" + packageName
+                        + " — resetting Reels state to prevent false-positive budget accumulation");
+                resetReelsState();
+            }
             return;
         }
 
@@ -364,8 +425,67 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
 
         // On tab/screen navigation: update the Reels layout flag and reset if we left
-        // Reels
+        // Reels.
+        //
+        // [P0-FIX] Previously, only the scroll handler could start the heartbeat (via
+        // the !wasInReelsLayout guard). Because STATE_CHANGED always fires BEFORE the
+        // first scroll event and sets wasInReelsLayout=true, the scroll handler's
+        // heartbeat-start block was permanently skipped — budget never accumulated.
+        // Fix: start the heartbeat here on the false→true transition so budget
+        // accumulation begins as soon as the user navigates into Reels/Shorts.
         if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // --- TIER 0: Log the Activity/Fragment class name for discovery ---
+            // event.getClassName() returns the class that just became active.
+            // For YouTube, this is a Shorts-specific class when the Shorts tab is opened.
+            // We always log it as [SHORTS_CLASS] so developers can identify the class name
+            // and add it to YOUTUBE_SHORTS_CLASS_NAMES for O(1) detection.
+            if (packageName.equals(PKG_YOUTUBE)) {
+                String eventClass = event.getClassName() != null
+                        ? event.getClassName().toString() : "(null)";
+                Log.d(TAG, "[SHORTS_CLASS] YouTube STATE_CHANGED className=" + eventClass);
+
+                // --- Floating overlay guard ---
+                // YouTube keeps Shorts UI elements (reel_time_bar, etc.) resident in a
+                // separate floating overlay window even when the user is on the home page.
+                // When this overlay updates, it fires TYPE_WINDOW_STATE_CHANGED with a
+                // generic Android class name (android.view.ViewGroup, android.widget.*).
+                // Calling isShortsLayout() on that floating window returns a false positive
+                // because getRootInActiveWindow() returns the overlay's root — which contains
+                // reel_time_bar with full-screen bounds [0,0,1008,2244].
+                //
+                // Fix: skip tree traversal for YouTube events whose className is a generic
+                // Android framework class. Real YouTube navigations always use proper
+                // YouTube-specific class names (e.g., com.google.android.apps.youtube.*).
+                // Generic class names = floating overlay, not real navigation.
+                //
+                // Evidence from log69.txt:
+                //   Real Shorts:       className=com.google.android.apps.youtube.app.watchwhile.MainActivity
+                //   Floating overlay:  className=android.view.ViewGroup  ← false positive
+                if (isAndroidFrameworkClass(eventClass)) {
+                    Log.d(TAG, "[SHORTS_CLASS] Skipping tree traversal — generic class '" + eventClass
+                            + "' indicates floating overlay (not real navigation)");
+                    // Do not modify wasInReelsLayout — this is not a real navigation event.
+                    return;
+                }
+
+                // If the class name is already in our known list, confirm Shorts immediately
+                // without any tree traversal (fastest possible detection).
+                for (String knownClass : YOUTUBE_SHORTS_CLASS_NAMES) {
+                    if (knownClass.equals(eventClass)) {
+                        Log.d(TAG, "isShortsLayout: TIER0 class name matched " + eventClass + " → confirmed Shorts");
+                        if (!wasInReelsLayout) {
+                            Log.d(TAG, "[GRACE] Entering Shorts (TIER0) — grace period started for " + packageName);
+                            inGracePeriod = true;
+                            notifyShortsState(true, "TIER0");
+                            persistReelsState(true, packageName);
+                            // Heartbeat and budget deferred until first scroll (grace period)
+                        }
+                        wasInReelsLayout = true;
+                        return;
+                    }
+                }
+            }
+
             AccessibilityNodeInfo root = getRootInActiveWindow();
             boolean inReelsLayout = packageName.equals(PKG_INSTAGRAM)
                     ? isReelsLayout(root)
@@ -375,7 +495,17 @@ public class ReelsInterventionService extends AccessibilityService {
 
             if (!inReelsLayout && wasInReelsLayout) {
                 Log.d(TAG, "Left Reels/Shorts via state change — resetting");
+                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(false, "state-change-exit");
                 resetReelsState();
+            } else if (inReelsLayout && !wasInReelsLayout) {
+                // Entering Reels/Shorts via navigation (tab switch, deep link, etc.).
+                // Grace period: let the user watch the first video they land on.
+                // Heartbeat and budget accumulation are deferred until the first scroll.
+                Log.d(TAG, "[GRACE] Entering Reels/Shorts (TIER1/TIER2) — grace period started for " + packageName);
+                inGracePeriod = true;
+                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(true, "TIER1/TIER2");
+                persistReelsState(true, packageName);
+                // Heartbeat and budget deferred until first scroll (grace period)
             }
             wasInReelsLayout = inReelsLayout;
             Log.d(TAG, "STATE_CHANGED: wasInReelsLayout=" + wasInReelsLayout + " pkg=" + packageName);
@@ -453,22 +583,36 @@ public class ReelsInterventionService extends AccessibilityService {
 
         // Persist Reels state for AppUsageMonitor to gate scroll budget accumulation
         if (!wasInReelsLayout) {
-            // Just entered Reels — persist state and start heartbeat
+            // First detection of Reels via scroll (no prior STATE_CHANGED).
+            // Start grace period — it will end below when we process this scroll
+            // as the "first scroll" that terminates the grace period.
+            inGracePeriod = true;
             persistReelsState(true, packageName);
-            startReelsHeartbeat(packageName);
+            Log.d(TAG, "[GRACE] Entering Reels/Shorts (first-scroll) — grace period started for " + packageName);
+        }
+        wasInReelsLayout = true;
 
-            // Immediate budget check on entry: if budget is already exhausted (or allowance=0),
-            // show the intervention overlay right away instead of waiting for the next heartbeat tick.
-            // This also runs one immediate accumulation tick for the allowance=0 case.
-            long entryNow = System.currentTimeMillis();
+        // --- Grace period termination ---
+        // The first scroll after entering Reels/Shorts ends the grace period.
+        // This is where we start the heartbeat and budget accumulation that was
+        // deferred on entry, allowing the user to watch the first video freely.
+        if (inGracePeriod) {
+            inGracePeriod = false;
+            Log.i(TAG, "[GRACE] First scroll detected — grace period ended for " + packageName);
+
+            // Now start what was deferred on entry:
+            startReelsHeartbeat(packageName);
             accumulateScrollBudget();
-            if (isScrollBudgetExhausted(entryNow) && !interventionShowing) {
+
+            // Immediate budget check: if budget was already exhausted from a previous
+            // session (or allowance=0), intervene now.
+            long graceEndNow = System.currentTimeMillis();
+            if (isScrollBudgetExhausted(graceEndNow) && !interventionShowing) {
                 interventionShowing = true;
-                Log.i(TAG, "[BUDGET] Budget already exhausted on Reels entry — immediate intervention for " + packageName);
+                Log.i(TAG, "[GRACE] Budget already exhausted after grace period — immediate intervention for " + packageName);
                 triggerIntervention(packageName);
             }
         }
-        wasInReelsLayout = true;
 
         // [FREE_BREAK] If the user has an active free break, allow all scrolling without
         // any intervention or budget accumulation. The heartbeat keeps running (to maintain
@@ -676,6 +820,163 @@ public class ReelsInterventionService extends AccessibilityService {
     }
 
     // =========================================================================
+    // Shorts active state logging
+    // =========================================================================
+
+    /**
+     * Emits a [SHORTS_ACTIVE] log line whenever YouTube Shorts detection
+     * transitions between detected and not-detected. Only fires on transitions
+     * to avoid log spam on every scroll event.
+     *
+     * Filter command: adb logcat -s REELS_WATCH | findstr "SHORTS_ACTIVE"
+     *
+     * @param active true = Shorts just became active, false = Shorts just became inactive
+     * @param tier   Which tier / reason triggered this transition (e.g. "TIER1", "reset")
+     */
+    private void notifyShortsState(boolean active, String tier) {
+        if (active == shortsCurrentlyDetected) return; // no transition — skip
+        shortsCurrentlyDetected = active;
+        if (active) {
+            Log.i(TAG, "[SHORTS_ACTIVE] active=true  tier=" + tier
+                    + " pkg=" + PKG_YOUTUBE);
+        } else {
+            Log.i(TAG, "[SHORTS_ACTIVE] active=false reason=" + tier);
+        }
+    }
+
+    // =========================================================================
+    // YouTube Shorts text signal detection (TIER 3)
+    // =========================================================================
+
+    /**
+     * Walks the YouTube accessibility tree (max depth 3) looking for any visible
+     * node whose getText() or getContentDescription() contains the word "Shorts"
+     * (case-insensitive). Returns true on the first match.
+     *
+     * This tier is resilient to YouTube view-ID renames: as long as the word
+     * "Shorts" appears somewhere in the visible UI (navigation tab label, page
+     * heading, content descriptions on action buttons), detection will succeed
+     * even when TIER1 and TIER2 have no known IDs in the tree.
+     *
+     * Performance: early-exit on first match; max depth 3 limits traversal.
+     * All node references are recycled before returning.
+     *
+     * Filter command: adb logcat -s REELS_WATCH | findstr "SHORTS_TEXT"
+     *
+     * @param root Root of the YouTube accessibility tree
+     * @return true if "Shorts" text was found in any visible node
+     */
+    private boolean hasShortsTextSignal(AccessibilityNodeInfo root) {
+        return scanNodeForShortsText(root, 0, 3);
+    }
+
+    /**
+     * Recursive helper for hasShortsTextSignal().
+     *
+     * @param node     Current node to inspect
+     * @param depth    Current recursion depth
+     * @param maxDepth Maximum depth to traverse
+     * @return true if "Shorts" text was found in this node or any descendant
+     */
+    private boolean scanNodeForShortsText(AccessibilityNodeInfo node, int depth, int maxDepth) {
+        if (node == null || depth > maxDepth) return false;
+
+        // Only inspect nodes that are actually visible to the user
+        if (node.isVisibleToUser()) {
+            CharSequence text = node.getText();
+            CharSequence contentDesc = node.getContentDescription();
+
+            boolean textMatch = text != null
+                    && text.toString().toLowerCase().contains("shorts");
+            boolean descMatch = contentDesc != null
+                    && contentDesc.toString().toLowerCase().contains("shorts");
+
+            if (textMatch || descMatch) {
+                Log.d(TAG, "[SHORTS_TEXT] matched"
+                        + (textMatch ? " text=\"" + text + "\"" : "")
+                        + (descMatch ? " contentDesc=\"" + contentDesc + "\"" : "")
+                        + " at depth=" + depth);
+                return true;
+            }
+        }
+
+        int childCount = node.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                boolean found = scanNodeForShortsText(child, depth + 1, maxDepth);
+                child.recycle();
+                if (found) return true;
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // System overlay detection (P1-FIX: prevent false APP_SWITCH resets from IME)
+    // =========================================================================
+
+    /**
+     * Packages that appear as foreground via TYPE_WINDOW_STATE_CHANGED but are NOT
+     * real app navigations — they are system overlays (keyboards, status bar, etc.)
+     * that float on top of whatever the user is actually viewing.
+     *
+     * An APP_SWITCH event from one of these packages must NOT reset Reels state,
+     * because the user is still watching Reels/Shorts underneath the overlay.
+     *
+     * To add new false-reset packages: observe them in logs via
+     *   adb logcat -s REELS_WATCH | grep APP_SWITCH
+     * and add them to this list.
+     */
+    private static final String[] APP_SWITCH_IGNORE_PACKAGES = {
+        "com.google.android.inputmethod.latin",  // Gboard
+        "com.samsung.android.honeyboard",        // Samsung Keyboard
+        "com.swiftkey.swiftkeyapp",              // SwiftKey
+        "com.android.inputmethod.latin",         // AOSP keyboard
+        "com.android.systemui",                  // Status bar, notification shade
+    };
+
+    /**
+     * Returns true if the given class name is a generic Android framework class
+     * (android.view.*, android.widget.*) rather than an app-specific Activity or
+     * Fragment class.
+     *
+     * This is used to distinguish real YouTube navigation events from floating
+     * overlay updates. YouTube keeps Shorts UI elements (reel_time_bar, etc.)
+     * resident in a floating window that fires TYPE_WINDOW_STATE_CHANGED with
+     * className=android.view.ViewGroup even when the user is on the home page.
+     * Real navigations (entering the Shorts tab) always use proper YouTube class
+     * names like com.google.android.apps.youtube.app.watchwhile.MainActivity.
+     *
+     * @param className The class name from event.getClassName()
+     * @return true if the class is a generic Android framework class (= overlay)
+     */
+    private boolean isAndroidFrameworkClass(String className) {
+        if (className == null || className.isEmpty()) return false;
+        return className.startsWith("android.view.")
+                || className.startsWith("android.widget.")
+                || className.startsWith("android.app.")
+                || className.equals("android.view.ViewGroup");
+    }
+
+    /**
+     * Returns true if the given package name represents a system overlay (IME,
+     * keyboard, status bar) rather than a real foreground app navigation.
+     * Used to suppress false APP_SWITCH resets in onAccessibilityEvent().
+     *
+     * @param pkg Package name from the accessibility event
+     * @return true if the package should NOT trigger a Reels state reset
+     */
+    private boolean isSystemOverlayPackage(String pkg) {
+        if (pkg == null) return false;
+        for (String ignore : APP_SWITCH_IGNORE_PACKAGES) {
+            if (ignore.equals(pkg)) return true;
+        }
+        // Catch vendor keyboards not explicitly listed above (not airtight but covers most)
+        return pkg.endsWith(".inputmethod") || pkg.contains(".inputmethod.");
+    }
+
+    // =========================================================================
     // Layout detection
     // =========================================================================
 
@@ -800,6 +1101,7 @@ public class ReelsInterventionService extends AccessibilityService {
                         recycleAll(nodes);
                         Log.d(TAG, "isShortsLayout: TIER1 matched " + viewId
                                 + " (full-screen) → true");
+                        notifyShortsState(true, "TIER1");
                         return true;
                     }
                 }
@@ -854,6 +1156,7 @@ public class ReelsInterventionService extends AccessibilityService {
                     Log.d(TAG, "isShortsLayout: TIER2 matched (secondary="
                             + matchedSecondaryId
                             + " is full-screen + no seekbar) → true");
+                    notifyShortsState(true, "TIER2");
                     return true;
                 }
                 Log.d(TAG, "isShortsLayout: TIER2 secondary found + no seekbar, "
@@ -865,7 +1168,19 @@ public class ReelsInterventionService extends AccessibilityService {
             Log.d(TAG, "isShortsLayout: TIER2 — no secondary signals found");
         }
 
-        // --- TIER 3: Diagnostic dump (rate-limited) ---
+        // --- TIER 3: Visible text scan ---
+        // Walk the accessibility tree (max depth 3) checking getText() and
+        // getContentDescription() on every visible node for the string "Shorts".
+        // This tier is resilient to view ID renames: as long as YouTube still renders
+        // "Shorts" as visible text (tab label, page heading, content descriptions),
+        // detection will work even if all view IDs above have changed.
+        if (hasShortsTextSignal(root)) {
+            Log.d(TAG, "isShortsLayout: TIER3 text scan matched → true");
+            notifyShortsState(true, "TIER3");
+            return true;
+        }
+
+        // --- TIER 4: Diagnostic dump (rate-limited) ---
         // When all detection tiers fail, dump the YouTube accessibility tree
         // view IDs to logcat so developers can discover the current IDs.
         dumpYouTubeTreeIfNeeded(root);
@@ -881,15 +1196,18 @@ public class ReelsInterventionService extends AccessibilityService {
      * count-based.
      */
     private void resetReelsState() {
+        // Emit [SHORTS_ACTIVE] false transition before clearing state
+        if (shortsCurrentlyDetected) notifyShortsState(false, "reset");
         wasInReelsLayout = false;
         interventionShowing = false;
+        inGracePeriod = false;
         lastScrollTimestamp = 0;
         currentReelsPackage = "";
         // Clear Reels state in SharedPreferences so AppUsageMonitor stops reading active state
         persistReelsState(false, "");
         stopReelsHeartbeat();
         Log.d(TAG,
-                "resetReelsState: cleared (wasInReels=false, interventionShowing=false, lastScrollTimestamp=0, currentReelsPackage='', reelsState=false)");
+                "resetReelsState: cleared (wasInReels=false, interventionShowing=false, inGracePeriod=false, lastScrollTimestamp=0, currentReelsPackage='', reelsState=false)");
     }
 
     // =========================================================================
@@ -1123,9 +1441,14 @@ public class ReelsInterventionService extends AccessibilityService {
      * budget accumulation when the user has left via Home button, app switcher,
      * or any other navigation that didn't fire a target-package accessibility event.
      *
-     * Two checks are performed:
+     * Three checks are performed:
      * 1. The active window package matches the expected Reels/Shorts app
-     * 2. The Reels/Shorts full-screen layout is still present
+     * 2. (YouTube only) The root window class is NOT a generic Android framework class
+     *    — YouTube keeps Shorts UI elements alive in a floating overlay window even
+     *    after the user navigates to the home page; getRootInActiveWindow() can return
+     *    that overlay, which has package=YouTube but class=android.view.ViewGroup.
+     *    We reject it to avoid false-positive heartbeat accumulation.
+     * 3. The Reels/Shorts full-screen layout is still present
      *
      * If either check fails, the caller should stop the heartbeat and reset state.
      *
@@ -1150,6 +1473,29 @@ public class ReelsInterventionService extends AccessibilityService {
                     + " expected=" + expectedPackage + " → false (user left app)");
             root.recycle();
             return false;
+        }
+
+        // Guard: YouTube keeps Shorts UI elements resident in a floating overlay window
+        // even after the user navigates back to the home page. getRootInActiveWindow()
+        // can return this floating overlay root, whose class is a generic Android
+        // framework class (e.g. "android.view.ViewGroup") rather than a real Activity.
+        // If we detect a generic framework root for YouTube, we cannot trust it to
+        // represent the real Shorts screen — skip the layout check and return false
+        // so the heartbeat does not falsely keep accumulating budget time.
+        //
+        // Instagram does not exhibit this floating-overlay pattern, so this guard
+        // only applies to YouTube.
+        //
+        // Filter: adb logcat -s REELS_WATCH | findstr "STILL_IN_REELS"
+        if (expectedPackage.equals(PKG_YOUTUBE)) {
+            CharSequence rootClass = root.getClassName();
+            String rootClassStr = rootClass != null ? rootClass.toString() : "";
+            if (isAndroidFrameworkClass(rootClassStr)) {
+                Log.d(TAG, "[STILL_IN_REELS] YouTube root class='" + rootClassStr
+                        + "' is generic framework class → floating overlay, not real Shorts → false");
+                root.recycle();
+                return false;
+            }
         }
 
         // Package matches — verify the Reels/Shorts layout is still full-screen.
@@ -1367,8 +1713,16 @@ public class ReelsInterventionService extends AccessibilityService {
                 boolean scrollable = child.isScrollable();
                 Rect bounds = new Rect();
                 child.getBoundsInScreen(bounds);
+                // getText() and getContentDescription() expose text-based signals
+                // used by TIER3 (hasShortsTextSignal). Including them here lets
+                // developers identify new text signals when TIER1/TIER2 fail.
+                String text = child.getText() != null
+                        ? "\"" + child.getText() + "\"" : "null";
+                String contentDesc = child.getContentDescription() != null
+                        ? "\"" + child.getContentDescription() + "\"" : "null";
                 Log.w(TAG, "YT_TREE_DUMP " + indent + "[" + depth + "." + i + "] "
                         + "id=" + id + " class=" + cls
+                        + " text=" + text + " contentDesc=" + contentDesc
                         + " scrollable=" + scrollable
                         + " bounds=" + bounds.toShortString());
                 dumpNodeChildren(child, depth + 1, maxDepth);

@@ -23,6 +23,8 @@ package com.breqk;
  * and usage stats queries. MyVpnService's monitor handles the actual polling loop.
  */
 
+import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.provider.Settings;
@@ -517,7 +519,83 @@ public class VPNModule extends ReactContextBaseJavaModule {
         WritableMap result = Arguments.createMap();
         result.putBoolean("overlay", Settings.canDrawOverlays(reactContext));
         result.putBoolean("usage", hasUsageAccessPermission());
+        result.putBoolean("deviceAdmin", isDeviceAdminActiveInternal());
         promise.resolve(result);
+    }
+
+    // ── Device Admin helpers ──────────────────────────────────────────────────
+
+    /**
+     * Returns true if Breqk is currently an active Device Administrator.
+     * Internal helper — also exposed to JS via isDeviceAdminActive().
+     */
+    private boolean isDeviceAdminActiveInternal() {
+        DevicePolicyManager dpm =
+                (DevicePolicyManager) reactContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
+        ComponentName adminComponent =
+                new ComponentName(reactContext, BreqkDeviceAdminReceiver.class);
+        return dpm != null && dpm.isAdminActive(adminComponent);
+    }
+
+    /**
+     * JS-callable: check whether Device Admin is active.
+     * Returns { active: boolean }.
+     */
+    @ReactMethod
+    public void isDeviceAdminActive(Promise promise) {
+        boolean active = isDeviceAdminActiveInternal();
+        Log.d(TAG, "[DEVICE_ADMIN] isDeviceAdminActive → " + active);
+        WritableMap result = Arguments.createMap();
+        result.putBoolean("active", active);
+        promise.resolve(result);
+    }
+
+    /**
+     * JS-callable: launch the system Device Admin activation dialog.
+     * The user sees a standard Android "Activate device administrator?" screen.
+     * After the user accepts or cancels, the app returns to foreground and
+     * PermissionsScreen re-checks via checkPermissions().
+     *
+     * DEV bypass (ADB — works on debug builds):
+     *   adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
+     */
+    @ReactMethod
+    public void activateDeviceAdmin(Promise promise) {
+        try {
+            if (isDeviceAdminActiveInternal()) {
+                Log.d(TAG, "[DEVICE_ADMIN] already active — skipping activation intent");
+                promise.resolve(true);
+                return;
+            }
+            ComponentName adminComponent =
+                    new ComponentName(reactContext, BreqkDeviceAdminReceiver.class);
+            Intent intent = new Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+            intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
+            intent.putExtra(
+                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "Enabling Device Admin prevents Breqk from being uninstalled while you "
+                            + "are committed to your focus goals. You can deactivate this anytime "
+                            + "in Settings → Security → Device Administrators."
+            );
+            // Launch from the current Activity (same task) so that when the system dialog
+            // finishes, the user is returned to Breqk and AppState fires 'active'.
+            // Do NOT use FLAG_ACTIVITY_NEW_TASK here — that puts the dialog in a separate
+            // task, causing the user to land on the launcher instead of coming back to us.
+            android.app.Activity currentActivity = getCurrentActivity();
+            if (currentActivity != null) {
+                currentActivity.startActivity(intent);
+            } else {
+                // Fallback: no active Activity (e.g. app in background). Use new task flag.
+                Log.w(TAG, "[DEVICE_ADMIN] no current Activity — falling back to FLAG_ACTIVITY_NEW_TASK");
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                reactContext.startActivity(intent);
+            }
+            Log.d(TAG, "[DEVICE_ADMIN] activation dialog launched");
+            promise.resolve(false); // user must confirm in system dialog
+        } catch (Exception e) {
+            Log.e(TAG, "[DEVICE_ADMIN] failed to launch activation dialog", e);
+            promise.reject("DEVICE_ADMIN_ERROR", e.getMessage());
+        }
     }
 
     @ReactMethod

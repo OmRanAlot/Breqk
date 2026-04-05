@@ -26,7 +26,8 @@
       "Bash(adb logcat:*)",
       "Bash(adb shell:*)",
       "Bash(./gradlew installDebug)",
-      "Bash(./gradlew compileDebugJavaSources)"
+      "Bash(./gradlew compileDebugJavaSources)",
+      "Bash(./gradlew :app:compileDebugJavaWithJavac)"
     ]
   },
   "enabledPlugins": {

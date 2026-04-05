@@ -64,6 +64,30 @@
                 android:resource="@xml/reels_intervention_service_config" />
         </service>
 
+        <!--
+            Device Administrator receiver.
+            Registers Breqk as a Device Admin so it cannot be uninstalled without
+            first deactivating admin privileges — deliberate friction against deletion.
+            Logcat tag: DEVICE_ADMIN
+
+            DEV bypass (ADB):
+              adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
+              adb uninstall com.breqk
+        -->
+        <receiver
+            android:name=".BreqkDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".BreqkWidgetProvider"
             android:exported="true"

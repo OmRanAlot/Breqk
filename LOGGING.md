@@ -15,7 +15,7 @@ adb logcat
 
 ### See only Breqk logs
 ```bash
-adb logcat -s AppUsageMonitor ScreenTimeTracker VPNModule MyVpnService REELS_WATCH BROWSER_WATCH SettingsModule BreqkWidget ACC_PERM_GATE AppNameResolver ServiceHelper
+adb logcat -s AppUsageMonitor ScreenTimeTracker VPNModule MyVpnService REELS_WATCH BROWSER_WATCH SettingsModule BreqkWidget ACC_PERM_GATE AppNameResolver ServiceHelper DEVICE_ADMIN
 ```
 
 ### All errors across Breqk tags
@@ -48,13 +48,14 @@ Filter with: `adb logcat -s <TAG>`
 | `VPNModule` | `VPNModule.java` | JS↔Android bridge: permissions, monitoring, blocked apps, budget status, wellbeing stats |
 | `VPNModule:FreeBreak` | `VPNModule.java` | Free break start/end/status — separate sub-tag for easy isolation |
 | `MyVpnService` | `MyVpnService.java` | Foreground service lifecycle, intent dispatch, scroll budget persistence |
-| `REELS_WATCH` | `ReelsInterventionService.java` | Reels/Shorts scroll detection, intervention popup, scroll budget accumulation & enforcement (sole writer) |
+| `REELS_WATCH` | `ReelsInterventionService.java` | Reels/Shorts scroll detection, intervention popup, scroll budget accumulation & enforcement (sole writer), grace period on entry |
 | `BROWSER_WATCH` | `ContentFilterService.java` | Browser URL extraction, blocking, cooldown |
 | `SettingsModule` | `SettingsModule.java` | SharedPreferences reads/writes: blocked apps, monitoring toggle, scroll budget config |
 | `BreqkWidget` | `BreqkWidgetProvider.java` | Home screen widget update events |
 | `ACC_PERM_GATE` | `AccessibilityPermissionActivity.java` | Accessibility permission gate screen lifecycle |
 | `AppNameResolver` | `AppNameResolver.java` | Package name to app label resolution (LRU cache) |
 | `ServiceHelper` | `ServiceHelper.java` | Foreground service start compatibility helper |
+| `DEVICE_ADMIN` | `BreqkDeviceAdminReceiver.java` | Device Admin activation, deactivation, and disable-request events |
 
 ---
 
@@ -191,13 +192,19 @@ adb logcat -s SettingsModule
 | Prefix | Meaning |
 |--------|---------|
 | `SCROLL_DECISION` | Per-scroll event: confirmed in Reels?, budget exhausted?, action taken |
+| `[GRACE]` | Grace period lifecycle: started on Reels/Shorts entry, ended on first scroll. Defers budget/heartbeat so user can watch the first video freely |
 | `[BUDGET]` | Scroll budget check result — exhausted or OK, overlay shown |
 | `[REELS_STATE]` | Reels state persistence: enter/exit Reels, heartbeat refresh, SharedPreferences writes |
 | `[STILL_IN_REELS]` | Heartbeat foreground verification — checks active window package + Reels layout before accumulating budget |
 | `[APP_SWITCH]` | Detected app switch while in Reels (e.g., Home button, recents) — triggers Reels state reset to prevent false positives |
+| `[SHORTS_ACTIVE]` | YouTube Shorts detection state change — fires only on transitions (false→true or true→false). Shows which tier confirmed it. |
+| `[SHORTS_CLASS]` | YouTube Activity/Fragment class name logged on every STATE_CHANGED event — use to discover Shorts-specific class names for TIER0 |
+| `[SHORTS_TEXT]` | Text or content description matching "Shorts" found in accessibility tree (TIER3 text scan) |
 | `STATE_CHANGED` | Reels/Shorts layout enter/exit detection |
+| `TIER0` | YouTube Shorts detected via Activity class name (O(1), no tree traversal) |
 | `TIER1` / `TIER2` | YouTube Shorts detection tier results (known IDs / structural heuristic) |
-| `YT_TREE_DUMP` | YouTube accessibility tree dump when all Shorts detection tiers fail (rate-limited 10s) |
+| `TIER3` | YouTube Shorts detected via visible text scan ("Shorts" in getText/getContentDescription) |
+| `YT_TREE_DUMP` | YouTube accessibility tree dump when all Shorts detection tiers fail — now includes text and contentDesc fields (rate-limited 10s) |
 | `return_to_feed` | User tapped "Return to Feed" — GLOBAL_ACTION_BACK fired, budget preserved |
 | `lock_in` | User tapped "Lock In" — GLOBAL_ACTION_HOME fired, reels state reset |
 
@@ -209,24 +216,41 @@ SCROLL_DECISION pkg=<packageName> fastPath=<bool> confirmedInReels=<bool> budget
 The popup triggers based on scroll budget exhaustion (time-based), NOT scroll count.
 ReelsInterventionService is the **sole writer** of scroll budget state (`scroll_time_used_ms`,
 `scroll_budget_exhausted_at`, `scroll_window_start_time`) via its heartbeat. AppUsageMonitor
-only reads these values for the JS bridge. Budget overlay is triggered immediately when
-budget exhausts (via heartbeat) or on Reels entry if already exhausted.
+only reads these values for the JS bridge. Budget overlay is triggered when budget exhausts
+(via heartbeat) or on first scroll after grace period if already exhausted.
+
+**Grace period:** On each fresh entry into Reels/Shorts, a grace period begins. The heartbeat
+and budget accumulation are deferred until the user scrolls for the first time. This lets the
+user watch the first video they land on (e.g., YouTube auto-opening to Shorts, a friend's link,
+or tapping a video from the home feed) without being blocked.
 
 Also logs ViewPager visibility checks and screen bounds.
 
 Filter:
 ```powershell
+# Is YouTube Shorts currently active? (state transitions only — clean signal)
+adb logcat -s REELS_WATCH | Select-String 'SHORTS_ACTIVE'
+
+# Discover YouTube Activity class name for Shorts (TIER0 discovery)
+adb logcat -s REELS_WATCH | Select-String 'SHORTS_CLASS'
+
+# See text-based Shorts signals found in accessibility tree (TIER3)
+adb logcat -s REELS_WATCH | Select-String 'SHORTS_TEXT'
+
+# Grace period lifecycle (entry grace → first scroll ends grace)
+adb logcat -s REELS_WATCH | Select-String 'GRACE'
+
 # Per-scroll decisions only
 adb logcat -s REELS_WATCH | Select-String 'SCROLL_DECISION'
 
 # Budget decisions (exhausted / OK)
 adb logcat -s REELS_WATCH | Select-String 'BUDGET'
 
-# YouTube Shorts view ID discovery (when detection fails)
+# YouTube Shorts view ID discovery (when detection fails; also shows text/contentDesc now)
 adb logcat -s REELS_WATCH | Select-String 'YT_TREE_DUMP'
 
 # YouTube Shorts detection tier results
-adb logcat -s REELS_WATCH | Select-String 'TIER1|TIER2|isShortsLayout'
+adb logcat -s REELS_WATCH | Select-String 'TIER'
 
 # Full output (bounds, visibility)
 adb logcat -s REELS_WATCH
@@ -234,17 +258,29 @@ adb logcat -s REELS_WATCH
 
 **cmd.exe alternatives:**
 ```batch
+REM Is YouTube Shorts active? (state transitions only)
+adb logcat -s REELS_WATCH | findstr "SHORTS_ACTIVE"
+
+REM Discover Shorts Activity class name
+adb logcat -s REELS_WATCH | findstr "SHORTS_CLASS"
+
+REM Text-based Shorts signals (TIER3)
+adb logcat -s REELS_WATCH | findstr "SHORTS_TEXT"
+
+REM Grace period lifecycle
+adb logcat -s REELS_WATCH | findstr "GRACE"
+
 REM Per-scroll decisions only
 adb logcat -s REELS_WATCH | findstr "SCROLL_DECISION"
 
 REM Budget decisions
 adb logcat -s REELS_WATCH | findstr "BUDGET"
 
-REM YouTube Shorts view ID discovery
+REM YouTube Shorts view ID discovery (includes text/contentDesc fields)
 adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
 
-REM YouTube Shorts tier results (note: findstr doesn't support |, use multiple findstr)
-adb logcat -s REELS_WATCH | findstr "TIER1 TIER2"
+REM YouTube Shorts tier results
+adb logcat -s REELS_WATCH | findstr "TIER"
 ```
 
 ---
@@ -267,6 +303,24 @@ adb logcat -s ACC_PERM_GATE
 
 ---
 
+### BreqkDeviceAdminReceiver.java — Tag: `DEVICE_ADMIN`
+
+Filter:
+```bash
+adb logcat -s DEVICE_ADMIN
+```
+
+**DEV / TESTING — ADB bypass to remove Device Admin and uninstall:**
+```bash
+# Step 1: deactivate Device Admin (works on debug builds via ADB shell privileges)
+adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
+
+# Step 2: now uninstall normally
+adb uninstall com.breqk
+```
+
+---
+
 ### BreqkWidgetProvider.java — Tag: `BreqkWidget`
 
 Filter:
@@ -284,8 +338,12 @@ These markers appear inline inside log messages for filtering across tags.
 |--------|----------|-------------------|-----------------|
 | `POPUP_MARKER` | `AppUsageMonitor.java` | `adb logcat \| Select-String 'POPUP_MARKER'` | `adb logcat \| findstr "POPUP_MARKER"` |
 | `SCROLL_DECISION` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'SCROLL_DECISION'` | `adb logcat -s REELS_WATCH \| findstr "SCROLL_DECISION"` |
+| `[GRACE]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'GRACE'` | `adb logcat -s REELS_WATCH \| findstr "GRACE"` |
 | `[BUDGET]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'BUDGET'` | `adb logcat -s REELS_WATCH \| findstr "BUDGET"` |
-| `TIER1` / `TIER2` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'TIER1\|TIER2'` | `adb logcat -s REELS_WATCH \| findstr "TIER1 TIER2"` |
+| `TIER0` / `TIER1` / `TIER2` / `TIER3` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'TIER'` | `adb logcat -s REELS_WATCH \| findstr "TIER"` |
+| `[SHORTS_ACTIVE]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'SHORTS_ACTIVE'` | `adb logcat -s REELS_WATCH \| findstr "SHORTS_ACTIVE"` |
+| `[SHORTS_CLASS]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'SHORTS_CLASS'` | `adb logcat -s REELS_WATCH \| findstr "SHORTS_CLASS"` |
+| `[SHORTS_TEXT]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'SHORTS_TEXT'` | `adb logcat -s REELS_WATCH \| findstr "SHORTS_TEXT"` |
 | `YT_TREE_DUMP` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'YT_TREE_DUMP'` | `adb logcat -s REELS_WATCH \| findstr "YT_TREE_DUMP"` |
 | `[REELS_STATE]` | `ReelsInterventionService.java`, `AppUsageMonitor.java` | `adb logcat -s REELS_WATCH AppUsageMonitor \| Select-String 'REELS_STATE'` | `adb logcat -s REELS_WATCH AppUsageMonitor \| findstr "REELS_STATE"` |
 | `[STILL_IN_REELS]` | `ReelsInterventionService.java` | `adb logcat -s REELS_WATCH \| Select-String 'STILL_IN_REELS'` | `adb logcat -s REELS_WATCH \| findstr "STILL_IN_REELS"` |
@@ -361,6 +419,16 @@ npx react-native start | findstr "[Customize]"
 ---
 
 ## Useful adb Combos
+
+### Uninstall the app quickly
+```powershell
+# Remove Device Admin (no root needed on debug builds)
+adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
+
+# Then uninstall normally
+adb uninstall com.breqk
+```
+
 
 ### Watch overlay events in real time
 ```powershell

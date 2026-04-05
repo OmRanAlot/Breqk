@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    device_admin.xml
+    ────────────────────────────────────────────────────────────────────────────
+    Device Administrator policy declaration for Breqk.
+
+    No special admin policies are listed here — we only need the Device Admin
+    registration itself to prevent uninstallation. Android blocks uninstall of
+    any app that is an active Device Administrator.
+
+    To deactivate (required before uninstalling manually):
+      Settings → Security → Device Administrators → Breqk → Deactivate
+
+    DEV / TESTING (ADB bypass):
+      adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
+      adb uninstall com.breqk
+-->
+<device-admin>
+    <uses-policies>
+        <!-- No elevated policies required — uninstall protection comes from
+             the Device Admin registration itself, not from specific policies. -->
+    </uses-policies>
+</device-admin>
