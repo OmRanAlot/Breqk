@@ -22,9 +22,13 @@ import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
+import com.facebook.react.bridge.Promise;
 import android.util.Log;
 
+import org.json.JSONObject;
+
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 public class SettingsModule extends ReactContextBaseJavaModule {
@@ -216,6 +220,135 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         editor.putStringSet(BreqkPrefs.KEY_BLOCKED_APPS, appSet);
         editor.apply();
         Log.d(TAG, "[SAVE] apply complete");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Per-App Policy methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the full app policies JSON string to React Native.
+     * JS receives a JSON string that can be parsed with JSON.parse().
+     *
+     * Logging: [POLICY]
+     */
+    @ReactMethod
+    public void getAppPolicies(Callback callback) {
+        Log.d(TAG, "[POLICY] getAppPolicies called");
+        String json = BreqkPrefs.get(reactContext).getString(BreqkPrefs.KEY_APP_POLICIES, "{}");
+        Log.d(TAG, "[POLICY] returning: " + json);
+        callback.invoke(json);
+    }
+
+    /**
+     * Saves the full app policies from a JSON string received from React Native.
+     * Also triggers legacy blocked_apps sync.
+     *
+     * @param jsonString Full policies JSON, e.g. {"com.instagram.android":{"app_open_intercept":true,...}}
+     */
+    @ReactMethod
+    public void saveAppPolicies(String jsonString) {
+        Log.d(TAG, "[POLICY] saveAppPolicies called");
+        try {
+            // Parse to validate, then re-save through BreqkPrefs helper (which handles sync)
+            JSONObject parsed = new JSONObject(jsonString);
+            BreqkPrefs.get(reactContext).edit()
+                    .putString(BreqkPrefs.KEY_APP_POLICIES, parsed.toString())
+                    .apply();
+            // Sync legacy blocked_apps
+            BreqkPrefs.syncBlockedAppsFromPolicies(reactContext);
+            // Notify running monitors so the change takes effect live
+            BreqkPrefs.dispatchBlockedAppsReload(reactContext);
+            Log.d(TAG, "[POLICY] saveAppPolicies saved + synced blocked_apps");
+        } catch (Exception e) {
+            Log.e(TAG, "[POLICY] saveAppPolicies error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Atomically updates a single feature for a single app.
+     * More efficient than sending the full policy map for a single toggle change.
+     *
+     * @param packageName e.g. "com.instagram.android"
+     * @param featureKey  e.g. "app_open_intercept", "reels_detection"
+     * @param enabled     true/false
+     */
+    @ReactMethod
+    public void setAppFeature(String packageName, String featureKey, boolean enabled) {
+        Log.d(TAG, "[POLICY] setAppFeature pkg=" + packageName + " " + featureKey + "=" + enabled);
+        BreqkPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Mode methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the full modes JSON string to React Native.
+     */
+    @ReactMethod
+    public void getModes(Callback callback) {
+        Log.d(TAG, "[MODE] getModes called");
+        String json = BreqkPrefs.get(reactContext).getString(BreqkPrefs.KEY_MODES, "{}");
+        Log.d(TAG, "[MODE] returning: " + json);
+        callback.invoke(json);
+    }
+
+    /**
+     * Saves the full modes JSON from React Native.
+     */
+    @ReactMethod
+    public void saveModes(String jsonString) {
+        Log.d(TAG, "[MODE] saveModes called");
+        try {
+            JSONObject parsed = new JSONObject(jsonString);
+            BreqkPrefs.saveModes(reactContext, parsed);
+            Log.d(TAG, "[MODE] saveModes saved");
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the currently active mode ID (empty string if none).
+     */
+    @ReactMethod
+    public void getActiveMode(Callback callback) {
+        String modeId = BreqkPrefs.getActiveMode(reactContext);
+        Log.d(TAG, "[MODE] getActiveMode → " + modeId);
+        callback.invoke(modeId);
+    }
+
+    /**
+     * Activates a mode by ID. Deactivates any previously active mode.
+     * Triggers blocked_apps sync and notifies MyVpnService.
+     */
+    @ReactMethod
+    public void activateMode(String modeId, Promise promise) {
+        Log.d(TAG, "[MODE] activateMode called with modeId=" + modeId);
+        try {
+            ModeManager.activate(reactContext, modeId, "manual");
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] activateMode error: " + e.getMessage());
+            promise.reject("MODE_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * Deactivates the currently active mode.
+     * Reverts to base policies and syncs blocked_apps.
+     */
+    @ReactMethod
+    public void deactivateMode(Promise promise) {
+        Log.d(TAG, "[MODE] deactivateMode called");
+        try {
+            ModeManager.deactivate(reactContext);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] deactivateMode error: " + e.getMessage());
+            promise.reject("MODE_ERROR", e.getMessage());
+        }
     }
 
 }

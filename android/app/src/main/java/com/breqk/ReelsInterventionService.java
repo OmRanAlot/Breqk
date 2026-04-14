@@ -86,7 +86,9 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class ReelsInterventionService extends AccessibilityService {
 
@@ -101,9 +103,17 @@ public class ReelsInterventionService extends AccessibilityService {
     // YouTube tier decisions:    adb logcat -s REELS_WATCH | findstr "TIER"
     private static final String TAG = "REELS_WATCH";
 
-    // Target package names
+    // Target package names — must stay in sync with AppEventRouter.MONITORED_PACKAGES
     private static final String PKG_INSTAGRAM = "com.instagram.android";
     private static final String PKG_YOUTUBE = "com.google.android.youtube";
+    private static final String PKG_TIKTOK = "com.zhiliaoapp.musically";
+
+    /**
+     * AppEventRouter — dispatches events to LaunchInterceptor (launch popup) and
+     * ContentFilter (short-form ejection) independently of the scroll budget logic below.
+     * Initialized in onServiceConnected(), destroyed in onInterrupt().
+     */
+    private AppEventRouter eventRouter;
 
     // -----------------------------------------------------------------------
     // YouTube Shorts view ID constants
@@ -272,8 +282,10 @@ public class ReelsInterventionService extends AccessibilityService {
      *
      * Also used as the scroll budget accumulation interval — each heartbeat tick
      * adds REELS_HEARTBEAT_INTERVAL_MS to scroll_time_used_ms in SharedPreferences.
+     * Reduced from 2000ms → 1000ms (Phase 1 latency fix) for faster budget
+     * accumulation and more responsive is_in_reels state freshness.
      */
-    private static final long REELS_HEARTBEAT_INTERVAL_MS = 2000;
+    private static final long REELS_HEARTBEAT_INTERVAL_MS = 1000;
 
     /** Runnable that periodically refreshes the Reels state timestamp. */
     private Runnable reelsHeartbeatRunnable = null;
@@ -328,14 +340,20 @@ public class ReelsInterventionService extends AccessibilityService {
         info.notificationTimeout = 100;
         setServiceInfo(info);
 
+        // Initialize the event router — handles LaunchInterceptor + ContentFilter
+        // independently from the scroll budget logic further below.
+        eventRouter = new AppEventRouter(this, this);
+
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
-        Log.d(TAG, "  watching: " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
+        Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
+        Log.d(TAG, "  watching (router): " + AppEventRouter.MONITORED_PACKAGES);
         Log.d(TAG, "  packageFilter: NONE (receives events from all apps for app-switch detection)");
         Log.d(TAG, "  trigger: scroll budget exhaustion (from SharedPreferences)");
         Log.d(TAG, "  full-screen thresholds: widthRatio>=" + MIN_WIDTH_RATIO
                 + " heightRatio>=" + MIN_HEIGHT_RATIO + " topOffset<=" + MAX_TOP_OFFSET_PX + "px");
-        Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded)");
+        Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded from budget)");
         Log.d(TAG, "  false-positive guards: heartbeat isStillInReels() + app-switch detection");
+        Log.d(TAG, "  AppEventRouter: LaunchInterceptor + ContentFilter (blockShortForm / launchPopup flags)");
     }
 
     @Override
@@ -347,6 +365,15 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
 
         String packageName = pkg.toString();
+
+        // ── AppEventRouter dispatch ────────────────────────────────────────────────
+        // Route to LaunchInterceptor (launch popup) and ContentFilter (short-form ejection)
+        // before any scroll-budget logic. These two features are fully independent of
+        // each other and of the budget system below.
+        // eventRouter fast-exits for non-monitored packages (O(1) HashSet lookup).
+        if (eventRouter != null) {
+            eventRouter.onAccessibilityEvent(event);
+        }
 
         // --- App-switch detection (defense in depth for false-positive fix) ---
         // When the user is in Reels and a DIFFERENT app comes to foreground
@@ -365,33 +392,88 @@ public class ReelsInterventionService extends AccessibilityService {
                 && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && !packageName.equals(PKG_INSTAGRAM)
                 && !packageName.equals(PKG_YOUTUBE)) {
+
+            // [STICKY-FIX] If the intervention overlay is currently visible, ignore ALL
+            // app-switch events regardless of source. The overlay must only be dismissed
+            // by explicit user action (Lock In / Take a Break buttons) or a budget window
+            // rollover — never by ambient window-state events from the launcher, Breqk's
+            // own WindowManager attachment, or any other background package.
+            // Without this guard, the overlay disappears ~1s after appearing because the
+            // overlay's own attachment fires TYPE_WINDOW_STATE_CHANGED with com.breqk (or
+            // the home launcher behind it), which was previously treated as a real app switch.
+            if (interventionShowing) {
+                Log.d(TAG, "[STICKY-FIX] Suppressed app-switch reset from pkg=" + packageName
+                        + " className=" + event.getClassName()
+                        + " — intervention overlay is active, ignoring");
+                return;
+            }
+
+            // [STICKY-FIX] Also skip the reset when the event comes from a framework class
+            // (android.view.*, android.widget.*) rather than a real Activity. These are
+            // floating system overlays, not genuine foreground transitions.
+            String className = event.getClassName() != null ? event.getClassName().toString() : "";
+            if (isAndroidFrameworkClass(className)) {
+                Log.d(TAG, "[APP_SWITCH] Ignoring framework-class event: pkg=" + packageName
+                        + " class=" + className + " — Reels state preserved");
+                return;
+            }
+
             if (isSystemOverlayPackage(packageName)) {
                 Log.d(TAG, "[APP_SWITCH] Ignoring system overlay package: " + packageName
                         + " — Reels state preserved");
             } else {
                 Log.i(TAG, "[APP_SWITCH] Detected app switch while in Reels: newPkg=" + packageName
+                        + " className=" + className
                         + " — resetting Reels state to prevent false-positive budget accumulation");
                 resetReelsState();
+                // [HOME_DISMISS] Also tell MyVpnService to dismiss its AppUsageMonitor overlay.
+                // ReelsInterventionService receives TYPE_WINDOW_STATE_CHANGED events much faster
+                // (~0ms) than the 1s polling loop in AppUsageMonitor, so we can proactively
+                // dismiss any delay overlay here instead of waiting for the next poll tick.
+                Log.i(TAG, "[HOME_DISMISS] Sending DISMISS_OVERLAY intent to MyVpnService for newPkg=" + packageName);
+                Intent dismissIntent = new Intent(this, MyVpnService.class);
+                dismissIntent.setAction("DISMISS_OVERLAY");
+                try {
+                    startService(dismissIntent);
+                } catch (Exception e) {
+                    Log.w(TAG, "[HOME_DISMISS] Failed to send DISMISS_OVERLAY intent", e);
+                }
             }
             return;
         }
 
-        // Only process scroll/state events from Instagram or YouTube
+        // Only process scroll/state events for scroll-budget logic from Instagram or YouTube.
+        // TikTok is handled entirely by AppEventRouter (ContentFilter) above — no budget tracking.
         if (!packageName.equals(PKG_INSTAGRAM) && !packageName.equals(PKG_YOUTUBE))
             return;
+
+        // Per-app policy check: skip if reels_detection is disabled for this app.
+        // Uses BreqkPrefs.isFeatureEnabled() which resolves active mode overrides → base policy.
+        if (!BreqkPrefs.isFeatureEnabled(this, packageName, BreqkPrefs.FEATURE_REELS_DETECTION)) {
+            Log.d(TAG, "[POLICY] reels_detection disabled for " + packageName + " — skipping event");
+            // If we were tracking this app's Reels state, reset it
+            if (wasInReelsLayout) {
+                resetReelsState();
+            }
+            return;
+        }
 
         handleReelsScrollEvent(event, packageName);
     }
 
     @Override
     public void onInterrupt() {
-        // Service interrupted (e.g. user revoked permission) — clean up any visible
-        // overlay
+        // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
         // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
         persistReelsState(false, "");
         stopReelsHeartbeat();
-        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed, reels state cleared");
+        // Destroy AppEventRouter subsystems (LaunchInterceptor + ContentFilter)
+        if (eventRouter != null) {
+            eventRouter.onDestroy();
+            eventRouter = null;
+        }
+        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed, reels state cleared, router destroyed");
     }
 
     // =========================================================================
@@ -934,6 +1016,25 @@ public class ReelsInterventionService extends AccessibilityService {
         "com.swiftkey.swiftkeyapp",              // SwiftKey
         "com.android.inputmethod.latin",         // AOSP keyboard
         "com.android.systemui",                  // Status bar, notification shade
+        // [STICKY-FIX] Breqk itself fires TYPE_WINDOW_STATE_CHANGED when its own
+        // WindowManager overlay attaches — must not be treated as an app switch.
+        "com.breqk",
+        // [STICKY-FIX] Launcher packages: the home screen sits behind the Reels
+        // intervention overlay and can fire state-change events at any time.
+        // Add common OEM variants here; launchers are also caught dynamically in
+        // isSystemOverlayPackage() via PackageManager.
+        "com.android.launcher",
+        "com.android.launcher2",
+        "com.android.launcher3",
+        "com.google.android.apps.nexuslauncher",  // Pixel launcher
+        "com.sec.android.app.launcher",           // Samsung One UI launcher
+        "com.miui.home",                          // Xiaomi / MIUI launcher
+        "com.oppo.launcher",                      // OPPO launcher
+        "com.huawei.android.launcher",            // Huawei launcher
+        "com.oneplus.launcher",                   // OnePlus launcher
+        "com.realme.launcher",                    // Realme launcher
+        "com.zte.mifavor.launcher",               // ZTE launcher
+        "com.bbk.launcher2",                      // vivo launcher
     };
 
     /**
@@ -967,13 +1068,49 @@ public class ReelsInterventionService extends AccessibilityService {
      * @param pkg Package name from the accessibility event
      * @return true if the package should NOT trigger a Reels state reset
      */
+    /**
+     * Cache of home-launcher package names resolved once at runtime via PackageManager.
+     * Populated lazily on first call to isSystemOverlayPackage().
+     * Catches any OEM launcher not already listed in APP_SWITCH_IGNORE_PACKAGES.
+     */
+    private Set<String> cachedLauncherPackages = null;
+
     private boolean isSystemOverlayPackage(String pkg) {
         if (pkg == null) return false;
         for (String ignore : APP_SWITCH_IGNORE_PACKAGES) {
             if (ignore.equals(pkg)) return true;
         }
         // Catch vendor keyboards not explicitly listed above (not airtight but covers most)
-        return pkg.endsWith(".inputmethod") || pkg.contains(".inputmethod.");
+        if (pkg.endsWith(".inputmethod") || pkg.contains(".inputmethod.")) return true;
+        // [STICKY-FIX] Dynamically detect the active home launcher via PackageManager.
+        // This catches any OEM launcher not in the static list above.
+        if (cachedLauncherPackages == null) {
+            cachedLauncherPackages = resolveLauncherPackages();
+            Log.d(TAG, "[STICKY-FIX] Resolved launcher packages: " + cachedLauncherPackages);
+        }
+        return cachedLauncherPackages.contains(pkg);
+    }
+
+    /**
+     * Queries PackageManager for all activities that handle the HOME intent.
+     * Returns a Set of their package names for use in isSystemOverlayPackage().
+     */
+    private Set<String> resolveLauncherPackages() {
+        Set<String> result = new HashSet<>();
+        try {
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            List<android.content.pm.ResolveInfo> resolveInfos =
+                    getPackageManager().queryIntentActivities(homeIntent, 0);
+            for (android.content.pm.ResolveInfo info : resolveInfos) {
+                if (info.activityInfo != null) {
+                            result.add(info.activityInfo.packageName);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[STICKY-FIX] resolveLauncherPackages failed: " + e.getMessage());
+        }
+        return result;
     }
 
     // =========================================================================
@@ -1196,6 +1333,13 @@ public class ReelsInterventionService extends AccessibilityService {
      * count-based.
      */
     private void resetReelsState() {
+        // [HOME_DISMISS] Dismiss the intervention overlay first — this is critical!
+        // Without this call, the overlay view stays attached to WindowManager even
+        // after all internal state flags are cleared. This was the root bug causing
+        // the overlay to persist after navigating home.
+        Log.d(TAG, "[HOME_DISMISS] resetReelsState: dismissing intervention overlay if visible");
+        dismissIntervention();
+
         // Emit [SHORTS_ACTIVE] false transition before clearing state
         if (shortsCurrentlyDetected) notifyShortsState(false, "reset");
         wasInReelsLayout = false;
@@ -1315,17 +1459,29 @@ public class ReelsInterventionService extends AccessibilityService {
 
     /**
      * Removes the intervention overlay. Safe to call when no overlay is showing.
+     *
+     * [STICKY-FIX] Logs the immediate caller so any accidental dismiss path is
+     * visible in logcat. Filter: adb logcat -s REELS_WATCH | findstr "DISMISS_CALL"
      */
     private void dismissIntervention() {
-        if (interventionView == null)
+        if (interventionView == null) {
+            Log.d(TAG, "[DISMISS_CALL] dismissIntervention: no overlay active (interventionView=null), skipping");
             return;
+        }
+        // Log call site for debugging: shows which method triggered the dismiss.
+        StackTraceElement caller = Thread.currentThread().getStackTrace().length > 3
+                ? Thread.currentThread().getStackTrace()[3]
+                : null;
+        Log.i(TAG, "[DISMISS_CALL] dismissIntervention: removing overlay"
+                + (caller != null ? " — caller=" + caller.getMethodName()
+                        + ":" + caller.getLineNumber() : ""));
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         if (windowManager != null) {
             try {
                 windowManager.removeView(interventionView);
-                Log.d(TAG, "dismissIntervention: removed");
+                Log.d(TAG, "[DISMISS_CALL] dismissIntervention: overlay removed successfully");
             } catch (Exception e) {
-                Log.w(TAG, "dismissIntervention: removeView failed (already removed?)", e);
+                Log.w(TAG, "[DISMISS_CALL] dismissIntervention: removeView failed (already removed?)", e);
             }
         }
         interventionView = null;
@@ -1403,11 +1559,25 @@ public class ReelsInterventionService extends AccessibilityService {
                 // but no TYPE_WINDOW_STATE_CHANGED was received (e.g., quick gestures,
                 // split-screen, or picture-in-picture). If the active window is no
                 // longer the Reels/Shorts app or layout, stop the heartbeat and reset.
-                if (!isStillInReels(packageName)) {
+                // [STICKY-FIX-HEARTBEAT] While the intervention overlay is showing, skip the
+                // isStillInReels() active-window check. The overlay is TYPE_ACCESSIBILITY_OVERLAY
+                // and is focusable (FLAG_NOT_FOCUSABLE intentionally absent so buttons work).
+                // When it's on screen, getRootInActiveWindow() returns the overlay's accessibility
+                // tree (pkg=com.breqk), not Instagram's, causing isStillInReels() to return false
+                // and triggering resetReelsState() → dismissIntervention() ~2s after the overlay
+                // appears. Skipping the check while the overlay is visible prevents this false
+                // dismissal. Navigation within Instagram (TYPE_WINDOW_STATE_CHANGED from Instagram)
+                // still reaches handleReelsScrollEvent() and correctly dismisses the overlay via
+                // the isReelsLayout()=false path.
+                if (!interventionShowing && !isStillInReels(packageName)) {
                     Log.d(TAG, "[REELS_STATE] Heartbeat: user no longer in Reels "
                             + "(foreground check failed for " + packageName + ") — stopping heartbeat");
                     resetReelsState();
                     return; // don't reschedule — heartbeat is dead
+                }
+                if (interventionShowing) {
+                    Log.d(TAG, "[STICKY-FIX-HEARTBEAT] Heartbeat: interventionShowing=true — "
+                            + "skipping isStillInReels() check, overlay must not be auto-dismissed by heartbeat");
                 }
 
                 persistReelsState(true, packageName);

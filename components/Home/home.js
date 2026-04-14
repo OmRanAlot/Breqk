@@ -5,7 +5,9 @@
  *   • App name header (centred) + settings gear icon
  *   • Summary stat cards: total screen time, unlocks, notifications
  *   • Top 5 apps by usage with proportional progress bars
- *   • "Open Instagram (Safe Mode)" primary action button
+ *   • Scroll budget card (always shown when data available)
+ *   • Free break card/button (when free break toggle is ON in Customize)
+ *   • "Open Instagram (Safe Mode)" primary action button (always shown)
  *
  * Data strategy:
  *   Real usage data is loaded via useDigitalWellbeing hook (5-min TTL cache).
@@ -82,6 +84,17 @@ const formatTime = (minutes) => {
 /** Format a nullable integer stat; returns '—' for null/undefined */
 const formatCount = (value) => (value == null ? '—' : String(value));
 
+// ─── Scroll budget helper ─────────────────────────────────────────────────────
+
+/** Format milliseconds as "M:SS" for the scroll budget countdown display. */
+const formatBudgetTime = (ms) => {
+    if (ms == null || ms <= 0) return '0:00';
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${min}:${String(sec).padStart(2, '0')}`;
+};
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 /** Single stat card shown in the summary row */
@@ -114,17 +127,6 @@ const AppUsageRow = ({ appName, usageTimeMin, maxTimeMin }) => {
 };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-
-// ─── Scroll budget helper ────────────────────────────────────────────────────
-
-/** Format milliseconds as "M:SS" for the scroll budget countdown display. */
-const formatBudgetTime = (ms) => {
-    if (ms == null || ms <= 0) return '0:00';
-    const totalSec = Math.floor(ms / 1000);
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    return `${min}:${String(sec).padStart(2, '0')}`;
-};
 
 const Home = ({ navigation }) => {
     const insets = useSafeAreaInsets();
@@ -279,7 +281,7 @@ const Home = ({ navigation }) => {
         const init = async () => {
             console.log('[Home] initialising');
             try {
-                // Load saved blocked apps (add defaults if empty)
+                // Load saved blocked apps (seed defaults if empty)
                 const savedApps = await new Promise((resolve) => {
                     SettingsModule.getBlockedApps((apps) => resolve(apps));
                 });
@@ -589,7 +591,7 @@ export default Home;
 
 const styles = StyleSheet.create({
 
-    //Button for 20 minue break
+    //Button for 20 minute break
 
 
     container: {

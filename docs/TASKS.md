@@ -317,6 +317,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
 | B11 | TikTok missing from per-app policies UI | customize.js | 270-273 | [ ] TODO |
+| B14 | Scroll-budget overlay disappears ~2s after showing — heartbeat's isStillInReels() sees overlay as active window (pkg=com.breqk), not Instagram | ReelsInterventionService.java | ~1560 | [x] FIXED 2026-04-13 |
 | B12 | customize.js is 1,723 lines — needs splitting | customize.js | all | [ ] TODO |
 | B13 | No React Native error boundary | App.tsx | — | [ ] TODO |
 

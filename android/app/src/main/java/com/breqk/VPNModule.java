@@ -66,6 +66,12 @@ public class VPNModule extends ReactContextBaseJavaModule {
             new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable freeBreakEndRunnable = null;
 
+    // Strong reference to the prefs listener so Android doesn't GC it via WeakReference.
+    // Picks up KEY_BLOCKED_APPS changes written by BreqkPrefs.syncBlockedAppsFromPolicies
+    // and re-syncs VPNModule's private appMonitor instance. This is the mechanism that
+    // makes Customize toggles take effect on the live monitor without a restart.
+    private SharedPreferences.OnSharedPreferenceChangeListener blockedAppsListener;
+
     public VPNModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
@@ -92,6 +98,37 @@ public class VPNModule extends ReactContextBaseJavaModule {
                 sendEvent("onBlockedAppOpened", createAppEvent(packageName, appName));
             }
         });
+
+        // Keep appMonitor in sync with SharedPreferences so any writer
+        // (Customize toggle, mode activation, scheduled mode change, future code)
+        // automatically propagates to VPNModule's monitor instance.
+        blockedAppsListener = (prefs, key) -> {
+            if (BreqkPrefs.KEY_BLOCKED_APPS.equals(key)) {
+                Set<String> fresh = BreqkPrefs.getBlockedApps(reactContext);
+                appMonitor.setBlockedApps(fresh);
+                Log.d(TAG, "[POLICY_RELOAD] VPNModule.appMonitor re-synced size=" + fresh.size());
+            }
+        };
+        BreqkPrefs.get(reactContext).registerOnSharedPreferenceChangeListener(blockedAppsListener);
+    }
+
+    /**
+     * Unregister the prefs listener on teardown (RN reload, host destroy)
+     * to prevent leaking the listener across dev reloads.
+     */
+    @Override
+    public void onCatalystInstanceDestroy() {
+        super.onCatalystInstanceDestroy();
+        try {
+            if (blockedAppsListener != null) {
+                BreqkPrefs.get(reactContext)
+                        .unregisterOnSharedPreferenceChangeListener(blockedAppsListener);
+                blockedAppsListener = null;
+                Log.d(TAG, "[INIT] VPNModule prefs listener unregistered");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[INIT] Error unregistering prefs listener: " + e.getMessage());
+        }
     }
 
     /**
@@ -1031,6 +1068,57 @@ public class VPNModule extends ReactContextBaseJavaModule {
         Intent breakEndIntent = new Intent(reactContext, MyVpnService.class);
         breakEndIntent.setAction("com.breqk.FREE_BREAK_END");
         ServiceHelper.startForegroundServiceCompat(reactContext, breakEndIntent);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Mode activation bridge methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Activates a mode by ID from React Native.
+     * Delegates to ModeManager which handles policy sync + service notification.
+     *
+     * Logging: [MODE]
+     */
+    @ReactMethod
+    public void activateMode(String modeId, Promise promise) {
+        Log.d(TAG, "[MODE] activateMode called: " + modeId);
+        try {
+            ModeManager.activate(reactContext, modeId, "manual");
+            // Reload blocked apps into VPNModule's own monitor for consistency
+            loadBlockedAppsIntoMonitor();
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] activateMode failed: " + e.getMessage(), e);
+            promise.reject("MODE_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * Deactivates the currently active mode.
+     * Reverts to base per-app policies.
+     */
+    @ReactMethod
+    public void deactivateMode(Promise promise) {
+        Log.d(TAG, "[MODE] deactivateMode called");
+        try {
+            ModeManager.deactivate(reactContext);
+            loadBlockedAppsIntoMonitor();
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] deactivateMode failed: " + e.getMessage(), e);
+            promise.reject("MODE_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the currently active mode ID (empty string if none).
+     */
+    @ReactMethod
+    public void getActiveMode(Promise promise) {
+        String modeId = BreqkPrefs.getActiveMode(reactContext);
+        Log.d(TAG, "[MODE] getActiveMode → " + modeId);
+        promise.resolve(modeId);
     }
 
     private boolean hasUsageAccessPermission() {

@@ -15,7 +15,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     
     <!-- VPN permission (if you want to keep VPN functionality) -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Exact alarms for mode scheduling (Bedtime, Study Mode, etc.) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".MainApplication"
@@ -85,6 +90,22 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
                 <action android:name="android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED" />
                 <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Mode schedule receiver.
+            Handles AlarmManager intents for mode auto-activation/deactivation
+            (e.g., Bedtime mode at 10pm) and re-registers alarms on boot.
+            Logcat tag: MODE_SCHED
+        -->
+        <receiver
+            android:name=".ModeSchedulerReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.breqk.ACTION_MODE_START" />
+                <action android:name="com.breqk.ACTION_MODE_END" />
             </intent-filter>
         </receiver>
 

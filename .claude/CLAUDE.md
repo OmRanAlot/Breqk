@@ -72,7 +72,9 @@ Background monitoring starts separately:
 | **AccessibilityPermissionActivity.java** | Gate screen requiring ReelsInterventionService to be enabled before entering the app. |
 | **BreqkWidgetProvider.java** | Broadcast receiver for home screen widget updates. |
 | **AppBlockerPackage.java** | Registers all native modules with the React Native bridge. |
-| **BreqkPrefs.java** | Centralized SharedPreferences constants and cached accessor. Single source of truth for all pref keys. |
+| **BreqkPrefs.java** | Centralized SharedPreferences constants, per-app policy helpers, mode resolution, migration logic. Single source of truth for all pref keys. |
+| **ModeManager.java** | Mode lifecycle: activate/deactivate, effective policy resolution (base + mode override), AlarmManager schedule registration. |
+| **ModeSchedulerReceiver.java** | BroadcastReceiver for AlarmManager mode schedule intents + BOOT_COMPLETED alarm re-registration. |
 | **AppNameResolver.java** | Package name → app label resolution with LRU cache (100 entries). Used by AppUsageMonitor and ScreenTimeTracker. |
 | **ServiceHelper.java** | `startForegroundServiceCompat()` — compatibility helper for starting foreground services across API levels. |
 
@@ -214,7 +216,29 @@ Two palettes are in use — both sourced from `design/tokens.ts`:
 7. **Safe Browser** — WebView for Instagram/YouTube with CSS hiding Reels/Shorts feeds
 8. **Instagram Redirect** — Opens Instagram directly in safe browser instead of native app
 9. **Monitoring Toggle** — Enable/disable blocking, persisted across restarts
-10. **Scroll Budget** — *(In Progress)* Time-limited scrolling with rolling windows and lockout overlay; plan at `.claude/plan/scroll-time-limit.md`
+10. **Scroll Budget** — Time-limited scrolling with rolling windows and lockout overlay
+11. **Per-App Feature Policies** — Each managed app (Instagram, YouTube) can have features individually toggled: App Open Intercept, Reels Detection, Scroll Budget, Free Break. Stored as JSON in `app_policies` SharedPreferences key.
+12. **Modes** — Named presets (Study Mode, Bedtime, custom) that override per-app policies and global settings (e.g., delay duration). Only one mode active at a time. Modes can be manually toggled or auto-activated on a schedule.
+13. **Mode Scheduling** — Time-based auto-activation via AlarmManager. Supports overnight windows (e.g., 22:00→07:00), day-of-week filtering, and BOOT_COMPLETED re-registration.
+
+### Per-App Policy Architecture
+
+Three-layer resolution: `Active Mode Override → Base Per-App Policy → false`
+
+```
+app_policies (JSON in SharedPreferences)
+  → { "com.instagram.android": { "app_open_intercept": false, "reels_detection": true, ... } }
+
+breqk_modes (JSON in SharedPreferences)
+  → { "study": { policy_overrides: {...}, setting_overrides: {...}, schedule: {...} } }
+
+active_mode (String in SharedPreferences)
+  → "study" | "" (empty = no mode active)
+```
+
+**Key method**: `BreqkPrefs.isFeatureEnabled(context, packageName, featureKey)` — resolves through all layers. Services should call this instead of reading raw prefs.
+
+**Legacy compatibility**: `blocked_apps` StringSet is auto-synced from effective `app_open_intercept` policies via `BreqkPrefs.syncBlockedAppsFromPolicies()`. AppUsageMonitor and MyVpnService continue using `blocked_apps` without changes.
 
 ### Known Issues & Important Gotchas
 
@@ -223,12 +247,12 @@ Two palettes are in use — both sourced from `design/tokens.ts`:
 - **Reels False Positives** — `ReelsInterventionService` uses `isFullScreenReelsViewPager()` to gate scroll counting; requires element to cover ≥90% width, ≥70% height, and be <200px from top of screen.
 - **-1 Sentinel Values** — Native layer returns `-1` for unavailable metrics (e.g., notification count on Android <28). `useDigitalWellbeing.js` converts these to `null` before exposing to JS.
 - **Progress Screen** — Currently shows placeholder/hardcoded data; not connected to real stats.
-- **Preset Modes** — Deep Work / Sleep / Reading / Detox listed in Customize but not fully wired.
+- **Preset Modes** — Study Mode and Bedtime are auto-created on first launch. Custom modes can be created in Customize. Schedule time picker uses plain text input (HH:mm) — a proper time picker component would improve UX.
 - **Widget** — Basic structure in place (BreqkWidgetProvider + widget_breqk.xml) but not fully functional.
 
 ### Logging Architecture
 
-See **LOGGING.md** (quick reference) and **docs/LOG_DICTIONARY.md** (full dictionary) for all tags, filter commands, and conventions.
+See **docs/LOGGING.md** (quick reference) and **docs/LOG_DICTIONARY.md** (full dictionary) for all tags, filter commands, and conventions.
 
 Three-tier system:
 1. **Android Native** — `Log.d/i/w/e(TAG, ...)` with file-level `TAG` constants
@@ -251,6 +275,15 @@ Key special log markers:
 - Overlay show debounce: 500ms to prevent double-trigger
 - Scroll budget state persisted every ~10s to survive service restarts
 
+## Task Tracking
+
+The single source of truth for all tasks, bugs, and architecture notes is **`docs/TASKS.md`**.
+
+- **Before starting any task:** read `docs/TASKS.md` to understand current status and avoid duplicating work.
+- **After completing any task:** update the relevant checkbox in `docs/TASKS.md` from `[ ]` to `[x]` and note the date if the row supports it. Also update the Bug Inventory status column if applicable.
+- **When discovering a new bug or task:** add it to the appropriate priority section in `docs/TASKS.md` before beginning work.
+- **When architecture changes:** update both `docs/TASKS.md` (Architecture Overview / Feature Inventory sections) and this file (`CLAUDE.md`) to stay in sync.
+
 ## Rules
 
 Comment and document everything you are doing.
@@ -258,4 +291,4 @@ Try to use already existing code within the codebase.
 If something is being repeated/called 3+ times, create the necessary function, variable, or file as required.
 Allow the code to be future proof; assume that the code will be read by humans or other agents.
 Allow for easy customizations within the direct file for testing/debugging purposes.
-Add logging everywhere and at every step. Ensure the system to filter through logs is intuitive and easy. Update LOGGING.md as a dictionary on how to look through the logs.
+Add logging everywhere and at every step. Ensure the system to filter through logs is intuitive and easy. Update docs/LOGGING.md as a dictionary on how to look through the logs.

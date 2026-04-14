@@ -46,6 +46,14 @@ class MainApplication : Application(), ReactApplication {
     override fun onCreate() {
         super.onCreate()
         CookieManager.getInstance().setAcceptCookie(true)
+
+        // Migrate legacy blocked_apps → per-app policies (runs once, no-op after)
+        BreqkPrefs.migrateIfNeeded(this)
+        // Create default modes (Study + Bedtime) on first run
+        BreqkPrefs.createDefaultModesIfNeeded(this)
+        // Register alarms for any modes with schedules
+        ModeManager.reregisterAllAlarms(this)
+
         loadReactNative(this)
     }
 }

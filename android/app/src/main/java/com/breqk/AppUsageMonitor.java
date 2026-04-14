@@ -110,12 +110,12 @@ public class AppUsageMonitor {
     ));
 
     // ─── SharedPreferences Throttling ───────────────────────────────────────
-    // Sync scroll budget & Reels state from SharedPreferences every 5 seconds
+    // Sync scroll budget & Reels state from SharedPreferences every 500ms
     // instead of every 1-second tick to reduce polling overhead.
-    // Android caches SharedPreferences in memory, but the repeated reads + logging
-    // add up. A 5s interval is acceptable because the JS bridge already has a 5-min
-    // cache TTL for stats display.
-    private static final long PREFS_SYNC_INTERVAL_MS = 5000;
+    // Android caches SharedPreferences in memory so these reads are cheap.
+    // Reduced from 5000ms → 500ms (Phase 1 latency fix) so budget exhaustion
+    // and Reels state changes are visible within half a second instead of 5s.
+    private static final long PREFS_SYNC_INTERVAL_MS = 500;
     private long lastPrefsSyncTime = 0;
     // Cached SharedPreferences instance — Android internally caches these, but
     // storing the reference avoids the hash lookup in getSharedPreferences() each tick.
@@ -258,7 +258,7 @@ public class AppUsageMonitor {
                         Log.d(TAG, "Foreground app is null; skipping this tick");
                         // Continue loop even if foreground app is null
                         if (isMonitoring) {
-                            handler.postDelayed(this, 1000);
+                            handler.postDelayed(this, 500); // 500ms poll (Phase 1 latency fix; was 1000ms)
                         }
                         return;
                     }
@@ -422,9 +422,9 @@ public class AppUsageMonitor {
 
                     }
 
-                    // Repeat every second
+                    // Repeat every 500ms (Phase 1 latency fix; was 1000ms)
                     if (isMonitoring) {
-                        handler.postDelayed(this, 1000);
+                        handler.postDelayed(this, 500);
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "Error monitoring apps", e);
@@ -905,6 +905,24 @@ public class AppUsageMonitor {
 
         removeOverlay();
         Log.d(TAG, "stopMonitoring completed");
+    }
+
+    /**
+     * Force-dismisses the delay overlay if one is currently visible.
+     * Safe to call from any thread — posts to the main handler.
+     * Called externally (e.g., via MyVpnService DISMISS_OVERLAY intent) to remove
+     * the overlay immediately when the user navigates home, without waiting for the
+     * next 1s polling tick.
+     *
+     * Tagged [HOME_DISMISS] in logs — filter: adb logcat | findstr HOME_DISMISS
+     */
+    public void dismissOverlayIfShowing() {
+        if (isOverlayActive) {
+            Log.i(TAG, "[HOME_DISMISS] dismissOverlayIfShowing: force-dismissing overlay for " + lastAppPackage);
+            handler.post(() -> removeOverlay());
+        } else {
+            Log.d(TAG, "[HOME_DISMISS] dismissOverlayIfShowing: no overlay active, nothing to dismiss");
+        }
     }
 
     public void setBlockedApps(Set<String> apps) {

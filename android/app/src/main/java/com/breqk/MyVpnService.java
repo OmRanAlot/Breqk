@@ -142,6 +142,16 @@ public class MyVpnService extends VpnService {
                     // SharedPreferences already updated by VPNModule.endFreeBreakInternal().
                     Log.i(TAG, "[FREE_BREAK] FREE_BREAK_END received — Reels budget accumulation resumed");
                     break;
+                case "DISMISS_OVERLAY":
+                    // [HOME_DISMISS] Called when the user navigates to the home screen.
+                    // ReelsInterventionService detects the app switch near-instantly via
+                    // AccessibilityEvent and sends this intent so we can dismiss the delay
+                    // overlay before the 1s polling loop would catch it naturally.
+                    Log.i(TAG, "[HOME_DISMISS] DISMISS_OVERLAY received — dismissing delay overlay");
+                    if (monitor != null) {
+                        monitor.dismissOverlayIfShowing();
+                    }
+                    break;
                 default:
                     Log.w(TAG, "[CMD] Unknown action: " + action);
             }
