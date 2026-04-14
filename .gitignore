@@ -78,5 +78,6 @@ yarn-error.log
 *.txt
 
 /stitch_screens/*
+/everything-claude-code
 
 .claude/plan/*

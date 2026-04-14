@@ -1,4 +1,4 @@
-package com.doomscrollstopper
+package com.breqk
 
 /**
  * MainApplication
@@ -8,6 +8,7 @@ package com.doomscrollstopper
  */
 
 import android.app.Application
+import android.webkit.CookieManager
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -16,11 +17,11 @@ import com.facebook.react.ReactNativeHost
 import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.doomscrollstopper.VPNModule
-import com.doomscrollstopper.AppUsageMonitor
-import com.doomscrollstopper.AppBlockerPackage
-import com.doomscrollstopper.SettingsModule
-import com.doomscrollstopper.BuildConfig
+import com.breqk.VPNModule
+import com.breqk.AppUsageMonitor
+import com.breqk.AppBlockerPackage
+import com.breqk.SettingsModule
+import com.breqk.BuildConfig
 
 class MainApplication : Application(), ReactApplication {
 
@@ -44,6 +45,15 @@ class MainApplication : Application(), ReactApplication {
 
     override fun onCreate() {
         super.onCreate()
+        CookieManager.getInstance().setAcceptCookie(true)
+
+        // Migrate legacy blocked_apps → per-app policies (runs once, no-op after)
+        BreqkPrefs.migrateIfNeeded(this)
+        // Create default modes (Study + Bedtime) on first run
+        BreqkPrefs.createDefaultModesIfNeeded(this)
+        // Register alarms for any modes with schedules
+        ModeManager.reregisterAllAlarms(this)
+
         loadReactNative(this)
     }
 }

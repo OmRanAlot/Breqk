@@ -1,90 +1,108 @@
 // App.tsx
+// Root of Breqk. Checks permissions on mount, then renders a Stack
+// navigator containing Home → Customize → Browser.
+//
+// Navigation architecture (post tab-removal):
+//   Stack: Home (initial) → Customize (via gear icon) → Browser (via deep link or button)
+//
+// Native overlays (AppUsageMonitor + ReelsInterventionService) handle all app-blocking
+// and Reels intervention UI directly via WindowManager. No JS-side modal is needed here.
+//
+// Deep linking: breqk://browser/:platform → Browser screen (used by widget buttons)
+
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, NativeModules } from 'react-native';
+import { NativeModules } from 'react-native';
 import Home from './components/Home/home';
 import Customize from './components/Customize/customize';
-import Progress from './components/Progress/progress';
 import PermissionsScreen from './components/Permissions/PermissionsScreen';
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { BrowserScreen } from './components/Browser/BrowserScreen';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 const { VPNModule } = NativeModules;
-const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
+
+/**
+ * navigationRef — allows navigation from outside React tree (e.g. native event callbacks).
+ * Exported so other modules can call navigationRef.navigate() if needed.
+ */
+export const navigationRef = createNavigationContainerRef();
+
+/**
+ * Deep linking configuration for widget quick-launch buttons.
+ * Maps breqk://browser/:platform → Browser screen.
+ * Works for both cold start and warm start (singleTask launchMode).
+ */
+const linking = {
+  prefixes: ['breqk://'],
+  config: {
+    screens: {
+      // Browser is directly on the stack — deep link resolves correctly without tabs
+      Browser: 'browser/:platform',
+    },
+  },
+};
 
 const App = () => {
+  // null = checking, false = missing, true = granted
   const [permissionsGranted, setPermissionsGranted] = useState<boolean | null>(null);
 
+  // Check required permissions (usage stats + overlay) on mount
   useEffect(() => {
+    console.log('[App] checking permissions');
     VPNModule.checkPermissions().then((perms: { usage: boolean; overlay: boolean }) => {
-      setPermissionsGranted(perms.usage && perms.overlay);
+      const granted = perms.usage && perms.overlay;
+      console.log('[App] permissions result — usage:', perms.usage, 'overlay:', perms.overlay, '→ granted:', granted);
+      setPermissionsGranted(granted);
+    }).catch((e: Error) => {
+      console.error('[App] checkPermissions failed:', e);
+      setPermissionsGranted(false);
     });
   }, []);
 
-  if (permissionsGranted === null) return null;
+  // Render nothing while permission check is in flight
+  if (permissionsGranted === null) {
+    console.log('[App] permission check in progress — rendering null');
+    return null;
+  }
 
+  // Permissions missing — show the onboarding/permission request flow
   if (!permissionsGranted) {
+    console.log('[App] permissions not granted — showing PermissionsScreen');
     return (
       <SafeAreaProvider>
-        <PermissionsScreen onComplete={() => setPermissionsGranted(true)} />
+        <PermissionsScreen onComplete={() => {
+          console.log('[App] PermissionsScreen complete — permissions granted');
+          setPermissionsGranted(true);
+        }} />
       </SafeAreaProvider>
     );
   }
 
+  // All permissions granted — show the main app
+  console.log('[App] permissions granted — rendering main navigator');
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
-        <Tab.Navigator 
-          screenOptions={({ route }) => ({
-            headerShown: false,
-            tabBarStyle: { 
-              backgroundColor: '#1D201F',
-              height: 80,
-              paddingBottom: 20,
-              paddingTop: 10,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: -2 },
-              shadowOpacity: 0.3,
-              shadowRadius: 8,
-              elevation: 8,
-              borderTopWidth: 0,
-            },
-            tabBarLabelStyle: { 
-              fontSize: 12, 
-              fontWeight: '600',
-              marginTop: 4,
-            },
-            tabBarActiveTintColor: '#5B9A8B',
-            tabBarInactiveTintColor: '#6B7280',
-            tabBarIcon: ({ focused, color }) => {
-              let iconText;
-
-              if (route.name === 'Customize') {
-                iconText = focused ? '⚙️' : '⚙️';
-              } else if (route.name === 'Home') {
-                iconText = focused ? '🏠' : '🏠';
-              } else if (route.name === 'Progress') {
-                iconText = focused ? '📊' : '📊';
-              }
-
-              return <Text style={{ fontSize: 20, color }}>{iconText}</Text>;
-            },
-          })}
+      <NavigationContainer ref={navigationRef} linking={linking}>
+        {/*
+          Stack navigator — no bottom tabs.
+          Home is the initial route.
+          Customize is pushed by the gear icon on Home.
+          Browser is pushed by safe-mode buttons or widget deep links.
+          All headers are hidden; each screen manages its own header UI.
+        */}
+        <Stack.Navigator
+          screenOptions={{ headerShown: false }}
+          initialRouteName="Home"
         >
-          <Tab.Screen name="Customize" component={Customize} />
-          <Tab.Screen name="Home" component={Home} />
-          <Tab.Screen name="Progress" component={Progress} />
-        </Tab.Navigator>
+          <Stack.Screen name="Home" component={Home} />
+          <Stack.Screen name="Customize" component={Customize} />
+          <Stack.Screen name="Browser" component={BrowserScreen} />
+        </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#1D201F',
-  },
-});
 
 export default App;

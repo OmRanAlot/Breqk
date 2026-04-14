@@ -1,4 +1,4 @@
-// Design tokens for DoomScrollStopper (dark mode only)
+// Design tokens for Breqk (dark mode only)
 // Auto-generated from the PRD (`input.md`).
 // Exported as plain JS/TS objects for easy consumption in React Native.
 
@@ -136,6 +136,33 @@ export const dark = {
   overlay: 'rgba(0,0,0,0.6)',
 };
 
+// Tether light-mode palette (Tether design system — stitch screens)
+// Use for all main app screens (Home, Customize, Onboarding).
+export const light = {
+  background: '#F8F8F6',     // off-white page background
+  surface: '#FAFAFA',        // card / section surface
+  textPrimary: '#1A1A1A',    // charcoal — main text
+  textSecondary: '#757575',  // medium gray — supporting text
+  textMuted: '#666666',      // subtitle / hint text
+  border: '#E5E5E5',         // default border color
+  ctaBg: '#1A1A1A',          // primary CTA button background
+  ctaText: '#FFFFFF',        // primary CTA button text
+  sliderTrack: '#E5E5E5',    // slider track fill
+  sliderThumb: '#1A1A1A',    // slider thumb
+  placeholder: '#D1D5DB',    // illustration placeholder background
+  dotActive: '#1A1A1A',      // active pagination dot
+  dotInactive: '#D1D5DB',    // inactive pagination dot
+};
+
+// Palette for the dark intervention overlay / bottom sheet (Reels Detected screen)
+export const overlayTheme = {
+  background: 'rgba(0,0,0,0.85)', // dim full-screen backdrop
+  sheet: '#121212',                // bottom-sheet card surface
+  text: 'rgba(255,255,255,0.9)',   // headline text
+  handle: 'rgba(255,255,255,0.2)', // grab handle bar
+  border: 'rgba(255,255,255,0.3)', // secondary button border
+};
+
 export default {
   colors,
   typography,
@@ -145,4 +172,6 @@ export default {
   animation,
   icons,
   dark,
+  light,
+  overlayTheme,
 };

@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/omran/code/DoomScrollStopper/components -name \"*.tsx\" -o -name \"*.ts\" | xargs ls -1)",
+      "Bash(find /c/Users/omran/code/DoomScrollStopper -type f \\\\\\( -name \"*BrowserScreen*\" -o -name \"*webview*\" -o -name \"*injection*\" \\\\\\) 2>/dev/null | head -20)",
+      "Bash(grep -r \"WebView\\\\|react-native-webview\" /c/Users/omran/code/DoomScrollStopper --include=\"*.json\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.java\" --include=\"*.kt\" 2>/dev/null | head -20)",
+      "Bash(npm install:*)",
+      "Bash(cd /c/Users/omran/code/DoomScrollStopper/ios && pod install 2>&1 | tail -10)",
+      "Bash(cd:*)",
+      "Bash(npm run:*)",
+      "Bash(cd android:*)",
+      "Bash(./gradlew installDebug 2>&1)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | tail -15)",
+      "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | grep -E \"error:|Error\" | head -20)",
+      "Bash(./gradlew compileDebugJavaWithJavac 2>&1 | tail -10)",
+      "Bash(mkdir:*)",
+      "Bash(for f:*)",
+      "Bash(do sed:*)",
+      "Bash(done)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(./gradlew build:*)",
+      "Bash(./gradlew compileDebugJavaWithJavac)",
+      "Bash(find /c/Users/omran/code/DoomScrollStopper -type f \\\\\\(-name *.js -o -name *.tsx \\\\\\) -path */components/*)",
+      "Bash(adb logcat:*)",
+      "Bash(adb shell:*)",
+      "Bash(./gradlew installDebug)",
+      "Bash(./gradlew compileDebugJavaSources)",
+      "Bash(./gradlew :app:compileDebugJavaWithJavac)"
+    ]
+  },
+  "enabledPlugins": {
+    "everything-claude-code@everything-claude-code": true
+  }
+}

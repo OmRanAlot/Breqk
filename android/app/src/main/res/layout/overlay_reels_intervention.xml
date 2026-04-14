@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    overlay_reels_intervention.xml
+    ─────────────────────────────────────────────────────────────────────────────
+    Bottom-sheet overlay shown by ReelsInterventionService.triggerIntervention()
+    when the scroll budget time is exhausted.
+
+    Layout structure:
+      FrameLayout (root, match_parent × match_parent, ~75% opaque dark backdrop)
+        └─ LinearLayout (bottom sheet — dark, rounded top corners, bottom-aligned)
+             ├─ View (grab handle pill — decorative)
+             ├─ TextView "Time is up!" (set in code)
+             ├─ Button "Return to Feed" (primary white pill — BACK action, exits Reels viewer)
+             └─ Button "Lock In" (outline pill — GLOBAL_ACTION_HOME, exits to Android home)
+
+    WindowManager params set in ReelsInterventionService.triggerIntervention():
+      TYPE_ACCESSIBILITY_OVERLAY — no SYSTEM_ALERT_WINDOW needed for AccessibilityServices
+      width=MATCH_PARENT, height=MATCH_PARENT
+      Gravity.BOTTOM — sheet rises from the bottom edge of the screen
+
+    View IDs used by ReelsInterventionService.java:
+      intervention_title — headline (text set in code to "Time is up!")
+      btn_lock_in        — "Return to Feed" → fires GLOBAL_ACTION_BACK (exits Reels, stays in app)
+      btn_take_break     — "Lock In" → fires GLOBAL_ACTION_HOME (exits to Android home screen)
+
+    Budget enforcement:
+      Neither button clears scroll_budget_exhausted_at in SharedPreferences.
+      If the user re-enters Reels after tapping "Return to Feed", the overlay re-fires
+      on the very next scroll. Budget only resets when the time window rolls over.
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#BF000000">
+
+    <!-- ── Bottom sheet card ──────────────────────────────────────────────────── -->
+    <!--
+        layout_gravity="bottom" anchors the sheet to the bottom of the FrameLayout.
+        bottom_sheet_bg provides the dark background with rounded top corners (32dp).
+        paddingBottom=48dp gives breathing room above the system nav bar.
+    -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="@drawable/bottom_sheet_bg"
+        android:paddingTop="12dp"
+        android:paddingBottom="48dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
+
+        <!-- Grab handle pill — decorative signal that sheet is interactive -->
+        <View
+            android:layout_width="40dp"
+            android:layout_height="4dp"
+            android:background="@drawable/grab_handle"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="24dp" />
+
+        <!--
+            intervention_title: headline text.
+            Text is set in triggerIntervention() to "Time is up!" when budget is exhausted.
+            24sp, semibold, ~90% white.
+        -->
+        <TextView
+            android:id="@+id/intervention_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Reels Detected"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="#E6FFFFFF"
+            android:layout_marginBottom="32dp" />
+
+        <!--
+            btn_lock_in: "Return to Feed" (primary white pill)
+            onClick: dismiss overlay, fire GLOBAL_ACTION_BACK (exit Reels viewer, stay in app).
+            Budget exhaustion state is NOT cleared — re-entering Reels re-triggers overlay.
+            Text is set in code.
+        -->
+        <!-- <Button
+            android:id="@+id/btn_lock_in"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Return to Feed"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#000000"
+            android:backgroundTint="#FFFFFF"
+            android:layout_marginBottom="14dp" /> -->
+
+        <!--
+            btn_take_break: "Lock In" (outline pill — secondary action)
+            onClick: dismiss overlay, fire GLOBAL_ACTION_HOME (exit to Android home screen).
+            Stronger action — user leaves the app entirely.
+            Text is set in code.
+        -->
+        <Button
+            android:id="@+id/btn_take_break"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Lock In"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/outline_pill_button_bg" />
+
+    </LinearLayout>
+
+</FrameLayout>

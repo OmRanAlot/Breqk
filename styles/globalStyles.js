@@ -1,4 +1,4 @@
-// Global styles for DoomScrollStopper
+// Global styles for Breqk
 // Uses design tokens from design/tokens.ts
 // All components should import and use these styles for consistency
 

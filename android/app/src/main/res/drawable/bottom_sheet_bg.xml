@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    bottom_sheet_bg.xml
+    Dark rounded-top-corners rectangle used as the bottom sheet background in
+    overlay_reels_intervention.xml. Matches stitch_screens/3_reels_intervention.jpg:
+    near-black card (#121212) with 32dp top corner radius to float above the app content.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#121212" />
+    <!-- Only top corners are rounded — bottom edge anchors flush to screen bottom -->
+    <corners
+        android:topLeftRadius="32dp"
+        android:topRightRadius="32dp"
+        android:bottomLeftRadius="0dp"
+        android:bottomRightRadius="0dp" />
+</shape>

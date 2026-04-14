@@ -1,4 +1,4 @@
-package com.doomscrollstopper;
+package com.breqk;
 
 /*
  * MainActivity
@@ -23,7 +23,7 @@ public class MainActivity extends ReactActivity {
      */
     @Override
     protected String getMainComponentName() {
-        return "DoomScrollStopper"; // This should match the "name" in app.json
+        return "Breqk"; // This should match the "name" in app.json
     }
 
     @Override
@@ -39,11 +39,8 @@ public class MainActivity extends ReactActivity {
             if (resultCode == RESULT_OK) {
                 // Permission granted, start the VPN service
                 Intent intent = new Intent(this, MyVpnService.class);
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    startForegroundService(intent);
-                } else {
-                    startService(intent);
-                }
+                intent.setAction("START_VPN");
+                ServiceHelper.startForegroundServiceCompat(this, intent);
             }
             // If result is not OK, the user denied the permission
         }
