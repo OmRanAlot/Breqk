@@ -75,6 +75,7 @@ import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import com.breqk.BuildConfig;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -90,6 +91,10 @@ import com.breqk.reels.ShortFormIds;
 import com.breqk.reels.detection.InstagramDetector;
 import com.breqk.reels.detection.ShortFormDetector;
 import com.breqk.reels.detection.YouTubeDetector;
+import com.breqk.reels.budget.BudgetState;
+import com.breqk.reels.budget.BudgetHeartbeat;
+import com.breqk.reels.intervention.InterventionOverlay;
+import com.breqk.reels.intervention.ReelsStateMachine;
 
 import java.util.List;
 
@@ -157,43 +162,19 @@ public class ReelsInterventionService extends AccessibilityService {
      */
     private long lastScrollTimestamp = 0;
 
-    /**
-     * True when user was in a Reels/Shorts layout on the last event.
-     * Lets us detect when they navigate away and reset state.
-     */
-    private boolean wasInReelsLayout = false;
+    private final ReelsStateMachine stateMachine = new ReelsStateMachine();
 
-    /**
-     * Tracks whether YouTube Shorts was detected as active on the last check.
-     * Used by notifyShortsState() to emit [SHORTS_ACTIVE] only on transitions
-     * (false→true or true→false), not on every scroll event.
-     */
-    private boolean shortsCurrentlyDetected = false;
-
-    /**
-     * Guard against stacking multiple overlays if scroll events fire
-     * rapidly around the budget exhaustion boundary.
-     */
-    private boolean interventionShowing = false;
-
-    /**
-     * Grace period flag. When true, the user just entered Reels/Shorts and is
-     * watching the first video. Budget accumulation and heartbeat are deferred
-     * until the first TYPE_VIEW_SCROLLED event fires (indicating the user is
-     * actively scrolling to more content, not just watching a single video).
-     *
-     * Resets to true on each fresh entry into Reels/Shorts.
-     * Set to false on the first scroll event.
-     *
-     * Filter: adb logcat -s REELS_WATCH | findstr "GRACE"
-     */
-    private boolean inGracePeriod = false;
-
-    /** Currently visible intervention overlay, or null. */
-    private View interventionView = null;
+    // --- WindowManager Overlays ---
+    private InterventionOverlay interventionOverlay;
 
     /** Handler on main looper — WindowManager calls must be on the UI thread. */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    private void logVerbose(String msg) {
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, msg);
+        }
+    }
 
     /**
      * Shared utility for detecting system overlay packages and Android framework class events.
@@ -218,54 +199,12 @@ public class ReelsInterventionService extends AccessibilityService {
     // (com.breqk.reels.detection.YouTubeDetector) as part of Step 2 refactor.
 
     // --- Reels state persistence (shared with AppUsageMonitor) ---
-
-    /** SharedPreferences key: whether user is currently viewing Reels/Shorts */
     private static final String PREF_IS_IN_REELS = "is_in_reels";
-    /**
-     * SharedPreferences key: timestamp of last Reels state update (for staleness
-     * check)
-     */
     private static final String PREF_IS_IN_REELS_TIMESTAMP = "is_in_reels_timestamp";
-    /** SharedPreferences key: which app is in Reels (package name) */
     private static final String PREF_IS_IN_REELS_PACKAGE = "is_in_reels_package";
 
-    /**
-     * Heartbeat interval: how often we refresh the Reels state timestamp while
-     * the user stays in Reels without scrolling. Must be less than the staleness
-     * threshold in AppUsageMonitor (5s) to avoid false expiration.
-     *
-     * Also used as the scroll budget accumulation interval — each heartbeat tick
-     * adds REELS_HEARTBEAT_INTERVAL_MS to scroll_time_used_ms in SharedPreferences.
-     * Reduced from 2000ms → 1000ms (Phase 1 latency fix) for faster budget
-     * accumulation and more responsive is_in_reels state freshness.
-     */
-    private static final long REELS_HEARTBEAT_INTERVAL_MS = 1000;
-
-    /** Runnable that periodically refreshes the Reels state timestamp. */
-    private Runnable reelsHeartbeatRunnable = null;
-
-    /**
-     * Package name currently in Reels (set when heartbeat starts).
-     * Used by accumulateScrollBudget() to trigger immediate intervention overlay
-     * when budget becomes exhausted during passive viewing (no scroll needed).
-     */
-    private String currentReelsPackage = "";
-
-    // --- Scroll budget accumulation ---
-    // Budget tracking is done HERE (not in AppUsageMonitor) because this service
-    // is always running as an AccessibilityService, while
-    // MyVpnService/AppUsageMonitor
-    // may not be running (foreground service restrictions on Android 12+).
-
-    /**
-     * SharedPreferences keys for scroll budget (shared with AppUsageMonitor and
-     * VPNModule)
-     */
-    private static final String PREF_SCROLL_TIME_USED_MS = "scroll_time_used_ms";
-    private static final String PREF_SCROLL_WINDOW_START = "scroll_window_start_time";
-    private static final String PREF_SCROLL_ALLOWANCE_MIN = "scroll_allowance_minutes";
-    private static final String PREF_SCROLL_WINDOW_MIN = "scroll_window_minutes";
-    private static final String PREF_SCROLL_EXHAUSTED_AT = "scroll_budget_exhausted_at";
+    private BudgetState budgetState;
+    private BudgetHeartbeat budgetHeartbeat;
 
     // =========================================================================
     // Service lifecycle
@@ -302,6 +241,34 @@ public class ReelsInterventionService extends AccessibilityService {
         // These replace the private isReelsLayout() / isShortsLayout() methods.
         instagramDetector = new InstagramDetector(this, TAG);
         youtubeDetector   = new YouTubeDetector(this, TAG);
+        interventionOverlay = new InterventionOverlay(this, mainHandler);
+        budgetState       = new BudgetState(this);
+        budgetState.load(getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE));
+        budgetHeartbeat   = new BudgetHeartbeat(budgetState, mainHandler, getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE), new BudgetHeartbeat.HeartbeatCallback() {
+            @Override
+            public boolean isStillInReels(String packageName) {
+                if (interventionOverlay.isShowing()) {
+                    Log.d(TAG, "[STICKY-FIX-HEARTBEAT] Heartbeat: interventionShowing=true — skipping isStillInReels() check");
+                    return true;
+                }
+                return ReelsInterventionService.this.isStillInReels(packageName);
+            }
+            @Override
+            public void onBudgetExhausted(String packageName) {
+                if (!interventionOverlay.isShowing()) {
+                    Log.i(TAG, "[BUDGET] Triggering immediate intervention from heartbeat for " + packageName);
+                    triggerIntervention(packageName);
+                }
+            }
+            @Override
+            public void onHeartbeatInvalid() {
+                resetReelsState();
+            }
+            @Override
+            public void persistReelsState(boolean active, String packageName) {
+                ReelsInterventionService.this.persistReelsState(active, packageName);
+            }
+        });
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
@@ -348,7 +315,7 @@ public class ReelsInterventionService extends AccessibilityService {
         // is still in YouTube Shorts or Instagram Reels. Treating these as a real
         // app switch resets the heartbeat and prevents budget accumulation.
         // isSystemOverlayPackage() exempts known system overlays from this reset.
-        if (wasInReelsLayout
+        if (stateMachine.isInReels()
                 && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && !packageName.equals(PKG_INSTAGRAM)
                 && !packageName.equals(PKG_YOUTUBE)) {
@@ -361,7 +328,7 @@ public class ReelsInterventionService extends AccessibilityService {
             // Without this guard, the overlay disappears ~1s after appearing because the
             // overlay's own attachment fires TYPE_WINDOW_STATE_CHANGED with com.breqk (or
             // the home launcher behind it), which was previously treated as a real app switch.
-            if (interventionShowing) {
+            if (interventionOverlay != null && interventionOverlay.isShowing()) {
                 Log.d(TAG, "[STICKY-FIX] Suppressed app-switch reset from pkg=" + packageName
                         + " className=" + event.getClassName()
                         + " — intervention overlay is active, ignoring");
@@ -413,7 +380,7 @@ public class ReelsInterventionService extends AccessibilityService {
         if (!BreqkPrefs.isFeatureEnabled(this, packageName, BreqkPrefs.FEATURE_REELS_DETECTION)) {
             Log.d(TAG, "[POLICY] reels_detection disabled for " + packageName + " — skipping event");
             // If we were tracking this app's Reels state, reset it
-            if (wasInReelsLayout) {
+            if (stateMachine.isInReels()) {
                 resetReelsState();
             }
             return;
@@ -428,7 +395,7 @@ public class ReelsInterventionService extends AccessibilityService {
         dismissIntervention();
         // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
         persistReelsState(false, "");
-        stopReelsHeartbeat();
+        if (budgetHeartbeat != null) budgetHeartbeat.stop();
         // Destroy AppEventRouter subsystems (LaunchInterceptor + ContentFilter)
         if (eventRouter != null) {
             eventRouter.onDestroy();
@@ -515,14 +482,11 @@ public class ReelsInterventionService extends AccessibilityService {
                 // Returns true if className matches a known Shorts Activity/Fragment class.
                 if (youtubeDetector.checkClassNameTier0(eventClass)) {
                     Log.d(TAG, "YouTubeDetector: TIER0 class name matched " + eventClass + " → confirmed Shorts");
-                    if (!wasInReelsLayout) {
-                        Log.d(TAG, "[GRACE] Entering Shorts (TIER0) — grace period started for " + packageName);
-                        inGracePeriod = true;
-                        notifyShortsState(true, "TIER0");
+                    if (!stateMachine.isInReels()) {
+                        stateMachine.enterReels(packageName, "TIER0");
                         persistReelsState(true, packageName);
                         // Heartbeat and budget deferred until first scroll (grace period)
                     }
-                    wasInReelsLayout = true;
                     return;
                 }
                 // checkClassNameTier0 already logged SHORTS_CLASS — no additional log needed here.
@@ -538,24 +502,19 @@ public class ReelsInterventionService extends AccessibilityService {
             if (root != null)
                 root.recycle();
 
-            if (!inReelsLayout && wasInReelsLayout) {
+            if (!inReelsLayout && stateMachine.isInReels()) {
                 Log.d(TAG, "Left Reels/Shorts via state change — resetting");
-                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(false, "state-change-exit");
                 resetReelsState();
-            } else if (inReelsLayout && !wasInReelsLayout) {
+            } else if (inReelsLayout && !stateMachine.isInReels()) {
                 // Entering Reels/Shorts via navigation (tab switch, deep link, etc.).
                 // Grace period: let the user watch the first video they land on.
                 // Heartbeat and budget accumulation are deferred until the first scroll.
                 String detectedTier = detectResult.tier.isEmpty() ? "TREE_WALK" : detectResult.tier;
-                Log.d(TAG, "[GRACE] Entering Reels/Shorts (" + detectedTier
-                        + ") — grace period started for " + packageName);
-                inGracePeriod = true;
-                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(true, detectedTier);
+                stateMachine.enterReels(packageName, detectedTier);
                 persistReelsState(true, packageName);
                 // Heartbeat and budget deferred until first scroll (grace period)
             }
-            wasInReelsLayout = inReelsLayout;
-            Log.d(TAG, "STATE_CHANGED: wasInReelsLayout=" + wasInReelsLayout + " pkg=" + packageName);
+            Log.d(TAG, "STATE_CHANGED: wasInReelsLayout=" + stateMachine.isInReels() + " pkg=" + packageName);
             return; // don't process navigation events as scrolls
         }
 
@@ -583,7 +542,7 @@ public class ReelsInterventionService extends AccessibilityService {
                     // FullScreenCheck.isFullScreen delegates to ShortFormIds thresholds.
                     confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                     usedFastPath = true;
-                    Log.d(TAG, "Fast path: source=clips_viewer_view_pager fullScreen=" + confirmedInReels);
+                    logVerbose("Fast path: source=clips_viewer_view_pager fullScreen=" + confirmedInReels);
                 } else if (packageName.equals(PKG_YOUTUBE)) {
                     // YouTube Shorts: loop over all known container IDs and verify
                     // full-screen bounds (matching Instagram's pattern for consistency).
@@ -592,8 +551,7 @@ public class ReelsInterventionService extends AccessibilityService {
                         if (viewId.equals(shortsId)) {
                             confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                             usedFastPath = true;
-                            Log.d(TAG, "Fast path: source=" + shortsId
-                                    + " fullScreen=" + confirmedInReels);
+                            logVerbose("Fast path: source=" + shortsId + " fullScreen=" + confirmedInReels);
                             break;
                         }
                     }
@@ -613,19 +571,18 @@ public class ReelsInterventionService extends AccessibilityService {
             confirmedInReels = slowResult.inShortForm;
             if (root != null)
                 root.recycle();
-            Log.d(TAG, "Slow path: tree traversal confirmedInReels=" + confirmedInReels
-                    + " tier=" + slowResult.tier);
+            logVerbose("Slow path: tree traversal confirmedInReels=" + confirmedInReels + " tier=" + slowResult.tier);
         }
 
         // Update cached layout state and apply decision
         if (!confirmedInReels) {
-            if (wasInReelsLayout) {
+            if (stateMachine.isInReels()) {
                 Log.d(TAG, "Scroll outside Reels/Shorts — resetting state");
                 resetReelsState();
             }
             // Emit SCROLL_DECISION line even for ignored scrolls (useful for debugging
             // false positives)
-            Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
+            logVerbose("SCROLL_DECISION pkg=" + packageName
                     + " fastPath=" + usedFastPath
                     + " confirmedInReels=false"
                     + " action=IGNORED");
@@ -633,33 +590,28 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         // Persist Reels state for AppUsageMonitor to gate scroll budget accumulation
-        if (!wasInReelsLayout) {
+        if (!stateMachine.isInReels()) {
             // First detection of Reels via scroll (no prior STATE_CHANGED).
             // Start grace period — it will end below when we process this scroll
             // as the "first scroll" that terminates the grace period.
-            inGracePeriod = true;
+            stateMachine.enterReels(packageName, "first-scroll");
             persistReelsState(true, packageName);
-            Log.d(TAG, "[GRACE] Entering Reels/Shorts (first-scroll) — grace period started for " + packageName);
         }
-        wasInReelsLayout = true;
 
         // --- Grace period termination ---
         // The first scroll after entering Reels/Shorts ends the grace period.
         // This is where we start the heartbeat and budget accumulation that was
         // deferred on entry, allowing the user to watch the first video freely.
-        if (inGracePeriod) {
-            inGracePeriod = false;
-            Log.i(TAG, "[GRACE] First scroll detected — grace period ended for " + packageName);
+        if (stateMachine.processScroll(packageName)) {
 
             // Now start what was deferred on entry:
-            startReelsHeartbeat(packageName);
-            accumulateScrollBudget();
+            budgetHeartbeat.start(packageName);
+            budgetState.tick(BudgetHeartbeat.REELS_HEARTBEAT_INTERVAL_MS);
 
             // Immediate budget check: if budget was already exhausted from a previous
             // session (or allowance=0), intervene now.
             long graceEndNow = System.currentTimeMillis();
-            if (isScrollBudgetExhausted(graceEndNow) && !interventionShowing) {
-                interventionShowing = true;
+            if (budgetState.isExhausted(graceEndNow) && !interventionOverlay.isShowing()) {
                 Log.i(TAG, "[GRACE] Budget already exhausted after grace period — immediate intervention for " + packageName);
                 triggerIntervention(packageName);
             }
@@ -669,9 +621,8 @@ public class ReelsInterventionService extends AccessibilityService {
         // any intervention or budget accumulation. The heartbeat keeps running (to maintain
         // is_in_reels state for AppUsageMonitor) but skips budget accumulation via its own
         // guard inside accumulateScrollBudget().
-        if (isFreeBreakActive()) {
-            Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
-                    + " action=FREE_BREAK_ALLOW (break active — skipping budget/intervention)");
+        if (budgetState.isFreeBreakActive(System.currentTimeMillis())) {
+            logVerbose("SCROLL_DECISION pkg=" + packageName + " action=FREE_BREAK_ALLOW (break active — skipping budget/intervention)");
             return;
         }
 
@@ -680,7 +631,7 @@ public class ReelsInterventionService extends AccessibilityService {
         long now = System.currentTimeMillis();
         long elapsed = now - lastScrollTimestamp;
         if (elapsed < SCROLL_DEBOUNCE_MS) {
-            Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
+            logVerbose("SCROLL_DECISION pkg=" + packageName
                     + " fastPath=" + usedFastPath
                     + " confirmedInReels=true"
                     + " DEBOUNCED (elapsed=" + elapsed + "ms < " + SCROLL_DEBOUNCE_MS + "ms)");
@@ -691,16 +642,15 @@ public class ReelsInterventionService extends AccessibilityService {
         // --- Check scroll budget exhaustion from SharedPreferences ---
         // AppUsageMonitor persists budget state; we read it here to decide whether to
         // intervene.
-        boolean budgetExhausted = isScrollBudgetExhausted(now);
+        boolean budgetExhausted = budgetState.isExhausted(now);
 
-        Log.d(TAG, "SCROLL_DECISION pkg=" + packageName
+        logVerbose("SCROLL_DECISION pkg=" + packageName
                 + " fastPath=" + usedFastPath
                 + " confirmedInReels=true"
                 + " budgetExhausted=" + budgetExhausted
-                + " interventionShowing=" + interventionShowing);
+                + " interventionShowing=" + interventionOverlay.isShowing());
 
-        if (budgetExhausted && !interventionShowing) {
-            interventionShowing = true;
+        if (budgetExhausted && !interventionOverlay.isShowing()) {
             Log.i(TAG, "[BUDGET] Scroll budget exhausted — triggering intervention for " + packageName);
             triggerIntervention(packageName);
         } else if (!budgetExhausted) {
@@ -709,97 +659,11 @@ public class ReelsInterventionService extends AccessibilityService {
     }
 
     // =========================================================================
-    // Scroll budget check (reads from SharedPreferences)
-    // =========================================================================
-
-    /**
-     * Reads scroll budget state from SharedPreferences to determine if the budget
-     * is exhausted. The budget is tracked and persisted by AppUsageMonitor; this
-     * service only reads the persisted state.
-     *
-     * Budget is considered exhausted when:
-     * 1. scroll_budget_exhausted_at > 0 (AppUsageMonitor flagged it)
-     * 2. AND the current window hasn't expired yet (window hasn't rolled over)
-     *
-     * If the window has expired (now - windowStart >= windowDuration), the budget
-     * is considered available again even if exhausted_at > 0, because
-     * AppUsageMonitor
-     * will reset it on its next tick.
-     *
-     * SharedPreferences keys read:
-     * - scroll_budget_exhausted_at (long): timestamp when budget was exhausted, 0 =
-     * not exhausted
-     * - scroll_window_start_time (long): when the current budget window started
-     * - scroll_window_minutes (int): window duration in minutes
-     *
-     * @param now Current system time in milliseconds
-     * @return true if scroll budget is exhausted and window hasn't expired
-     */
-    private boolean isScrollBudgetExhausted(long now) {
-        // [FREE_BREAK] During an active free break the budget is never exhausted —
-        // the user has unrestricted scrolling access for the duration of the break.
-        if (isFreeBreakActive()) {
-            Log.d(TAG, "[BUDGET] [FREE_BREAK] isScrollBudgetExhausted: free break active → returning false");
-            return false;
-        }
-
-        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-        long exhaustedAt = prefs.getLong("scroll_budget_exhausted_at", 0);
-
-        // If budget hasn't been flagged as exhausted, it's available
-        if (exhaustedAt == 0) {
-            Log.d(TAG, "[BUDGET] exhaustedAt=0 → budget available");
-            return false;
-        }
-
-        // Budget was flagged as exhausted — check if the window has rolled over
-        long windowStart = prefs.getLong("scroll_window_start_time", 0);
-        int windowMinutes = prefs.getInt("scroll_window_minutes", 60);
-        long windowMs = windowMinutes * 60 * 1000L;
-
-        if (windowStart > 0 && (now - windowStart) >= windowMs) {
-            // Window has expired — AppUsageMonitor will reset on its next tick
-            Log.d(TAG, "[BUDGET] Window expired (windowStart=" + windowStart
-                    + " windowMin=" + windowMinutes
-                    + " elapsed=" + (now - windowStart) + "ms) → budget available (pending reset)");
-            return false;
-        }
-
-        Log.d(TAG, "[BUDGET] Budget exhausted (exhaustedAt=" + exhaustedAt
-                + " windowStart=" + windowStart
-                + " windowMin=" + windowMinutes + ")");
-        return true;
-    }
-
-    // =========================================================================
     // Full-screen verification (core false-positive fix)
     // =========================================================================
 
 
-    // =========================================================================
-    // Shorts active state logging
-    // =========================================================================
 
-    /**
-     * Emits a [SHORTS_ACTIVE] log line whenever YouTube Shorts detection
-     * transitions between detected and not-detected. Only fires on transitions
-     * to avoid log spam on every scroll event.
-     *
-     * Filter command: adb logcat -s REELS_WATCH | findstr "SHORTS_ACTIVE"
-     *
-     * @param active true = Shorts just became active, false = Shorts just became inactive
-     * @param tier   Which tier / reason triggered this transition (e.g. "TIER1", "reset")
-     */
-    private void notifyShortsState(boolean active, String tier) {
-        if (active == shortsCurrentlyDetected) return; // no transition — skip
-        shortsCurrentlyDetected = active;
-        if (active) {
-            Log.i(TAG, "[SHORTS_ACTIVE] active=true  tier=" + tier
-                    + " pkg=" + PKG_YOUTUBE);
-        } else {
-            Log.i(TAG, "[SHORTS_ACTIVE] active=false reason=" + tier);
-        }
-    }
 
     // hasShortsTextSignal() and scanNodeForShortsText() have been moved to
     // YouTubeDetector (com.breqk.reels.detection.YouTubeDetector) as part of
@@ -873,18 +737,13 @@ public class ReelsInterventionService extends AccessibilityService {
         Log.d(TAG, "[HOME_DISMISS] resetReelsState: dismissing intervention overlay if visible");
         dismissIntervention();
 
-        // Emit [SHORTS_ACTIVE] false transition before clearing state
-        if (shortsCurrentlyDetected) notifyShortsState(false, "reset");
-        wasInReelsLayout = false;
-        interventionShowing = false;
-        inGracePeriod = false;
+        stateMachine.reset("reset");
         lastScrollTimestamp = 0;
-        currentReelsPackage = "";
         // Clear Reels state in SharedPreferences so AppUsageMonitor stops reading active state
         persistReelsState(false, "");
-        stopReelsHeartbeat();
+        if (budgetHeartbeat != null) budgetHeartbeat.stop();
         Log.d(TAG,
-                "resetReelsState: cleared (wasInReels=false, interventionShowing=false, inGracePeriod=false, lastScrollTimestamp=0, currentReelsPackage='', reelsState=false)");
+                "resetReelsState: cleared (wasInReels=false, interventionShowing=false, inGracePeriod=false, lastScrollTimestamp=0, reelsState=false)");
     }
 
     // =========================================================================
@@ -918,52 +777,12 @@ public class ReelsInterventionService extends AccessibilityService {
      * @param pkg PKG_INSTAGRAM or PKG_YOUTUBE — used for logging context
      */
     private void triggerIntervention(final String pkg) {
-        mainHandler.post(() -> {
-            WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-            if (windowManager == null) {
-                Log.e(TAG, "triggerIntervention: WindowManager null, cannot show overlay");
-                interventionShowing = false;
-                return;
-            }
-
-            // MATCH_PARENT so the FrameLayout fills the screen.
-            // Gravity.BOTTOM: the inner bottom sheet LinearLayout rises from the bottom
-            // edge.
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-                    PixelFormat.TRANSLUCENT);
-            // BOTTOM gravity so the sheet anchors to the bottom of the screen
-            params.gravity = Gravity.BOTTOM;
-
-            interventionView = LayoutInflater.from(this)
-                    .inflate(R.layout.overlay_reels_intervention, null);
-
-            // --- Title: "Time is up!" ---
-            TextView titleView = interventionView.findViewById(R.id.intervention_title);
-            titleView.setText("Time is up!");
-            Log.d(TAG, "triggerIntervention: title set to 'Time is up!'");
-
-            // --- "Lock In" button (secondary): exit to Android home screen ---
-            // Stronger action — user leaves the app entirely via GLOBAL_ACTION_HOME.
-            // Budget exhaustion state is NOT cleared here either — it resets only when
-            // the configured time window rolls over (handled by AppUsageMonitor).
-            Button btnLockIn = interventionView.findViewById(R.id.btn_take_break);
-            btnLockIn.setText("Lock In");
-            btnLockIn.setVisibility(View.VISIBLE);
-            btnLockIn.setOnClickListener(v -> {
-                Log.i(TAG, "lock_in tapped for " + pkg + " — going to Android home screen");
-                dismissIntervention();
+        if (interventionOverlay != null) {
+            interventionOverlay.show(pkg, () -> {
                 resetReelsState();
                 performGlobalAction(GLOBAL_ACTION_HOME);
             });
-
-            windowManager.addView(interventionView, params);
-            Log.i(TAG, "[BUDGET] Overlay shown (Time is up!) for " + pkg);
-        });
+        }
     }
 
     /**
@@ -973,28 +792,9 @@ public class ReelsInterventionService extends AccessibilityService {
      * visible in logcat. Filter: adb logcat -s REELS_WATCH | findstr "DISMISS_CALL"
      */
     private void dismissIntervention() {
-        if (interventionView == null) {
-            Log.d(TAG, "[DISMISS_CALL] dismissIntervention: no overlay active (interventionView=null), skipping");
-            return;
+        if (interventionOverlay != null) {
+            interventionOverlay.dismiss();
         }
-        // Log call site for debugging: shows which method triggered the dismiss.
-        StackTraceElement caller = Thread.currentThread().getStackTrace().length > 3
-                ? Thread.currentThread().getStackTrace()[3]
-                : null;
-        Log.i(TAG, "[DISMISS_CALL] dismissIntervention: removing overlay"
-                + (caller != null ? " — caller=" + caller.getMethodName()
-                        + ":" + caller.getLineNumber() : ""));
-        WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        if (windowManager != null) {
-            try {
-                windowManager.removeView(interventionView);
-                Log.d(TAG, "[DISMISS_CALL] dismissIntervention: overlay removed successfully");
-            } catch (Exception e) {
-                Log.w(TAG, "[DISMISS_CALL] dismissIntervention: removeView failed (already removed?)", e);
-            }
-        }
-        interventionView = null;
-        interventionShowing = false;
     }
 
 
@@ -1031,76 +831,6 @@ public class ReelsInterventionService extends AccessibilityService {
                 + " timestamp=" + System.currentTimeMillis());
     }
 
-    /**
-     * Starts a repeating heartbeat that:
-     * 1. Refreshes the Reels state timestamp every 2s (keeps is_in_reels fresh)
-     * 2. Accumulates scroll budget time (adds 2s per tick to scroll_time_used_ms)
-     * 3. Marks budget as exhausted when allowance is exceeded
-     *
-     * Scroll budget accumulation was moved here from AppUsageMonitor because
-     * MyVpnService (which hosts AppUsageMonitor) may not be running on Android 12+
-     * due to foreground service start restrictions. This AccessibilityService is
-     * always running when enabled, making it the reliable place for tracking.
-     *
-     * @param packageName the app currently in Reels
-     */
-    private void startReelsHeartbeat(String packageName) {
-        stopReelsHeartbeat(); // cancel any existing heartbeat first
-        currentReelsPackage = packageName; // store for accumulateScrollBudget() overlay trigger
-        reelsHeartbeatRunnable = new Runnable() {
-            @Override
-            public void run() {
-                // --- Heartbeat self-validation (primary false-positive fix) ---
-                // Before accumulating budget, verify the user is STILL in Reels.
-                // This catches the case where the user pressed Home or switched apps
-                // but no TYPE_WINDOW_STATE_CHANGED was received (e.g., quick gestures,
-                // split-screen, or picture-in-picture). If the active window is no
-                // longer the Reels/Shorts app or layout, stop the heartbeat and reset.
-                // [STICKY-FIX-HEARTBEAT] While the intervention overlay is showing, skip the
-                // isStillInReels() active-window check. The overlay is TYPE_ACCESSIBILITY_OVERLAY
-                // and is focusable (FLAG_NOT_FOCUSABLE intentionally absent so buttons work).
-                // When it's on screen, getRootInActiveWindow() returns the overlay's accessibility
-                // tree (pkg=com.breqk), not Instagram's, causing isStillInReels() to return false
-                // and triggering resetReelsState() → dismissIntervention() ~2s after the overlay
-                // appears. Skipping the check while the overlay is visible prevents this false
-                // dismissal. Navigation within Instagram (TYPE_WINDOW_STATE_CHANGED from Instagram)
-                // still reaches handleReelsScrollEvent() and correctly dismisses the overlay via
-                // the isReelsLayout()=false path.
-                if (!interventionShowing && !isStillInReels(packageName)) {
-                    Log.d(TAG, "[REELS_STATE] Heartbeat: user no longer in Reels "
-                            + "(foreground check failed for " + packageName + ") — stopping heartbeat");
-                    resetReelsState();
-                    return; // don't reschedule — heartbeat is dead
-                }
-                if (interventionShowing) {
-                    Log.d(TAG, "[STICKY-FIX-HEARTBEAT] Heartbeat: interventionShowing=true — "
-                            + "skipping isStillInReels() check, overlay must not be auto-dismissed by heartbeat");
-                }
-
-                persistReelsState(true, packageName);
-                // Accumulate scroll budget time on every heartbeat tick.
-                // accumulateScrollBudget() will trigger the intervention overlay immediately
-                // if budget becomes exhausted during this tick (no scroll event needed).
-                accumulateScrollBudget();
-                Log.d(TAG, "[REELS_STATE] Heartbeat: refreshed timestamp + budget for " + packageName);
-                mainHandler.postDelayed(this, REELS_HEARTBEAT_INTERVAL_MS);
-            }
-        };
-        mainHandler.postDelayed(reelsHeartbeatRunnable, REELS_HEARTBEAT_INTERVAL_MS);
-        Log.d(TAG,
-                "[REELS_STATE] Heartbeat started (interval=" + REELS_HEARTBEAT_INTERVAL_MS + "ms) for " + packageName);
-    }
-
-    /**
-     * Stops the Reels state heartbeat. Safe to call when no heartbeat is active.
-     */
-    private void stopReelsHeartbeat() {
-        if (reelsHeartbeatRunnable != null) {
-            mainHandler.removeCallbacks(reelsHeartbeatRunnable);
-            reelsHeartbeatRunnable = null;
-            Log.d(TAG, "[REELS_STATE] Heartbeat stopped");
-        }
-    }
 
     /**
      * Checks if the user is still actively viewing Reels/Shorts by inspecting
@@ -1179,126 +909,7 @@ public class ReelsInterventionService extends AccessibilityService {
         return inReels;
     }
 
-    // =========================================================================
-    // Scroll budget accumulation (runs inside the heartbeat)
-    // =========================================================================
 
-    /**
-     * Adds REELS_HEARTBEAT_INTERVAL_MS (2s) to the scroll budget used time.
-     * Reads and writes SharedPreferences atomically. If the accumulated time
-     * exceeds the configured allowance, marks the budget as exhausted.
-     *
-     * Also handles window expiration: if the window has rolled over, resets
-     * the budget before accumulating.
-     *
-     * SharedPreferences keys used:
-     * - scroll_time_used_ms (long): accumulated Reels time in current window
-     * - scroll_window_start_time (long): when the current window started (0 = no
-     * window)
-     * - scroll_allowance_minutes (int): allowed minutes per window
-     * - scroll_window_minutes (int): window duration in minutes
-     * - scroll_budget_exhausted_at (long): >0 when budget is exhausted
-     */
-    /**
-     * Returns true if the user has an active 20-minute free break.
-     *
-     * During an active free break, ALL intervention and budget accumulation logic
-     * is bypassed, giving the user an uninterrupted scroll window (great for
-     * cardio sessions where mindless scrolling is genuinely fine).
-     *
-     * Includes stale-flag cleanup: if the 20-min window has elapsed but
-     * free_break_active was never cleared (e.g. process was killed), this
-     * method auto-clears the flag so we don't permanently suppress interventions.
-     *
-     * Log filter: adb logcat -s REELS_WATCH | grep FREE_BREAK
-     */
-    private boolean isFreeBreakActive() {
-        SharedPreferences prefs = BreqkPrefs.get(this);
-        boolean active = prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false);
-        if (!active) return false;
-
-        long startTime = prefs.getLong(BreqkPrefs.KEY_FREE_BREAK_START_TIME, 0);
-        long now = System.currentTimeMillis();
-        if (startTime > 0 && (now - startTime) >= BreqkPrefs.FREE_BREAK_DURATION_MS) {
-            // Break expired — auto-clear so interventions resume immediately
-            prefs.edit().putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
-            Log.i(TAG, "[FREE_BREAK] isFreeBreakActive: break expired (startTime=" + startTime
-                    + ") — auto-cleared, elapsed=" + (now - startTime) + "ms");
-            return false;
-        }
-
-        long remainingMs = (startTime + BreqkPrefs.FREE_BREAK_DURATION_MS) - now;
-        Log.d(TAG, "[FREE_BREAK] isFreeBreakActive: true — remainingMs=" + remainingMs);
-        return true;
-    }
-
-    private void accumulateScrollBudget() {
-        // [FREE_BREAK] Skip all budget accumulation during an active free break.
-        // The user gets an uninterrupted 20-min window; budget is fully preserved.
-        if (isFreeBreakActive()) {
-            Log.d(TAG, "[FREE_BREAK] accumulateScrollBudget: skipping — free break active");
-            return;
-        }
-
-        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
-
-        int allowanceMinutes = prefs.getInt(PREF_SCROLL_ALLOWANCE_MIN, 5);
-        int windowMinutes = prefs.getInt(PREF_SCROLL_WINDOW_MIN, 60);
-        long windowStartTime = prefs.getLong(PREF_SCROLL_WINDOW_START, 0);
-        long scrollTimeUsedMs = prefs.getLong(PREF_SCROLL_TIME_USED_MS, 0);
-        long exhaustedAt = prefs.getLong(PREF_SCROLL_EXHAUSTED_AT, 0);
-
-        long now = System.currentTimeMillis();
-        long allowanceMs = allowanceMinutes * 60 * 1000L;
-        long windowMs = windowMinutes * 60 * 1000L;
-
-        // Check if the window has expired and reset
-        if (windowStartTime > 0 && (now - windowStartTime) >= windowMs) {
-            Log.i(TAG, "[BUDGET] Scroll window expired — resetting. "
-                    + "windowStart=" + windowStartTime + " windowMin=" + windowMinutes);
-            windowStartTime = 0;
-            scrollTimeUsedMs = 0;
-            exhaustedAt = 0;
-            // Reset intervention state so the new window's exhaustion can trigger a fresh overlay
-            interventionShowing = false;
-            dismissIntervention();
-        }
-
-        // Start a new window if none is active
-        if (windowStartTime == 0) {
-            windowStartTime = now;
-            Log.d(TAG, "[BUDGET] New scroll window started at " + windowStartTime);
-        }
-
-        // Accumulate time (heartbeat fires every 2s)
-        scrollTimeUsedMs += REELS_HEARTBEAT_INTERVAL_MS;
-
-        Log.d(TAG, "[BUDGET] Accumulated: used=" + scrollTimeUsedMs + "ms / "
-                + allowanceMs + "ms allowance ("
-                + String.format("%.0f", (double) scrollTimeUsedMs / 1000) + "s / "
-                + (allowanceMinutes * 60) + "s)");
-
-        // Check if budget is now exhausted
-        if (scrollTimeUsedMs >= allowanceMs && exhaustedAt == 0) {
-            exhaustedAt = now;
-            Log.i(TAG, "[BUDGET] Scroll budget EXHAUSTED at " + exhaustedAt);
-
-            // Trigger intervention overlay immediately — don't wait for the next scroll event.
-            // This ensures the overlay appears even when the user is passively watching without scrolling.
-            if (!interventionShowing && currentReelsPackage != null && !currentReelsPackage.isEmpty()) {
-                interventionShowing = true;
-                Log.i(TAG, "[BUDGET] Triggering immediate intervention from heartbeat for " + currentReelsPackage);
-                triggerIntervention(currentReelsPackage);
-            }
-        }
-
-        // Persist atomically
-        prefs.edit()
-                .putLong(PREF_SCROLL_TIME_USED_MS, scrollTimeUsedMs)
-                .putLong(PREF_SCROLL_WINDOW_START, windowStartTime)
-                .putLong(PREF_SCROLL_EXHAUSTED_AT, exhaustedAt)
-                .apply();
-    }
 
     // =========================================================================
     // Helpers
