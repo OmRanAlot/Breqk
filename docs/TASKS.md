@@ -54,19 +54,14 @@
   - Fix: Delete lines 556-562 entirely (the `<View><TouchableOpacity></TouchableOpacity></View>` block).
   - Effort: 5 minutes
 
-- [ ] **B9: Disable VERBOSE_LOGGING for production**
-  - File: `android/app/src/main/java/com/breqk/ScreenTimeTracker.java` (line 58)
-  - Problem: `VERBOSE_LOGGING = true` dumps per-event logs. Thousands of lines/day for active users.
-  - Fix: Set to `false`, or gate behind `BuildConfig.DEBUG`.
-  - Effort: 5 minutes
+- [x] **B9: Disable VERBOSE_LOGGING for production** ✅ 2026-04-15
+  - File: `android/app/src/main/java/com/breqk/ReelsInterventionService.java`
+  - Fix applied: `logVerbose()` helper gates all chatty scroll/tree-traversal `Log.d` calls behind `BuildConfig.DEBUG`. Release builds emit zero SCROLL_DECISION noise.
 
 ### 🟡 P1 — High Priority (Fix before v1.1)
 
-- [ ] **B1: Extract shared YouTube Shorts view IDs into a single constant file**
-  - Files: `android/app/src/main/java/com/breqk/ContentFilter.java` (lines 86-94) AND `android/app/src/main/java/com/breqk/ReelsInterventionService.java`
-  - Problem: `YOUTUBE_SHORTS_VIEW_IDS` is duplicated. When YouTube updates their IDs, you must update both files — and you will forget one.
-  - Fix: Create `android/app/src/main/java/com/breqk/ViewIds.java` with a single `public static final String[] YOUTUBE_SHORTS_VIEW_IDS` array. Both ContentFilter and ReelsInterventionService reference it.
-  - Effort: 1 hour
+- [x] **B1: Extract shared YouTube Shorts view IDs into a single constant file** ✅ 2026-04-15
+  - Fix applied: Moved to `com.breqk.reels.ShortFormIds`. Both `ContentFilter` and `ReelsInterventionService` now reference `ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS`. A single file to update when YouTube changes IDs.
 
 - [ ] **Integrate Firebase Crashlytics**
   - Files: `android/app/build.gradle`, `android/build.gradle`, new `google-services.json`
