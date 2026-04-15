@@ -10,6 +10,9 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import com.breqk.reels.FullScreenCheck;
+import com.breqk.reels.ShortFormIds;
+
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -77,39 +80,20 @@ public class ContentFilter {
      */
     private static final long EJECTION_DEBOUNCE_MS = 600L;
 
-    /**
-     * Known YouTube Shorts container view IDs.
-     * When any of these is found and passes the full-screen bounds check, Shorts is confirmed.
-     * Keep in sync with YOUTUBE_SHORTS_VIEW_IDS in ReelsInterventionService.
-     * To discover new IDs after a YouTube update: enable logs and check CONTENT_FILTER output.
-     */
-    private static final String[] YOUTUBE_SHORTS_VIEW_IDS = {
-            "com.google.android.youtube:id/reel_player_page_container",
-            "com.google.android.youtube:id/shorts_container",
-            "com.google.android.youtube:id/shorts_shelf_container",
-            "com.google.android.youtube:id/reel_recycler",
-            "com.google.android.youtube:id/reel_watch_player",
-            "com.google.android.youtube:id/shorts_player_container",
-            "com.google.android.youtube:id/shorts_pager",
-    };
-
-    // ── Full-screen detection thresholds (must match ReelsInterventionService) ──
-    /**
-     * Minimum fraction of screen width the Reels/Shorts viewer must cover.
-     * Embedded reel previews in the home feed are far narrower than 90%.
-     */
-    private static final float MIN_WIDTH_RATIO  = 0.90f;
-    /**
-     * Minimum fraction of screen height. 70% (not 90%) accounts for the space
-     * consumed by the status bar and navigation bar.
-     */
-    private static final float MIN_HEIGHT_RATIO = 0.70f;
-    /**
-     * Maximum Y pixel offset (from top of screen) for the viewer's top edge.
-     * The full-screen Reels/Shorts player starts at or near 0; embedded previews
-     * start much further down the page.
-     */
-    private static final int   MAX_TOP_OFFSET_PX = 200;
+    // ── View IDs and full-screen thresholds ──────────────────────────────────
+    // All view IDs and full-screen threshold constants are now consolidated in
+    // com.breqk.reels.ShortFormIds (Step 1 of reels-intervention-refactor).
+    // This eliminates Bug B1 — a single edit to ShortFormIds propagates to both
+    // ContentFilter and ReelsInterventionService automatically.
+    //
+    // Previously duplicated here as:
+    //   YOUTUBE_SHORTS_VIEW_IDS  (L86–94)
+    //   MIN_WIDTH_RATIO  = 0.90f  (L101)
+    //   MIN_HEIGHT_RATIO = 0.70f  (L106)
+    //   MAX_TOP_OFFSET_PX = 200   (L112)
+    //
+    // To discover new YouTube IDs after an app update:
+    //   adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
 
     private final Context context;
     private final AccessibilityService service;
@@ -199,14 +183,18 @@ public class ContentFilter {
 
         boolean confirmed = false;
 
-        // Fast path: check source view ID
+        // Fast path: check source view ID against ShortFormIds.INSTAGRAM_REELS_IDS
         AccessibilityNodeInfo source = event.getSource();
         if (source != null) {
             String viewId = source.getViewIdResourceName();
-            if ("com.instagram.android:id/clips_viewer_view_pager".equals(viewId)
-                    || "com.instagram.android:id/clips_viewer_pager".equals(viewId)) {
-                confirmed = isFullScreenNode(source);
-                Log.d(TAG, "[IG] Fast path: viewId=" + viewId + " fullScreen=" + confirmed);
+            if (viewId != null) {
+                for (String reelsId : ShortFormIds.INSTAGRAM_REELS_IDS) {
+                    if (reelsId.equals(viewId)) {
+                        confirmed = FullScreenCheck.isFullScreen(source, context, TAG);
+                        Log.d(TAG, "[IG] Fast path: viewId=" + viewId + " fullScreen=" + confirmed);
+                        break;
+                    }
+                }
             }
             source.recycle();
         }
@@ -242,14 +230,14 @@ public class ContentFilter {
 
         boolean confirmed = false;
 
-        // Fast path (scroll events only): check source view ID
+        // Fast path (scroll events only): check source view ID against ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS
         if (eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
             AccessibilityNodeInfo source = event.getSource();
             if (source != null) {
                 String viewId = source.getViewIdResourceName();
                 if (viewId != null) {
-                    for (String shortsId : YOUTUBE_SHORTS_VIEW_IDS) {
-                        if (viewId.equals(shortsId) && isFullScreenNode(source)) {
+                    for (String shortsId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
+                        if (viewId.equals(shortsId) && FullScreenCheck.isFullScreen(source, context, TAG)) {
                             confirmed = true;
                             Log.d(TAG, "[YT] Fast path: matched " + viewId + " (full-screen)");
                             break;
@@ -303,35 +291,35 @@ public class ContentFilter {
      * @param root Root node of the Instagram accessibility tree (may be null)
      * @return true if Reels viewer is confirmed full-screen; false otherwise
      */
+    /**
+     * Returns true if the Instagram accessibility tree contains a full-screen Reels viewer.
+     *
+     * Iterates ShortFormIds.INSTAGRAM_REELS_IDS (primary + alternative IDs) and validates
+     * each found node via FullScreenCheck.isFullScreen().
+     *
+     * This mirrors isReelsLayout() in ReelsInterventionService — both now share the same
+     * constant source (ShortFormIds) so any future Instagram update requires only one edit.
+     *
+     * @param root Root node of the Instagram accessibility tree (may be null)
+     * @return true if Reels viewer is confirmed full-screen; false otherwise
+     */
     private boolean isInstagramReels(AccessibilityNodeInfo root) {
         if (root == null) return false;
 
-        // Primary ID: clips_viewer_view_pager
-        List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(
-                "com.instagram.android:id/clips_viewer_view_pager");
-        if (nodes != null) {
-            for (AccessibilityNodeInfo n : nodes) {
-                if (isFullScreenNode(n)) {
-                    recycleAll(nodes);
-                    Log.d(TAG, "[IG] isInstagramReels: clips_viewer_view_pager confirmed full-screen → true");
-                    return true;
+        // Iterate all known Instagram Reels IDs — ShortFormIds.INSTAGRAM_REELS_IDS
+        // is the single source of truth (replaces the two separate lookups that were here).
+        for (String reelsId : ShortFormIds.INSTAGRAM_REELS_IDS) {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(reelsId);
+            if (nodes != null) {
+                for (AccessibilityNodeInfo n : nodes) {
+                    if (FullScreenCheck.isFullScreen(n, context, TAG)) {
+                        recycleAll(nodes);
+                        Log.d(TAG, "[IG] isInstagramReels: " + reelsId + " confirmed full-screen → true");
+                        return true;
+                    }
                 }
+                recycleAll(nodes);
             }
-            recycleAll(nodes);
-        }
-
-        // Secondary ID: clips_viewer_pager (alternative Instagram versions)
-        List<AccessibilityNodeInfo> altNodes = root.findAccessibilityNodeInfosByViewId(
-                "com.instagram.android:id/clips_viewer_pager");
-        if (altNodes != null) {
-            for (AccessibilityNodeInfo n : altNodes) {
-                if (isFullScreenNode(n)) {
-                    recycleAll(altNodes);
-                    Log.d(TAG, "[IG] isInstagramReels: clips_viewer_pager (alt) confirmed full-screen → true");
-                    return true;
-                }
-            }
-            recycleAll(altNodes);
         }
 
         return false;
@@ -349,14 +337,29 @@ public class ContentFilter {
      * @param root Root node of the YouTube accessibility tree (may be null)
      * @return true if Shorts player is confirmed; false otherwise
      */
+    /**
+     * Returns true if the YouTube accessibility tree contains a Shorts player.
+     *
+     * Implements Tier 1 only (known container IDs from ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS
+     * + full-screen bounds check via FullScreenCheck.isFullScreen()).
+     *
+     * More sophisticated tiers (text scan, structural heuristics) are handled by
+     * ReelsInterventionService, which runs budget-based intervention logic. ContentFilter
+     * uses Tier 1 only because ejection must be low-latency and precise — over-detection
+     * would be worse here (every false positive = a BACK press).
+     *
+     * @param root Root node of the YouTube accessibility tree (may be null)
+     * @return true if Shorts player is confirmed; false otherwise
+     */
     private boolean isYouTubeShorts(AccessibilityNodeInfo root) {
         if (root == null) return false;
 
-        for (String viewId : YOUTUBE_SHORTS_VIEW_IDS) {
+        // ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS is the single source of truth.
+        for (String viewId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
             if (nodes != null && !nodes.isEmpty()) {
                 for (AccessibilityNodeInfo n : nodes) {
-                    if (isFullScreenNode(n)) {
+                    if (FullScreenCheck.isFullScreen(n, context, TAG)) {
                         recycleAll(nodes);
                         Log.d(TAG, "[YT] isYouTubeShorts: " + viewId + " confirmed full-screen → true");
                         return true;
@@ -386,36 +389,16 @@ public class ContentFilter {
      * @param node Node to evaluate; null returns false
      * @return true only when all four signals confirm full-screen Reels/Shorts viewer
      */
+    /**
+     * Returns true if the node is a full-screen Reels/Shorts viewer.
+     *
+     * @deprecated Replaced by {@link FullScreenCheck#isFullScreen(AccessibilityNodeInfo, Context, String)}.
+     *             Kept as a thin delegate for backward compatibility within this file.
+     *             Remove once all call sites are updated to use FullScreenCheck directly.
+     */
+    @Deprecated
     private boolean isFullScreenNode(AccessibilityNodeInfo node) {
-        if (node == null) return false;
-
-        // Signal 1: Must be visible to user (not a back-stack node)
-        if (!node.isVisibleToUser()) return false;
-
-        // Signals 2, 3, 4: Screen coverage bounds
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-
-        DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-        int screenW = metrics.widthPixels;
-        int screenH = metrics.heightPixels;
-        if (screenW <= 0 || screenH <= 0) return false;
-
-        float wRatio = (float) bounds.width()  / screenW;
-        float hRatio = (float) bounds.height() / screenH;
-
-        boolean fullScreen = wRatio >= MIN_WIDTH_RATIO
-                && hRatio >= MIN_HEIGHT_RATIO
-                && bounds.top <= MAX_TOP_OFFSET_PX;
-
-        Log.d(TAG, "[FULLSCREEN_CHECK]"
-                + " visible=true"
-                + " wRatio=" + String.format("%.2f", wRatio) + "/" + MIN_WIDTH_RATIO
-                + " hRatio=" + String.format("%.2f", hRatio) + "/" + MIN_HEIGHT_RATIO
-                + " top=" + bounds.top + "/" + MAX_TOP_OFFSET_PX
-                + " → " + fullScreen);
-
-        return fullScreen;
+        return FullScreenCheck.isFullScreen(node, context, TAG);
     }
 
     // =========================================================================

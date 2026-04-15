@@ -86,9 +86,11 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
-import java.util.HashSet;
+import com.breqk.reels.FrameworkClassFilter;
+import com.breqk.reels.FullScreenCheck;
+import com.breqk.reels.ShortFormIds;
+
 import java.util.List;
-import java.util.Set;
 
 public class ReelsInterventionService extends AccessibilityService {
 
@@ -116,66 +118,15 @@ public class ReelsInterventionService extends AccessibilityService {
     private AppEventRouter eventRouter;
 
     // -----------------------------------------------------------------------
-    // YouTube Shorts view ID constants
+    // YouTube Shorts view ID constants — now consolidated in ShortFormIds
     // -----------------------------------------------------------------------
-    // YouTube frequently changes their view IDs across app updates. When
-    // Shorts detection breaks, run: adb logcat -s REELS_WATCH | grep YT_TREE_DUMP
-    // while scrolling through Shorts to discover the current IDs, then update
-    // these arrays. Each array entry is a fully-qualified resource ID.
-
-    /**
-     * Known YouTube Shorts container view IDs (primary detection).
-     * Any of these matching + passing the full-screen bounds check = confirmed Shorts.
-     * To discover new IDs: adb logcat -s REELS_WATCH | grep YT_TREE_DUMP
-     */
-    private static final String[] YOUTUBE_SHORTS_VIEW_IDS = {
-            "com.google.android.youtube:id/reel_player_page_container",
-            "com.google.android.youtube:id/shorts_container",
-            "com.google.android.youtube:id/shorts_shelf_container",
-            "com.google.android.youtube:id/reel_recycler",
-            "com.google.android.youtube:id/reel_watch_player",
-            "com.google.android.youtube:id/shorts_player_container",
-            "com.google.android.youtube:id/shorts_pager",
-    };
-
-    /**
-     * YouTube Shorts secondary signal IDs (present in Shorts UI but not containers).
-     * Used in Tier 2 heuristic detection when primary container IDs fail.
-     */
-    private static final String[] YOUTUBE_SHORTS_SECONDARY_IDS = {
-            // NOTE: "like_button" intentionally excluded — it's a generic YouTube ID that
-            // appears on home page video thumbnails, causing false positives. Only
-            // Shorts-specific IDs belong here.
-            "com.google.android.youtube:id/reel_like_button",
-            "com.google.android.youtube:id/shorts_like_button",
-            "com.google.android.youtube:id/reel_comment_button",
-            "com.google.android.youtube:id/reel_time_bar",
-    };
-
-    /**
-     * YouTube regular video seekbar ID. ABSENCE of this ID helps differentiate
-     * Shorts from regular videos (Shorts have no seekbar, regular videos do).
-     */
-    private static final String YOUTUBE_SEEKBAR_ID = "com.google.android.youtube:id/youtube_controls_seekbar";
-
-    /**
-     * YouTube Activity/Fragment class names that are unique to the Shorts player.
-     * When TYPE_WINDOW_STATE_CHANGED fires from YouTube, event.getClassName()
-     * returns the class name of the newly-active Activity or Fragment. If it
-     * matches an entry here, we confirm Shorts immediately without any tree
-     * traversal (TIER 0 — O(1) detection).
-     *
-     * HOW TO DISCOVER: These class names are logged as [SHORTS_CLASS] whenever
-     * YouTube fires a STATE_CHANGED event. Run:
-     *   adb logcat -s REELS_WATCH | findstr "SHORTS_CLASS"
-     * while navigating to the Shorts tab, then add the exact class name below.
-     *
-     * Currently empty — will be populated once class names are observed in logs.
-     */
-    private static final String[] YOUTUBE_SHORTS_CLASS_NAMES = {
-            // Example (add real names after observing [SHORTS_CLASS] logs):
-            // "com.google.android.apps.youtube.app.shorts.ShortsActivity",
-    };
+    // All view ID arrays and full-screen threshold constants have been moved to
+    // com.breqk.reels.ShortFormIds (Step 1 of reels-intervention-refactor).
+    // This kills Bug B1 — a single edit to ShortFormIds propagates to both
+    // ReelsInterventionService and ContentFilter automatically.
+    //
+    // To discover new IDs after a YouTube update:
+    //   adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
 
     /**
      * Minimum milliseconds between two processed scroll events.
@@ -191,24 +142,11 @@ public class ReelsInterventionService extends AccessibilityService {
      */
     private static final long SCROLL_DEBOUNCE_MS = 600;
 
-    /**
-     * Minimum fraction of screen width the Reels ViewPager must cover to be
-     * considered full-screen. Home feed embedded reel cards are far narrower.
-     * Range: 0.0–1.0. Default: 0.90 (90%).
-     */
-    private static final float MIN_WIDTH_RATIO = 0.90f;
-
-    /**
-     * Minimum fraction of screen height the Reels ViewPager must cover.
-     * 0.70 (70%) accounts for status bar + nav bar eating significant space.
-     */
-    private static final float MIN_HEIGHT_RATIO = 0.70f;
-
-    /**
-     * Maximum Y pixel offset (from top of screen) for the ViewPager's top edge.
-     * Embedded reels in the home feed start much further down the page.
-     */
-    private static final int MAX_TOP_OFFSET_PX = 200;
+    // Full-screen detection thresholds are now in ShortFormIds:
+    //   ShortFormIds.MIN_WIDTH_RATIO  = 0.90f
+    //   ShortFormIds.MIN_HEIGHT_RATIO = 0.70f
+    //   ShortFormIds.MAX_TOP_OFFSET_PX = 200
+    // FullScreenCheck.isFullScreen() uses these thresholds automatically.
 
     // --- Scroll tracking state ---
 
@@ -255,6 +193,13 @@ public class ReelsInterventionService extends AccessibilityService {
 
     /** Handler on main looper — WindowManager calls must be on the UI thread. */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /**
+     * Shared utility for detecting system overlay packages and Android framework class events.
+     * Holds the lazily-resolved launcher package cache (see FrameworkClassFilter).
+     * Initialized once — single instance per service lifecycle.
+     */
+    private final FrameworkClassFilter frameworkClassFilter = new FrameworkClassFilter();
 
     /**
      * Timestamp of the last YouTube tree dump (for rate limiting).
@@ -349,8 +294,9 @@ public class ReelsInterventionService extends AccessibilityService {
         Log.d(TAG, "  watching (router): " + AppEventRouter.MONITORED_PACKAGES);
         Log.d(TAG, "  packageFilter: NONE (receives events from all apps for app-switch detection)");
         Log.d(TAG, "  trigger: scroll budget exhaustion (from SharedPreferences)");
-        Log.d(TAG, "  full-screen thresholds: widthRatio>=" + MIN_WIDTH_RATIO
-                + " heightRatio>=" + MIN_HEIGHT_RATIO + " topOffset<=" + MAX_TOP_OFFSET_PX + "px");
+        Log.d(TAG, "  full-screen thresholds: widthRatio>=" + ShortFormIds.MIN_WIDTH_RATIO
+                + " heightRatio>=" + ShortFormIds.MIN_HEIGHT_RATIO
+                + " topOffset<=" + ShortFormIds.MAX_TOP_OFFSET_PX + "px");
         Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded from budget)");
         Log.d(TAG, "  false-positive guards: heartbeat isStillInReels() + app-switch detection");
         Log.d(TAG, "  AppEventRouter: LaunchInterceptor + ContentFilter (blockShortForm / launchPopup flags)");
@@ -411,14 +357,15 @@ public class ReelsInterventionService extends AccessibilityService {
             // [STICKY-FIX] Also skip the reset when the event comes from a framework class
             // (android.view.*, android.widget.*) rather than a real Activity. These are
             // floating system overlays, not genuine foreground transitions.
+            // Delegates to FrameworkClassFilter.isFrameworkClass() — shared with ContentFilter.
             String className = event.getClassName() != null ? event.getClassName().toString() : "";
-            if (isAndroidFrameworkClass(className)) {
+            if (FrameworkClassFilter.isFrameworkClass(className)) {
                 Log.d(TAG, "[APP_SWITCH] Ignoring framework-class event: pkg=" + packageName
                         + " class=" + className + " — Reels state preserved");
                 return;
             }
 
-            if (isSystemOverlayPackage(packageName)) {
+            if (frameworkClassFilter.isSystemOverlayPackage(packageName, this, TAG)) {
                 Log.d(TAG, "[APP_SWITCH] Ignoring system overlay package: " + packageName
                         + " — Reels state preserved");
             } else {
@@ -543,7 +490,7 @@ public class ReelsInterventionService extends AccessibilityService {
                 // Evidence from log69.txt:
                 //   Real Shorts:       className=com.google.android.apps.youtube.app.watchwhile.MainActivity
                 //   Floating overlay:  className=android.view.ViewGroup  ← false positive
-                if (isAndroidFrameworkClass(eventClass)) {
+                if (FrameworkClassFilter.isFrameworkClass(eventClass)) {
                     Log.d(TAG, "[SHORTS_CLASS] Skipping tree traversal — generic class '" + eventClass
                             + "' indicates floating overlay (not real navigation)");
                     // Do not modify wasInReelsLayout — this is not a real navigation event.
@@ -551,8 +498,9 @@ public class ReelsInterventionService extends AccessibilityService {
                 }
 
                 // If the class name is already in our known list, confirm Shorts immediately
-                // without any tree traversal (fastest possible detection).
-                for (String knownClass : YOUTUBE_SHORTS_CLASS_NAMES) {
+                // without any tree traversal (fastest possible detection — Tier 0).
+                // ShortFormIds.YOUTUBE_SHORTS_CLASS_NAMES is the single source of truth.
+                for (String knownClass : ShortFormIds.YOUTUBE_SHORTS_CLASS_NAMES) {
                     if (knownClass.equals(eventClass)) {
                         Log.d(TAG, "isShortsLayout: TIER0 class name matched " + eventClass + " → confirmed Shorts");
                         if (!wasInReelsLayout) {
@@ -614,16 +562,18 @@ public class ReelsInterventionService extends AccessibilityService {
             if (viewId != null) {
                 if (packageName.equals(PKG_INSTAGRAM)
                         && viewId.equals("com.instagram.android:id/clips_viewer_view_pager")) {
-                    // Verify this isn't a back-stack or embedded node
-                    confirmedInReels = isFullScreenReelsViewPager(source);
+                    // Verify this isn't a back-stack or embedded node.
+                    // FullScreenCheck.isFullScreen delegates to ShortFormIds thresholds.
+                    confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                     usedFastPath = true;
                     Log.d(TAG, "Fast path: source=clips_viewer_view_pager fullScreen=" + confirmedInReels);
                 } else if (packageName.equals(PKG_YOUTUBE)) {
                     // YouTube Shorts: loop over all known container IDs and verify
                     // full-screen bounds (matching Instagram's pattern for consistency).
-                    for (String shortsId : YOUTUBE_SHORTS_VIEW_IDS) {
+                    // ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS is the single source of truth.
+                    for (String shortsId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
                         if (viewId.equals(shortsId)) {
-                            confirmedInReels = isFullScreenReelsViewPager(source);
+                            confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                             usedFastPath = true;
                             Log.d(TAG, "Fast path: source=" + shortsId
                                     + " fullScreen=" + confirmedInReels);
@@ -845,60 +795,16 @@ public class ReelsInterventionService extends AccessibilityService {
      * @return true only if all four signals confirm this is the active full-screen
      *         viewer
      */
+    /**
+     * Returns true if the given node represents the full-screen Reels or Shorts viewer.
+     *
+     * @deprecated Replaced by {@link FullScreenCheck#isFullScreen(AccessibilityNodeInfo, Context, String)}.
+     *             This method is kept as a thin delegate so existing callers within this file
+     *             still compile — remove once all call sites are updated to use FullScreenCheck directly.
+     */
+    @Deprecated
     private boolean isFullScreenReelsViewPager(AccessibilityNodeInfo node) {
-        if (node == null) {
-            Log.d(TAG, "isFullScreenReelsViewPager: node null → false");
-            return false;
-        }
-
-        // --- Signal 1: Visibility ---
-        // isVisibleToUser() returns false for views that are in the back stack or
-        // off-screen.
-        // This is the cheapest check — do it first.
-        if (!node.isVisibleToUser()) {
-            Log.d(TAG, "isFullScreenReelsViewPager: NOT visible to user (back stack) → false");
-            return false;
-        }
-
-        // --- Signals 2, 3, 4: Screen coverage bounds ---
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int screenWidth = metrics.widthPixels;
-        int screenHeight = metrics.heightPixels;
-
-        float widthRatio = screenWidth > 0 ? (float) bounds.width() / screenWidth : 0f;
-        float heightRatio = screenHeight > 0 ? (float) bounds.height() / screenHeight : 0f;
-
-        Log.d(TAG, "isFullScreenReelsViewPager:"
-                + " visible=true"
-                + " bounds=[" + bounds.left + "," + bounds.top + "," + bounds.right + "," + bounds.bottom + "]"
-                + " screen=" + screenWidth + "x" + screenHeight
-                + " widthRatio=" + String.format("%.2f", widthRatio)
-                + " heightRatio=" + String.format("%.2f", heightRatio)
-                + " top=" + bounds.top);
-
-        if (widthRatio < MIN_WIDTH_RATIO) {
-            Log.d(TAG, "isFullScreenReelsViewPager: widthRatio " + String.format("%.2f", widthRatio)
-                    + " < " + MIN_WIDTH_RATIO + " → embedded preview → false");
-            return false;
-        }
-
-        if (heightRatio < MIN_HEIGHT_RATIO) {
-            Log.d(TAG, "isFullScreenReelsViewPager: heightRatio " + String.format("%.2f", heightRatio)
-                    + " < " + MIN_HEIGHT_RATIO + " → embedded preview → false");
-            return false;
-        }
-
-        if (bounds.top > MAX_TOP_OFFSET_PX) {
-            Log.d(TAG, "isFullScreenReelsViewPager: top=" + bounds.top
-                    + " > " + MAX_TOP_OFFSET_PX + "px → not at screen top → false");
-            return false;
-        }
-
-        Log.d(TAG, "isFullScreenReelsViewPager: ALL signals passed → true (full-screen Reels viewer)");
-        return true;
+        return FullScreenCheck.isFullScreen(node, this, TAG);
     }
 
     // =========================================================================
@@ -998,120 +904,19 @@ public class ReelsInterventionService extends AccessibilityService {
     // System overlay detection (P1-FIX: prevent false APP_SWITCH resets from IME)
     // =========================================================================
 
-    /**
-     * Packages that appear as foreground via TYPE_WINDOW_STATE_CHANGED but are NOT
-     * real app navigations — they are system overlays (keyboards, status bar, etc.)
-     * that float on top of whatever the user is actually viewing.
-     *
-     * An APP_SWITCH event from one of these packages must NOT reset Reels state,
-     * because the user is still watching Reels/Shorts underneath the overlay.
-     *
-     * To add new false-reset packages: observe them in logs via
-     *   adb logcat -s REELS_WATCH | grep APP_SWITCH
-     * and add them to this list.
-     */
-    private static final String[] APP_SWITCH_IGNORE_PACKAGES = {
-        "com.google.android.inputmethod.latin",  // Gboard
-        "com.samsung.android.honeyboard",        // Samsung Keyboard
-        "com.swiftkey.swiftkeyapp",              // SwiftKey
-        "com.android.inputmethod.latin",         // AOSP keyboard
-        "com.android.systemui",                  // Status bar, notification shade
-        // [STICKY-FIX] Breqk itself fires TYPE_WINDOW_STATE_CHANGED when its own
-        // WindowManager overlay attaches — must not be treated as an app switch.
-        "com.breqk",
-        // [STICKY-FIX] Launcher packages: the home screen sits behind the Reels
-        // intervention overlay and can fire state-change events at any time.
-        // Add common OEM variants here; launchers are also caught dynamically in
-        // isSystemOverlayPackage() via PackageManager.
-        "com.android.launcher",
-        "com.android.launcher2",
-        "com.android.launcher3",
-        "com.google.android.apps.nexuslauncher",  // Pixel launcher
-        "com.sec.android.app.launcher",           // Samsung One UI launcher
-        "com.miui.home",                          // Xiaomi / MIUI launcher
-        "com.oppo.launcher",                      // OPPO launcher
-        "com.huawei.android.launcher",            // Huawei launcher
-        "com.oneplus.launcher",                   // OnePlus launcher
-        "com.realme.launcher",                    // Realme launcher
-        "com.zte.mifavor.launcher",               // ZTE launcher
-        "com.bbk.launcher2",                      // vivo launcher
-    };
-
-    /**
-     * Returns true if the given class name is a generic Android framework class
-     * (android.view.*, android.widget.*) rather than an app-specific Activity or
-     * Fragment class.
-     *
-     * This is used to distinguish real YouTube navigation events from floating
-     * overlay updates. YouTube keeps Shorts UI elements (reel_time_bar, etc.)
-     * resident in a floating window that fires TYPE_WINDOW_STATE_CHANGED with
-     * className=android.view.ViewGroup even when the user is on the home page.
-     * Real navigations (entering the Shorts tab) always use proper YouTube class
-     * names like com.google.android.apps.youtube.app.watchwhile.MainActivity.
-     *
-     * @param className The class name from event.getClassName()
-     * @return true if the class is a generic Android framework class (= overlay)
-     */
-    private boolean isAndroidFrameworkClass(String className) {
-        if (className == null || className.isEmpty()) return false;
-        return className.startsWith("android.view.")
-                || className.startsWith("android.widget.")
-                || className.startsWith("android.app.")
-                || className.equals("android.view.ViewGroup");
-    }
-
-    /**
-     * Returns true if the given package name represents a system overlay (IME,
-     * keyboard, status bar) rather than a real foreground app navigation.
-     * Used to suppress false APP_SWITCH resets in onAccessibilityEvent().
-     *
-     * @param pkg Package name from the accessibility event
-     * @return true if the package should NOT trigger a Reels state reset
-     */
-    /**
-     * Cache of home-launcher package names resolved once at runtime via PackageManager.
-     * Populated lazily on first call to isSystemOverlayPackage().
-     * Catches any OEM launcher not already listed in APP_SWITCH_IGNORE_PACKAGES.
-     */
-    private Set<String> cachedLauncherPackages = null;
-
-    private boolean isSystemOverlayPackage(String pkg) {
-        if (pkg == null) return false;
-        for (String ignore : APP_SWITCH_IGNORE_PACKAGES) {
-            if (ignore.equals(pkg)) return true;
-        }
-        // Catch vendor keyboards not explicitly listed above (not airtight but covers most)
-        if (pkg.endsWith(".inputmethod") || pkg.contains(".inputmethod.")) return true;
-        // [STICKY-FIX] Dynamically detect the active home launcher via PackageManager.
-        // This catches any OEM launcher not in the static list above.
-        if (cachedLauncherPackages == null) {
-            cachedLauncherPackages = resolveLauncherPackages();
-            Log.d(TAG, "[STICKY-FIX] Resolved launcher packages: " + cachedLauncherPackages);
-        }
-        return cachedLauncherPackages.contains(pkg);
-    }
-
-    /**
-     * Queries PackageManager for all activities that handle the HOME intent.
-     * Returns a Set of their package names for use in isSystemOverlayPackage().
-     */
-    private Set<String> resolveLauncherPackages() {
-        Set<String> result = new HashSet<>();
-        try {
-            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
-            homeIntent.addCategory(Intent.CATEGORY_HOME);
-            List<android.content.pm.ResolveInfo> resolveInfos =
-                    getPackageManager().queryIntentActivities(homeIntent, 0);
-            for (android.content.pm.ResolveInfo info : resolveInfos) {
-                if (info.activityInfo != null) {
-                            result.add(info.activityInfo.packageName);
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "[STICKY-FIX] resolveLauncherPackages failed: " + e.getMessage());
-        }
-        return result;
-    }
+    // =========================================================================
+    // System overlay + framework class detection
+    // =========================================================================
+    //
+    // APP_SWITCH_IGNORE_PACKAGES, isAndroidFrameworkClass(), and
+    // isSystemOverlayPackage() have been moved to FrameworkClassFilter
+    // (com.breqk.reels.FrameworkClassFilter) as part of Step 1 of the
+    // reels-intervention-refactor. The `frameworkClassFilter` instance field above
+    // replaces both the static array and the private helper methods.
+    //
+    // To add new false-reset packages:
+    //   Edit FrameworkClassFilter.APP_SWITCH_IGNORE_PACKAGES[]
+    //   adb logcat -s REELS_WATCH | findstr "APP_SWITCH" to observe culprits
 
     // =========================================================================
     // Layout detection
@@ -1157,43 +962,24 @@ public class ReelsInterventionService extends AccessibilityService {
             return false;
         }
 
-        // PRIMARY: clips_viewer_view_pager
-        List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(
-                "com.instagram.android:id/clips_viewer_view_pager");
-        if (nodes != null && !nodes.isEmpty()) {
-            Log.d(TAG,
-                    "isReelsLayout: found " + nodes.size()
-                            + " clips_viewer_view_pager node(s) — checking full-screen");
-            for (AccessibilityNodeInfo n : nodes) {
-                if (isFullScreenReelsViewPager(n)) {
-                    recycleAll(nodes);
-                    Log.d(TAG, "isReelsLayout: YES — clips_viewer_view_pager is full-screen");
-                    return true;
+        // Search all known Instagram Reels IDs (ShortFormIds.INSTAGRAM_REELS_IDS).
+        // Each found node is validated via FullScreenCheck.isFullScreen() to prevent
+        // false positives from back-stack nodes and home-feed embedded reel previews.
+        for (String reelsId : ShortFormIds.INSTAGRAM_REELS_IDS) {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(reelsId);
+            if (nodes != null && !nodes.isEmpty()) {
+                Log.d(TAG, "isReelsLayout: found " + nodes.size()
+                        + " node(s) for " + reelsId + " — checking full-screen");
+                for (AccessibilityNodeInfo n : nodes) {
+                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
+                        recycleAll(nodes);
+                        Log.d(TAG, "isReelsLayout: YES — " + reelsId + " is full-screen");
+                        return true;
+                    }
                 }
+                recycleAll(nodes);
+                Log.d(TAG, "isReelsLayout: " + reelsId + " found but none passed full-screen check → false");
             }
-            recycleAll(nodes);
-            Log.d(TAG,
-                    "isReelsLayout: clips_viewer_view_pager found but none passed full-screen check → false");
-        }
-
-        // SECONDARY: clips_viewer_pager (alternative ID on some Instagram versions)
-        List<AccessibilityNodeInfo> altNodes = root.findAccessibilityNodeInfosByViewId(
-                "com.instagram.android:id/clips_viewer_pager");
-        if (altNodes != null && !altNodes.isEmpty()) {
-            Log.d(TAG,
-                    "isReelsLayout: found " + altNodes.size()
-                            + " clips_viewer_pager node(s) — checking full-screen");
-            for (AccessibilityNodeInfo n : altNodes) {
-                if (isFullScreenReelsViewPager(n)) {
-                    recycleAll(altNodes);
-                    Log.d(TAG,
-                            "isReelsLayout: YES — clips_viewer_pager (alt ID) is full-screen");
-                    return true;
-                }
-            }
-            recycleAll(altNodes);
-            Log.d(TAG,
-                    "isReelsLayout: clips_viewer_pager found but none passed full-screen check → false");
         }
 
         Log.d(TAG, "isReelsLayout: NO — no qualifying Reels view found");
@@ -1228,13 +1014,14 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         // --- TIER 1: Known container view IDs with full-screen bounds check ---
-        for (String viewId : YOUTUBE_SHORTS_VIEW_IDS) {
+        // ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS is the single source of truth for these IDs.
+        for (String viewId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
             if (nodes != null && !nodes.isEmpty()) {
                 Log.d(TAG, "isShortsLayout: TIER1 found " + nodes.size()
                         + " node(s) for " + viewId + " — checking full-screen");
                 for (AccessibilityNodeInfo n : nodes) {
-                    if (isFullScreenReelsViewPager(n)) {
+                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
                         recycleAll(nodes);
                         Log.d(TAG, "isShortsLayout: TIER1 matched " + viewId
                                 + " (full-screen) → true");
@@ -1256,7 +1043,8 @@ public class ReelsInterventionService extends AccessibilityService {
         boolean hasSecondarySignal = false;
         String matchedSecondaryId = null;
         boolean secondaryIsFullScreen = false;
-        for (String secId : YOUTUBE_SHORTS_SECONDARY_IDS) {
+        // ShortFormIds.YOUTUBE_SHORTS_SECONDARY_IDS is the single source of truth.
+        for (String secId : ShortFormIds.YOUTUBE_SHORTS_SECONDARY_IDS) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(secId);
             if (nodes != null && !nodes.isEmpty()) {
                 hasSecondarySignal = true;
@@ -1264,7 +1052,7 @@ public class ReelsInterventionService extends AccessibilityService {
                 // Check if the secondary signal node itself covers the full screen
                 // (e.g., reel_time_bar covers [0,0][1008,2244] — the entire screen)
                 for (AccessibilityNodeInfo n : nodes) {
-                    if (isFullScreenReelsViewPager(n)) {
+                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
                         secondaryIsFullScreen = true;
                         break;
                     }
@@ -1277,9 +1065,10 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         if (hasSecondarySignal) {
-            // Absence of seekbar differentiates Shorts from regular videos
+            // Absence of seekbar differentiates Shorts from regular videos.
+            // ShortFormIds.YOUTUBE_SEEKBAR_ID is the single source of truth.
             List<AccessibilityNodeInfo> seekbar = root.findAccessibilityNodeInfosByViewId(
-                    YOUTUBE_SEEKBAR_ID);
+                    ShortFormIds.YOUTUBE_SEEKBAR_ID);
             boolean hasSeekbar = seekbar != null && !seekbar.isEmpty();
             if (seekbar != null) recycleAll(seekbar);
 
@@ -1660,7 +1449,7 @@ public class ReelsInterventionService extends AccessibilityService {
         if (expectedPackage.equals(PKG_YOUTUBE)) {
             CharSequence rootClass = root.getClassName();
             String rootClassStr = rootClass != null ? rootClass.toString() : "";
-            if (isAndroidFrameworkClass(rootClassStr)) {
+            if (FrameworkClassFilter.isFrameworkClass(rootClassStr)) {
                 Log.d(TAG, "[STILL_IN_REELS] YouTube root class='" + rootClassStr
                         + "' is generic framework class → floating overlay, not real Shorts → false");
                 root.recycle();
