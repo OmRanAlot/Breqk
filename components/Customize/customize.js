@@ -3,15 +3,15 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Settings screen layout:
  *   • Sticky header: back button + "Customize" title
- *   • "Intervention Modes" section — simple toggles (App Open Intercept,
- *       Reels Detection, 20-Min Free Break) — these are the BASE settings
- *   • "Custom Modes" section — optional timed overlays (Study, Bedtime, etc.)
- *       When a mode is active it overrides the base settings above.
+ *   • "Your Apps" section — per-app toggles (App Open Intercept, Reels Detection)
+ *   • "20-Min Free Break" toggle (when Reels Detection is on)
  *   • "Scroll Budget" section — only visible when Reels Detection is on
  *   • "Intercept Message" section — text input, duration slider, preview button
  *   • Version footer
  *
- * State wired to VPNModule (monitoring, delay, modes) and SettingsModule (redirect, modes).
+ * Note: Modes management has moved to the dedicated Modes screen.
+ *
+ * State wired to VPNModule (monitoring, delay) and SettingsModule (redirect).
  *
  * Logging prefix: [Customize]
  */
@@ -28,9 +28,7 @@ import {
   NativeModules,
   Modal,
   Animated,
-  LayoutAnimation,
   Platform,
-  UIManager,
   AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -43,14 +41,6 @@ import useDebouncedSaver from './useDebouncedSaver';
 // commit after this quiet period; any navigate-away / background / unmount
 // forces an immediate flush so no writes are ever dropped.
 const SAVE_DEBOUNCE_MS = 7000;
-
-// Enable LayoutAnimation on Android
-if (
-  Platform.OS === 'android' &&
-  UIManager.setLayoutAnimationEnabledExperimental
-) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 const { VPNModule, SettingsModule } = NativeModules;
 
@@ -69,58 +59,6 @@ const L = {
   cardBorder: 'rgba(0,0,0,0.07)',
 };
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-/** Mode icon map — maps icon identifier to emoji for v1 simplicity. */
-const MODE_ICONS = {
-  book: '📖',
-  moon: '🌙',
-  dumbbell: '💪',
-  focus: '🎯',
-  default: '⚡',
-};
-
-/** Day labels for schedule day picker. Index matches 0=Sun..6=Sat. */
-const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-
-/** Default modes shipped on first launch. */
-const DEFAULT_MODES = {
-  study: {
-    name: 'Study Mode',
-    icon: 'book',
-    color: '#FF9800',
-    enabled: false,
-    policy_overrides: {
-      'com.instagram.android': { app_open_intercept: true },
-      'com.google.android.youtube': { app_open_intercept: true },
-    },
-    setting_overrides: { delay_time_seconds: 20 },
-    schedule: null,
-  },
-  bedtime: {
-    name: 'Bedtime',
-    icon: 'moon',
-    color: '#7C4DFF',
-    enabled: false,
-    policy_overrides: {
-      'com.instagram.android': {
-        app_open_intercept: true,
-        reels_detection: true,
-      },
-      'com.google.android.youtube': {
-        app_open_intercept: true,
-        reels_detection: true,
-      },
-    },
-    setting_overrides: { delay_time_seconds: 20 },
-    schedule: {
-      start_time: '22:00',
-      end_time: '07:00',
-      days: [0, 1, 2, 3, 4, 5, 6],
-    },
-  },
-};
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Format milliseconds as "M:SS" for the scroll budget countdown display. */
@@ -130,42 +68,6 @@ const formatBudgetTime = ms => {
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
   return `${min}:${String(sec).padStart(2, '0')}`;
-};
-
-/**
- * Generates a one-line summary of a mode's configuration.
- */
-const generateModeSummary = mode => {
-  const parts = [];
-  const overrides = mode.policy_overrides || {};
-  const settings = mode.setting_overrides || {};
-
-  let interceptCount = 0;
-  let reelsCount = 0;
-  for (const pkg of Object.keys(overrides)) {
-    if (overrides[pkg]?.app_open_intercept) interceptCount++;
-    if (overrides[pkg]?.reels_detection) reelsCount++;
-  }
-
-  if (interceptCount > 0 && reelsCount > 0) {
-    parts.push('Full blocking');
-  } else if (interceptCount > 0) {
-    parts.push('Intercepts on all apps');
-  } else if (reelsCount > 0) {
-    parts.push('Reels blocking');
-  }
-
-  if (settings.delay_time_seconds) {
-    parts.push(settings.delay_time_seconds + 's delay');
-  }
-
-  if (mode.schedule) {
-    parts.push(mode.schedule.start_time + '–' + mode.schedule.end_time);
-  } else if (mode.enabled) {
-    parts.push('Manual');
-  }
-
-  return parts.join(', ') || 'No overrides';
 };
 
 // ─── Icons ───────────────────────────────────────────────────────────────────
@@ -185,261 +87,6 @@ const BackIcon = ({ color, size }) => (
   </Svg>
 );
 
-// ─── ModeCard ────────────────────────────────────────────────────────────────
-
-/**
- * ModeCard — Custom mode card with enable/disable toggle and optional inline editor.
- *
- * Collapsed: icon + name + summary + enabled toggle + "Edit ▸"
- * Expanded: name input, per-app overrides, delay override, schedule config (optional)
- */
-const ModeCard = ({
-  modeId,
-  mode,
-  editing,
-  onToggleEnabled,
-  onEdit,
-  onSave,
-  onDelete,
-}) => {
-  const icon = MODE_ICONS[mode.icon] || MODE_ICONS.default;
-
-  // Local editing state — mirrors the mode prop, reset when mode changes
-  const [editName, setEditName] = useState(mode.name || '');
-  const [editPolicies, setEditPolicies] = useState(mode.policy_overrides || {});
-  const [editDelay, setEditDelay] = useState(
-    mode.setting_overrides?.delay_time_seconds || 15,
-  );
-  const [hasSchedule, setHasSchedule] = useState(!!mode.schedule);
-  const [scheduleStart, setScheduleStart] = useState(
-    mode.schedule?.start_time || '22:00',
-  );
-  const [scheduleEnd, setScheduleEnd] = useState(
-    mode.schedule?.end_time || '07:00',
-  );
-  const [scheduleDays, setScheduleDays] = useState(
-    mode.schedule?.days || [0, 1, 2, 3, 4, 5, 6],
-  );
-
-  useEffect(() => {
-    setEditName(mode.name || '');
-    setEditPolicies(mode.policy_overrides || {});
-    setEditDelay(mode.setting_overrides?.delay_time_seconds || 15);
-    setHasSchedule(!!mode.schedule);
-    setScheduleStart(mode.schedule?.start_time || '22:00');
-    setScheduleEnd(mode.schedule?.end_time || '07:00');
-    setScheduleDays(mode.schedule?.days || [0, 1, 2, 3, 4, 5, 6]);
-  }, [mode]);
-
-  const toggleModeFeature = (pkg, featureKey, value) => {
-    setEditPolicies(prev => {
-      const updated = { ...prev };
-      if (!updated[pkg]) updated[pkg] = {};
-      updated[pkg] = { ...updated[pkg], [featureKey]: value };
-      return updated;
-    });
-  };
-
-  const toggleDay = dayIndex => {
-    setScheduleDays(prev => {
-      if (prev.includes(dayIndex)) return prev.filter(d => d !== dayIndex);
-      return [...prev, dayIndex].sort();
-    });
-  };
-
-  const handleSave = () => {
-    const updated = {
-      ...mode,
-      name: editName,
-      policy_overrides: editPolicies,
-      setting_overrides: {
-        ...mode.setting_overrides,
-        delay_time_seconds: editDelay,
-      },
-      schedule: hasSchedule
-        ? {
-            start_time: scheduleStart,
-            end_time: scheduleEnd,
-            days: scheduleDays,
-          }
-        : null,
-    };
-    onSave(modeId, updated);
-  };
-
-  const APPS = [
-    { packageName: 'com.instagram.android', label: 'Instagram' },
-    { packageName: 'com.google.android.youtube', label: 'YouTube' },
-  ];
-
-  const FEATS = [
-    { key: 'app_open_intercept', label: 'App Open Intercept' },
-    { key: 'reels_detection', label: 'Reels Detection' },
-  ];
-
-  return (
-    <View
-      style={[
-        styles.modeCard,
-        mode.enabled && { borderColor: mode.color || L.charcoal },
-      ]}
-    >
-      {/* Header row */}
-      <View style={styles.modeCardHeader}>
-        <Text style={styles.modeIcon}>{icon}</Text>
-        <View style={styles.modeCardInfo}>
-          <Text style={styles.modeCardName}>{mode.name}</Text>
-          <Text style={styles.modeCardSummary} numberOfLines={1}>
-            {generateModeSummary(mode)}
-          </Text>
-        </View>
-        <Switch
-          value={mode.enabled === true}
-          onValueChange={onToggleEnabled}
-          trackColor={{ false: '#D6D6D6', true: mode.color || L.charcoal }}
-          thumbColor="#FFFFFF"
-        />
-      </View>
-
-      {/* Edit link */}
-      {!editing && (
-        <TouchableOpacity onPress={onEdit} style={styles.modeEditLink}>
-          <Text style={styles.modeEditLinkText}>Edit ▸</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Inline editor */}
-      {editing && (
-        <View style={styles.modeEditor}>
-          {/* Name */}
-          <TextInput
-            style={styles.modeNameInput}
-            value={editName}
-            onChangeText={setEditName}
-            placeholder="Mode name"
-            placeholderTextColor={L.muted}
-          />
-
-          {/* Per-app feature overrides */}
-          <Text style={styles.editorSectionLabel}>APPS & FEATURES</Text>
-          {APPS.map(app => {
-            const appOverrides = editPolicies[app.packageName] || {};
-            return (
-              <View key={app.packageName} style={styles.modeAppBlock}>
-                <Text style={styles.modeAppLabel}>{app.label}</Text>
-                {FEATS.map(feat => (
-                  <View key={feat.key} style={styles.modeFeatureRow}>
-                    <Text style={styles.modeFeatureLabel}>{feat.label}</Text>
-                    <Switch
-                      value={appOverrides[feat.key] === true}
-                      onValueChange={val =>
-                        toggleModeFeature(app.packageName, feat.key, val)
-                      }
-                      trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                      thumbColor="#FFFFFF"
-                    />
-                  </View>
-                ))}
-              </View>
-            );
-          })}
-
-          {/* Delay override */}
-          <Text style={styles.editorSectionLabel}>OVERRIDES</Text>
-          <View style={styles.modeDelayRow}>
-            <Text style={styles.modeFeatureLabel}>Forced Pause Duration</Text>
-            <View style={styles.modeDelayInput}>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => setEditDelay(d => Math.max(1, d - 5))}
-              >
-                <Text style={styles.stepperBtnText}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.modeDelayValue}>{editDelay}s</Text>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => setEditDelay(d => Math.min(60, d + 5))}
-              >
-                <Text style={styles.stepperBtnText}>+</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Schedule (optional) */}
-          <Text style={styles.editorSectionLabel}>SCHEDULE (optional)</Text>
-          {!hasSchedule ? (
-            <TouchableOpacity
-              style={styles.addScheduleBtn}
-              onPress={() => setHasSchedule(true)}
-            >
-              <Text style={styles.addScheduleBtnText}>+ Add Schedule</Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.scheduleBlock}>
-              <View style={styles.scheduleTimeRow}>
-                <Text style={styles.scheduleTimeLabel}>Starts at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleStart}
-                  onChangeText={setScheduleStart}
-                  placeholder="22:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
-              </View>
-              <View style={styles.scheduleTimeRow}>
-                <Text style={styles.scheduleTimeLabel}>Ends at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleEnd}
-                  onChangeText={setScheduleEnd}
-                  placeholder="07:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
-              </View>
-              <View style={styles.dayPickerRow}>
-                {DAY_LABELS.map((label, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={[
-                      styles.dayBtn,
-                      scheduleDays.includes(idx) && styles.dayBtnActive,
-                    ]}
-                    onPress={() => toggleDay(idx)}
-                  >
-                    <Text
-                      style={[
-                        styles.dayBtnText,
-                        scheduleDays.includes(idx) && styles.dayBtnTextActive,
-                      ]}
-                    >
-                      {label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <TouchableOpacity onPress={() => setHasSchedule(false)}>
-                <Text style={styles.removeScheduleText}>Remove Schedule</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* Save + Delete */}
-          <View style={styles.modeEditorActions}>
-            <TouchableOpacity style={styles.modeSaveBtn} onPress={handleSave}>
-              <Text style={styles.modeSaveBtnText}>Save</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => onDelete(modeId)}>
-              <Text style={styles.modeDeleteText}>Delete Mode</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-    </View>
-  );
-};
-
 // ─── Main Component ──────────────────────────────────────────────────────────
 const Customize = ({ navigation }) => {
   const insets = useSafeAreaInsets();
@@ -450,12 +97,6 @@ const Customize = ({ navigation }) => {
 
   // ── Global sub-feature toggles (kept global, not per-app) ─────────────
   const [freeBreakEnabled, setFreeBreakEnabled] = useState(false);
-
-  // ── Custom modes state ────────────────────────────────────────────────────
-  const [modes, setModes] = useState({});
-  const [editingMode, setEditingMode] = useState(null);
-  // Currently active mode ID (empty string = "default" mode / none)
-  const [activeMode, setActiveMode] = useState('');
 
   // ── Scroll budget state ───────────────────────────────────────────────────
   const [scrollAllowance, setScrollAllowance] = useState(5);
@@ -567,31 +208,6 @@ const Customize = ({ navigation }) => {
         );
         setFreeBreakEnabled(freeBreak === true);
 
-        // Load active mode
-        const mode = await new Promise(resolve =>
-          SettingsModule.getActiveMode(m => resolve(m)),
-        );
-        setActiveMode(mode || '');
-        console.log('[Customize] active mode:', mode);
-
-        // Load custom modes (seed defaults if empty)
-        const modesJson = await new Promise(resolve =>
-          SettingsModule.getModes(json => resolve(json)),
-        );
-        let parsedModes = {};
-        try {
-          parsedModes = JSON.parse(modesJson || '{}');
-        } catch (_) {}
-        if (!parsedModes || Object.keys(parsedModes).length === 0) {
-          parsedModes = DEFAULT_MODES;
-          SettingsModule.saveModes(JSON.stringify(parsedModes));
-        }
-        setModes(parsedModes);
-        console.log(
-          '[Customize] modes loaded:',
-          Object.keys(parsedModes).length,
-        );
-
         // Load scroll budget
         await new Promise(resolve => {
           SettingsModule.getScrollBudget((allowance, window) => {
@@ -656,75 +272,6 @@ const Customize = ({ navigation }) => {
     });
     showSavedPending();
   };
-
-  // ── Custom mode handlers ──────────────────────────────────────────────────
-
-  const handleModeToggleEnabled = useCallback(
-    (modeId, newValue) => {
-      console.log('[Customize] mode enabled toggle:', modeId, '→', newValue);
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      const updatedModes = {
-        ...modes,
-        [modeId]: { ...modes[modeId], enabled: newValue },
-      };
-      setModes(updatedModes);
-      // Snapshot the map in the closure so the commit always writes the
-      // latest coalesced state even if multiple modes are toggled in sequence.
-      saver.schedule(`mode:${modeId}:enabled`, () => {
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      });
-      showSavedPending();
-    },
-    [modes, saver, showSavedPending],
-  );
-
-  const handleModeSave = useCallback(
-    (modeId, updatedMode) => {
-      console.log('[Customize] saving mode:', modeId);
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      const updatedModes = { ...modes, [modeId]: updatedMode };
-      setModes(updatedModes);
-      saver.schedule(`mode:${modeId}:full`, () => {
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      });
-      setEditingMode(null);
-      showSavedPending();
-    },
-    [modes, saver, showSavedPending],
-  );
-
-  const handleModeDelete = useCallback(
-    modeId => {
-      console.log('[Customize] deleting mode:', modeId);
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      const updatedModes = { ...modes };
-      delete updatedModes[modeId];
-      setModes(updatedModes);
-      SettingsModule.saveModes(JSON.stringify(updatedModes));
-      setEditingMode(null);
-      showSaved();
-    },
-    [modes, showSaved],
-  );
-
-  const handleCreateMode = useCallback(() => {
-    const id = 'custom_' + Date.now();
-    console.log('[Customize] creating new mode:', id);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    const newMode = {
-      name: 'New Mode',
-      icon: 'focus',
-      color: '#4CAF50',
-      enabled: false,
-      policy_overrides: {},
-      setting_overrides: { delay_time_seconds: 15 },
-      schedule: null,
-    };
-    const updatedModes = { ...modes, [id]: newMode };
-    setModes(updatedModes);
-    SettingsModule.saveModes(JSON.stringify(updatedModes));
-    setEditingMode(id);
-  }, [modes]);
 
   // ── Scroll budget handlers ────────────────────────────────────────────────
 
@@ -806,15 +353,6 @@ const Customize = ({ navigation }) => {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  // Derive: which mode is non-default and active?
-  const activeModeObj =
-    activeMode && activeMode !== 'default' && modes[activeMode];
-  const activeModeColor = activeModeObj?.color || L.charcoal;
-  const activeModeName = activeModeObj?.name || '';
-  const anyInterceptOn = Object.values(appPolicies).some(
-    p => p?.app_open_intercept === true,
-  );
-
   // App list for cards
   const MANAGED_APPS = [
     { packageName: 'com.instagram.android', label: 'Instagram', emoji: '📷' },
@@ -824,13 +362,6 @@ const Customize = ({ navigation }) => {
       emoji: '▶️',
     },
   ];
-
-  // Helper: check if a feature is overridden by the active mode
-  const isOverriddenByMode = (packageName, featureKey) => {
-    if (!activeModeObj?.policy_overrides) return false;
-    const appOverrides = activeModeObj.policy_overrides[packageName];
-    return appOverrides && appOverrides[featureKey] !== undefined;
-  };
 
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, 0) }]}>
@@ -858,21 +389,6 @@ const Customize = ({ navigation }) => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Active mode banner ──────────────────────────────────── */}
-        {activeModeObj && (
-          <View
-            style={[
-              styles.activeBanner,
-              { backgroundColor: activeModeColor + '18' },
-            ]}
-          >
-            <Text style={[styles.activeBannerText, { color: activeModeColor }]}>
-              {MODE_ICONS[activeModeObj.icon] || '⚡'} {activeModeName} active —
-              overrides may apply
-            </Text>
-          </View>
-        )}
-
         {/* ── YOUR APPS (per-app base defaults) ───────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Your Apps</Text>
@@ -881,14 +397,6 @@ const Customize = ({ navigation }) => {
             const policy = appPolicies[app.packageName] || {};
             const reelsOn = policy.reels_detection === true;
             const interceptOn = policy.app_open_intercept === true;
-            const reelsOverridden = isOverriddenByMode(
-              app.packageName,
-              'reels_detection',
-            );
-            const interceptOverridden = isOverriddenByMode(
-              app.packageName,
-              'app_open_intercept',
-            );
 
             return (
               <View key={app.packageName} style={styles.appCard}>
@@ -898,28 +406,8 @@ const Customize = ({ navigation }) => {
 
                 <View style={styles.divider} />
 
-                {/* Reels Detection toggle */}
                 <View style={styles.toggleRow}>
-                  <View style={styles.toggleLabelGroup}>
-                    <Text
-                      style={[
-                        styles.toggleLabel,
-                        reelsOverridden && styles.toggleLabelOverridden,
-                      ]}
-                    >
-                      Reels Detection
-                    </Text>
-                    {reelsOverridden && (
-                      <Text
-                        style={[
-                          styles.overrideHint,
-                          { color: activeModeColor },
-                        ]}
-                      >
-                        Overridden by {activeModeName}
-                      </Text>
-                    )}
-                  </View>
+                  <Text style={styles.toggleLabel}>Reels Detection</Text>
                   <Switch
                     value={reelsOn}
                     onValueChange={val =>
@@ -931,32 +419,11 @@ const Customize = ({ navigation }) => {
                     }
                     trackColor={{ false: '#D6D6D6', true: L.charcoal }}
                     thumbColor="#FFFFFF"
-                    disabled={reelsOverridden}
                   />
                 </View>
 
-                {/* App Open Intercept toggle */}
                 <View style={styles.toggleRow}>
-                  <View style={styles.toggleLabelGroup}>
-                    <Text
-                      style={[
-                        styles.toggleLabel,
-                        interceptOverridden && styles.toggleLabelOverridden,
-                      ]}
-                    >
-                      App Open Intercept
-                    </Text>
-                    {interceptOverridden && (
-                      <Text
-                        style={[
-                          styles.overrideHint,
-                          { color: activeModeColor },
-                        ]}
-                      >
-                        Overridden by {activeModeName}
-                      </Text>
-                    )}
-                  </View>
+                  <Text style={styles.toggleLabel}>App Open Intercept</Text>
                   <Switch
                     value={interceptOn}
                     onValueChange={val =>
@@ -968,7 +435,6 @@ const Customize = ({ navigation }) => {
                     }
                     trackColor={{ false: '#D6D6D6', true: L.charcoal }}
                     thumbColor="#FFFFFF"
-                    disabled={interceptOverridden}
                   />
                 </View>
               </View>
@@ -997,42 +463,6 @@ const Customize = ({ navigation }) => {
               </View>
             </>
           )}
-        </View>
-
-        {/* ── Custom Modes ─────────────────────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Custom Modes</Text>
-          <Text style={styles.sectionCaption}>
-            Enable a mode to temporarily override the base settings above. Modes
-            can be scheduled to activate automatically.
-          </Text>
-
-          {Object.entries(modes).map(([id, mode]) => (
-            <ModeCard
-              key={id}
-              modeId={id}
-              mode={mode}
-              editing={editingMode === id}
-              onToggleEnabled={val => handleModeToggleEnabled(id, val)}
-              onEdit={() => {
-                LayoutAnimation.configureNext(
-                  LayoutAnimation.Presets.easeInEaseOut,
-                );
-                setEditingMode(editingMode === id ? null : id);
-              }}
-              onSave={handleModeSave}
-              onDelete={handleModeDelete}
-            />
-          ))}
-
-          {/* + Create Mode */}
-          <TouchableOpacity
-            style={styles.createModeBtn}
-            onPress={handleCreateMode}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.createModeBtnText}>+ Create Mode</Text>
-          </TouchableOpacity>
         </View>
 
         {/* ── Scroll Budget — visible when any app has Reels ON ── */}
@@ -1286,20 +716,6 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
 
-  // ── Active mode banner ───────────────────────────────────────────────────
-  activeBanner: {
-    backgroundColor: 'rgba(0,0,0,0.06)',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginBottom: 24,
-  },
-  activeBannerText: {
-    fontSize: 12,
-    color: L.charcoal,
-    fontWeight: '500',
-  },
-
   // ── Intervention Modes toggles ────────────────────────────────────────────
   toggleRow: {
     flexDirection: 'row',
@@ -1312,9 +728,6 @@ const styles = StyleSheet.create({
     color: L.charcoal,
     fontWeight: '400',
   },
-  toggleLabelOverridden: {
-    opacity: 0.45,
-  },
   toggleLabelGroup: {
     flex: 1,
     marginRight: 12,
@@ -1324,11 +737,6 @@ const styles = StyleSheet.create({
     color: L.muted,
     marginTop: 3,
     lineHeight: 17,
-  },
-  overrideHint: {
-    fontSize: 11,
-    fontWeight: '500',
-    marginTop: 2,
   },
   divider: {
     height: 1,
@@ -1349,225 +757,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: L.charcoal,
-  },
-
-  // ── Mode cards ───────────────────────────────────────────────────────────
-  modeCard: {
-    backgroundColor: L.cardBg,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    padding: 16,
-    marginBottom: 10,
-  },
-  modeCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  modeIcon: {
-    fontSize: 20,
-  },
-  modeCardInfo: {
-    flex: 1,
-  },
-  modeCardName: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: L.charcoal,
-  },
-  modeCardSummary: {
-    fontSize: 12,
-    color: L.muted,
-    marginTop: 2,
-  },
-  modeEditLink: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: L.border,
-  },
-  modeEditLinkText: {
-    fontSize: 13,
-    color: L.muted,
-    fontWeight: '500',
-  },
-
-  // ── Mode editor (inline) ─────────────────────────────────────────────────
-  modeEditor: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: L.border,
-    gap: 12,
-  },
-  modeNameInput: {
-    fontSize: 16,
-    color: L.charcoal,
-    borderBottomWidth: 1.5,
-    borderBottomColor: L.inputBorder,
-    paddingVertical: 6,
-    paddingHorizontal: 0,
-  },
-  editorSectionLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: L.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    marginTop: 8,
-  },
-  modeAppBlock: {
-    backgroundColor: 'rgba(0,0,0,0.02)',
-    borderRadius: 10,
-    padding: 12,
-    gap: 6,
-  },
-  modeAppLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: L.charcoal,
-    marginBottom: 4,
-  },
-  modeFeatureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 2,
-  },
-  modeFeatureLabel: {
-    fontSize: 14,
-    color: L.charcoal,
-  },
-  modeDelayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  modeDelayInput: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  modeDelayValue: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: L.charcoal,
-    minWidth: 36,
-    textAlign: 'center',
-    fontVariant: ['tabular-nums'],
-  },
-
-  // ── Schedule ─────────────────────────────────────────────────────────────
-  addScheduleBtn: {
-    borderWidth: 1,
-    borderColor: L.border,
-    borderStyle: 'dashed',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  addScheduleBtnText: {
-    fontSize: 13,
-    color: L.muted,
-    fontWeight: '500',
-  },
-  scheduleBlock: {
-    backgroundColor: 'rgba(0,0,0,0.02)',
-    borderRadius: 10,
-    padding: 12,
-    gap: 10,
-  },
-  scheduleTimeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  scheduleTimeLabel: {
-    fontSize: 14,
-    color: L.charcoal,
-  },
-  scheduleTimeInput: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: L.charcoal,
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    minWidth: 70,
-    textAlign: 'center',
-    fontVariant: ['tabular-nums'],
-  },
-  dayPickerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 6,
-  },
-  dayBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(0,0,0,0.06)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dayBtnActive: {
-    backgroundColor: L.charcoal,
-  },
-  dayBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: L.charcoal,
-  },
-  dayBtnTextActive: {
-    color: '#FFFFFF',
-  },
-  removeScheduleText: {
-    fontSize: 12,
-    color: '#E53935',
-    fontWeight: '500',
-    textAlign: 'center',
-  },
-
-  // ── Mode editor actions ──────────────────────────────────────────────────
-  modeEditorActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  modeSaveBtn: {
-    backgroundColor: L.charcoal,
-    borderRadius: 9999,
-    paddingVertical: 10,
-    paddingHorizontal: 28,
-  },
-  modeSaveBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  modeDeleteText: {
-    fontSize: 13,
-    color: '#E53935',
-    fontWeight: '500',
-  },
-
-  // ── Create mode button ───────────────────────────────────────────────────
-  createModeBtn: {
-    borderWidth: 1,
-    borderColor: L.border,
-    borderStyle: 'dashed',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  createModeBtnText: {
-    fontSize: 14,
-    color: L.muted,
-    fontWeight: '500',
   },
 
   // ── Scroll Budget ────────────────────────────────────────────────────────
