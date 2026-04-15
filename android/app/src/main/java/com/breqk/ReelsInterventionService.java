@@ -72,10 +72,8 @@ import android.content.SharedPreferences;
 import android.content.Intent;
 import android.content.ComponentName;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -89,6 +87,9 @@ import android.widget.TextView;
 import com.breqk.reels.FrameworkClassFilter;
 import com.breqk.reels.FullScreenCheck;
 import com.breqk.reels.ShortFormIds;
+import com.breqk.reels.detection.InstagramDetector;
+import com.breqk.reels.detection.ShortFormDetector;
+import com.breqk.reels.detection.YouTubeDetector;
 
 import java.util.List;
 
@@ -202,11 +203,19 @@ public class ReelsInterventionService extends AccessibilityService {
     private final FrameworkClassFilter frameworkClassFilter = new FrameworkClassFilter();
 
     /**
-     * Timestamp of the last YouTube tree dump (for rate limiting).
-     * Diagnostic dumps are limited to once every 10s to prevent log spam.
+     * Layout detectors for Instagram Reels and YouTube Shorts.
+     *
+     * Initialized in onServiceConnected() after the service context is available.
+     * instagramDetector encapsulates isReelsLayout().
+     * youtubeDetector   encapsulates isShortsLayout() + hasShortsTextSignal() + dumpYouTubeTreeIfNeeded().
+     *
+     * Both implement ShortFormDetector.detect(root) → DetectResult.
      */
-    private long lastYtTreeDump = 0;
-    private static final long YT_TREE_DUMP_INTERVAL_MS = 10_000;
+    private InstagramDetector instagramDetector;
+    private YouTubeDetector   youtubeDetector;
+
+    // lastYtTreeDump and YT_TREE_DUMP_INTERVAL_MS have been moved to YouTubeDetector
+    // (com.breqk.reels.detection.YouTubeDetector) as part of Step 2 refactor.
 
     // --- Reels state persistence (shared with AppUsageMonitor) ---
 
@@ -288,6 +297,11 @@ public class ReelsInterventionService extends AccessibilityService {
         // Initialize the event router — handles LaunchInterceptor + ContentFilter
         // independently from the scroll budget logic further below.
         eventRouter = new AppEventRouter(this, this);
+
+        // Initialize layout detectors (Step 2 of reels-intervention-refactor).
+        // These replace the private isReelsLayout() / isShortsLayout() methods.
+        instagramDetector = new InstagramDetector(this, TAG);
+        youtubeDetector   = new YouTubeDetector(this, TAG);
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
@@ -497,29 +511,30 @@ public class ReelsInterventionService extends AccessibilityService {
                     return;
                 }
 
-                // If the class name is already in our known list, confirm Shorts immediately
-                // without any tree traversal (fastest possible detection — Tier 0).
-                // ShortFormIds.YOUTUBE_SHORTS_CLASS_NAMES is the single source of truth.
-                for (String knownClass : ShortFormIds.YOUTUBE_SHORTS_CLASS_NAMES) {
-                    if (knownClass.equals(eventClass)) {
-                        Log.d(TAG, "isShortsLayout: TIER0 class name matched " + eventClass + " → confirmed Shorts");
-                        if (!wasInReelsLayout) {
-                            Log.d(TAG, "[GRACE] Entering Shorts (TIER0) — grace period started for " + packageName);
-                            inGracePeriod = true;
-                            notifyShortsState(true, "TIER0");
-                            persistReelsState(true, packageName);
-                            // Heartbeat and budget deferred until first scroll (grace period)
-                        }
-                        wasInReelsLayout = true;
-                        return;
+                // Tier 0: check class name via YouTubeDetector.checkClassNameTier0() — O(1).
+                // Returns true if className matches a known Shorts Activity/Fragment class.
+                if (youtubeDetector.checkClassNameTier0(eventClass)) {
+                    Log.d(TAG, "YouTubeDetector: TIER0 class name matched " + eventClass + " → confirmed Shorts");
+                    if (!wasInReelsLayout) {
+                        Log.d(TAG, "[GRACE] Entering Shorts (TIER0) — grace period started for " + packageName);
+                        inGracePeriod = true;
+                        notifyShortsState(true, "TIER0");
+                        persistReelsState(true, packageName);
+                        // Heartbeat and budget deferred until first scroll (grace period)
                     }
+                    wasInReelsLayout = true;
+                    return;
                 }
+                // checkClassNameTier0 already logged SHORTS_CLASS — no additional log needed here.
+                // If it returned false (framework class or unknown class), fall through to tree walk.
             }
 
+            // Run the appropriate detector — delegates to InstagramDetector or YouTubeDetector.
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            boolean inReelsLayout = packageName.equals(PKG_INSTAGRAM)
-                    ? isReelsLayout(root)
-                    : isShortsLayout(root);
+            ShortFormDetector.DetectResult detectResult = packageName.equals(PKG_INSTAGRAM)
+                    ? instagramDetector.detect(root)
+                    : youtubeDetector.detect(root);
+            boolean inReelsLayout = detectResult.inShortForm;
             if (root != null)
                 root.recycle();
 
@@ -531,9 +546,11 @@ public class ReelsInterventionService extends AccessibilityService {
                 // Entering Reels/Shorts via navigation (tab switch, deep link, etc.).
                 // Grace period: let the user watch the first video they land on.
                 // Heartbeat and budget accumulation are deferred until the first scroll.
-                Log.d(TAG, "[GRACE] Entering Reels/Shorts (TIER1/TIER2) — grace period started for " + packageName);
+                String detectedTier = detectResult.tier.isEmpty() ? "TREE_WALK" : detectResult.tier;
+                Log.d(TAG, "[GRACE] Entering Reels/Shorts (" + detectedTier
+                        + ") — grace period started for " + packageName);
                 inGracePeriod = true;
-                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(true, "TIER1/TIER2");
+                if (packageName.equals(PKG_YOUTUBE)) notifyShortsState(true, detectedTier);
                 persistReelsState(true, packageName);
                 // Heartbeat and budget deferred until first scroll (grace period)
             }
@@ -586,16 +603,18 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         // --- Slow path: full tree traversal if fast path didn't fire ---
-        // Handles scroll events from child views within the Reels player (e.g., caption
-        // scroll).
+        // Handles scroll events from child views within the Reels player (e.g., caption scroll).
+        // Delegates to InstagramDetector or YouTubeDetector (Step 2 refactor).
         if (!usedFastPath) {
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            confirmedInReels = packageName.equals(PKG_INSTAGRAM)
-                    ? isReelsLayout(root)
-                    : isShortsLayout(root);
+            ShortFormDetector.DetectResult slowResult = packageName.equals(PKG_INSTAGRAM)
+                    ? instagramDetector.detect(root)
+                    : youtubeDetector.detect(root);
+            confirmedInReels = slowResult.inShortForm;
             if (root != null)
                 root.recycle();
-            Log.d(TAG, "Slow path: tree traversal confirmedInReels=" + confirmedInReels);
+            Log.d(TAG, "Slow path: tree traversal confirmedInReels=" + confirmedInReels
+                    + " tier=" + slowResult.tier);
         }
 
         // Update cached layout state and apply decision
@@ -756,56 +775,6 @@ public class ReelsInterventionService extends AccessibilityService {
     // Full-screen verification (core false-positive fix)
     // =========================================================================
 
-    /**
-     * Returns true if the given AccessibilityNodeInfo represents the full-screen
-     * Reels ViewPager — i.e., it is actually visible and covering most of the
-     * screen.
-     *
-     * This is the PRIMARY guard against false positives. Instagram keeps
-     * clips_viewer_view_pager in memory on its back stack even when the user
-     * navigates
-     * to the home feed, DMs, stories, profiles, or Explore. Without this check, any
-     * scroll in those screens would be wrongly processed.
-     *
-     * Three signals must ALL pass:
-     *
-     * 1. isVisibleToUser() — Android marks off-screen back-stack views as not
-     * visible.
-     * This is the strongest and cheapest signal. If false, the node is in the back
-     * stack and the user is NOT currently watching Reels.
-     *
-     * 2. Width coverage ≥ MIN_WIDTH_RATIO (90%) — The full-screen Reels player
-     * spans
-     * the entire screen width. Home feed reel cards span only a fraction.
-     *
-     * 3. Height coverage ≥ MIN_HEIGHT_RATIO (70%) — The full-screen player spans
-     * most
-     * of the screen height. 70% (not 90%) to allow for status bar + nav bar.
-     *
-     * 4. Top edge ≤ MAX_TOP_OFFSET_PX (200px) — The full-screen player starts at
-     * the
-     * very top of the screen. Embedded previews start further down.
-     *
-     * To tune thresholds: adjust MIN_WIDTH_RATIO, MIN_HEIGHT_RATIO,
-     * MAX_TOP_OFFSET_PX
-     * constants at the top of this file and rebuild.
-     *
-     * @param node The AccessibilityNodeInfo to check (clips_viewer_view_pager or
-     *             similar)
-     * @return true only if all four signals confirm this is the active full-screen
-     *         viewer
-     */
-    /**
-     * Returns true if the given node represents the full-screen Reels or Shorts viewer.
-     *
-     * @deprecated Replaced by {@link FullScreenCheck#isFullScreen(AccessibilityNodeInfo, Context, String)}.
-     *             This method is kept as a thin delegate so existing callers within this file
-     *             still compile — remove once all call sites are updated to use FullScreenCheck directly.
-     */
-    @Deprecated
-    private boolean isFullScreenReelsViewPager(AccessibilityNodeInfo node) {
-        return FullScreenCheck.isFullScreen(node, this, TAG);
-    }
 
     // =========================================================================
     // Shorts active state logging
@@ -832,77 +801,9 @@ public class ReelsInterventionService extends AccessibilityService {
         }
     }
 
-    // =========================================================================
-    // YouTube Shorts text signal detection (TIER 3)
-    // =========================================================================
-
-    /**
-     * Walks the YouTube accessibility tree (max depth 3) looking for any visible
-     * node whose getText() or getContentDescription() contains the word "Shorts"
-     * (case-insensitive). Returns true on the first match.
-     *
-     * This tier is resilient to YouTube view-ID renames: as long as the word
-     * "Shorts" appears somewhere in the visible UI (navigation tab label, page
-     * heading, content descriptions on action buttons), detection will succeed
-     * even when TIER1 and TIER2 have no known IDs in the tree.
-     *
-     * Performance: early-exit on first match; max depth 3 limits traversal.
-     * All node references are recycled before returning.
-     *
-     * Filter command: adb logcat -s REELS_WATCH | findstr "SHORTS_TEXT"
-     *
-     * @param root Root of the YouTube accessibility tree
-     * @return true if "Shorts" text was found in any visible node
-     */
-    private boolean hasShortsTextSignal(AccessibilityNodeInfo root) {
-        return scanNodeForShortsText(root, 0, 3);
-    }
-
-    /**
-     * Recursive helper for hasShortsTextSignal().
-     *
-     * @param node     Current node to inspect
-     * @param depth    Current recursion depth
-     * @param maxDepth Maximum depth to traverse
-     * @return true if "Shorts" text was found in this node or any descendant
-     */
-    private boolean scanNodeForShortsText(AccessibilityNodeInfo node, int depth, int maxDepth) {
-        if (node == null || depth > maxDepth) return false;
-
-        // Only inspect nodes that are actually visible to the user
-        if (node.isVisibleToUser()) {
-            CharSequence text = node.getText();
-            CharSequence contentDesc = node.getContentDescription();
-
-            boolean textMatch = text != null
-                    && text.toString().toLowerCase().contains("shorts");
-            boolean descMatch = contentDesc != null
-                    && contentDesc.toString().toLowerCase().contains("shorts");
-
-            if (textMatch || descMatch) {
-                Log.d(TAG, "[SHORTS_TEXT] matched"
-                        + (textMatch ? " text=\"" + text + "\"" : "")
-                        + (descMatch ? " contentDesc=\"" + contentDesc + "\"" : "")
-                        + " at depth=" + depth);
-                return true;
-            }
-        }
-
-        int childCount = node.getChildCount();
-        for (int i = 0; i < childCount; i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) {
-                boolean found = scanNodeForShortsText(child, depth + 1, maxDepth);
-                child.recycle();
-                if (found) return true;
-            }
-        }
-        return false;
-    }
-
-    // =========================================================================
-    // System overlay detection (P1-FIX: prevent false APP_SWITCH resets from IME)
-    // =========================================================================
+    // hasShortsTextSignal() and scanNodeForShortsText() have been moved to
+    // YouTubeDetector (com.breqk.reels.detection.YouTubeDetector) as part of
+    // Step 2 of the reels-intervention-refactor.
 
     // =========================================================================
     // System overlay + framework class detection
@@ -956,164 +857,7 @@ public class ReelsInterventionService extends AccessibilityService {
      * - clips_tab (tab indicator — less reliable, exists outside full-screen
      * viewer)
      */
-    private boolean isReelsLayout(AccessibilityNodeInfo root) {
-        if (root == null) {
-            Log.d(TAG, "isReelsLayout: root null → false");
-            return false;
-        }
 
-        // Search all known Instagram Reels IDs (ShortFormIds.INSTAGRAM_REELS_IDS).
-        // Each found node is validated via FullScreenCheck.isFullScreen() to prevent
-        // false positives from back-stack nodes and home-feed embedded reel previews.
-        for (String reelsId : ShortFormIds.INSTAGRAM_REELS_IDS) {
-            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(reelsId);
-            if (nodes != null && !nodes.isEmpty()) {
-                Log.d(TAG, "isReelsLayout: found " + nodes.size()
-                        + " node(s) for " + reelsId + " — checking full-screen");
-                for (AccessibilityNodeInfo n : nodes) {
-                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
-                        recycleAll(nodes);
-                        Log.d(TAG, "isReelsLayout: YES — " + reelsId + " is full-screen");
-                        return true;
-                    }
-                }
-                recycleAll(nodes);
-                Log.d(TAG, "isReelsLayout: " + reelsId + " found but none passed full-screen check → false");
-            }
-        }
-
-        Log.d(TAG, "isReelsLayout: NO — no qualifying Reels view found");
-        return false;
-    }
-
-    /**
-     * Returns true if the current window is YouTube's Shorts player.
-     *
-     * Uses a three-tier detection strategy to handle YouTube's frequent view ID
-     * changes:
-     *
-     * Tier 1 — Known container IDs: Loop YOUTUBE_SHORTS_VIEW_IDS, find nodes,
-     *          verify full-screen bounds via isFullScreenReelsViewPager().
-     *
-     * Tier 2 — Structural heuristic: Check for Shorts-specific secondary signal IDs
-     *          (reel_like_button, shorts_like_button, reel_comment_button) + ABSENCE
-     *          of seekbar (seekbar exists in regular videos, not Shorts). Confirms
-     *          only if the secondary signal element itself is full-screen.
-     *
-     * Tier 3 — Diagnostic dump: If both tiers fail, dump all YouTube view IDs to
-     *          logcat (rate-limited) so developers can discover the current IDs.
-     *          Filter: adb logcat -s REELS_WATCH | grep YT_TREE_DUMP
-     *
-     * If detection breaks after a YouTube update, run the YT_TREE_DUMP filter
-     * while scrolling Shorts and update YOUTUBE_SHORTS_VIEW_IDS with the new IDs.
-     */
-    private boolean isShortsLayout(AccessibilityNodeInfo root) {
-        if (root == null) {
-            Log.d(TAG, "isShortsLayout: root null → false");
-            return false;
-        }
-
-        // --- TIER 1: Known container view IDs with full-screen bounds check ---
-        // ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS is the single source of truth for these IDs.
-        for (String viewId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
-            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
-            if (nodes != null && !nodes.isEmpty()) {
-                Log.d(TAG, "isShortsLayout: TIER1 found " + nodes.size()
-                        + " node(s) for " + viewId + " — checking full-screen");
-                for (AccessibilityNodeInfo n : nodes) {
-                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
-                        recycleAll(nodes);
-                        Log.d(TAG, "isShortsLayout: TIER1 matched " + viewId
-                                + " (full-screen) → true");
-                        notifyShortsState(true, "TIER1");
-                        return true;
-                    }
-                }
-                recycleAll(nodes);
-                Log.d(TAG, "isShortsLayout: TIER1 found " + viewId
-                        + " but NOT full-screen");
-            }
-        }
-        Log.d(TAG, "isShortsLayout: TIER1 — no known container IDs matched full-screen");
-
-        // --- TIER 2: Secondary signals + no seekbar (structural heuristic) ---
-        // Secondary signals (like button, comment button) exist in Shorts UI.
-        // The seekbar is present in regular videos but absent in Shorts.
-        // Combining these differentiates Shorts from regular video playback.
-        boolean hasSecondarySignal = false;
-        String matchedSecondaryId = null;
-        boolean secondaryIsFullScreen = false;
-        // ShortFormIds.YOUTUBE_SHORTS_SECONDARY_IDS is the single source of truth.
-        for (String secId : ShortFormIds.YOUTUBE_SHORTS_SECONDARY_IDS) {
-            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(secId);
-            if (nodes != null && !nodes.isEmpty()) {
-                hasSecondarySignal = true;
-                matchedSecondaryId = secId;
-                // Check if the secondary signal node itself covers the full screen
-                // (e.g., reel_time_bar covers [0,0][1008,2244] — the entire screen)
-                for (AccessibilityNodeInfo n : nodes) {
-                    if (FullScreenCheck.isFullScreen(n, this, TAG)) {
-                        secondaryIsFullScreen = true;
-                        break;
-                    }
-                }
-                recycleAll(nodes);
-                Log.d(TAG, "isShortsLayout: TIER2 secondary signal found: " + secId
-                        + " fullScreen=" + secondaryIsFullScreen);
-                break;
-            }
-        }
-
-        if (hasSecondarySignal) {
-            // Absence of seekbar differentiates Shorts from regular videos.
-            // ShortFormIds.YOUTUBE_SEEKBAR_ID is the single source of truth.
-            List<AccessibilityNodeInfo> seekbar = root.findAccessibilityNodeInfosByViewId(
-                    ShortFormIds.YOUTUBE_SEEKBAR_ID);
-            boolean hasSeekbar = seekbar != null && !seekbar.isEmpty();
-            if (seekbar != null) recycleAll(seekbar);
-
-            if (!hasSeekbar) {
-                // Only confirm Shorts if the secondary signal itself is full-screen
-                // (e.g., reel_time_bar covers the entire screen when Shorts is active).
-                // We intentionally do NOT fall back to findFullScreenScrollableContainer
-                // because YouTube's home feed RecyclerView is also full-screen and
-                // scrollable, which caused false positives on the home page.
-                if (secondaryIsFullScreen) {
-                    Log.d(TAG, "isShortsLayout: TIER2 matched (secondary="
-                            + matchedSecondaryId
-                            + " is full-screen + no seekbar) → true");
-                    notifyShortsState(true, "TIER2");
-                    return true;
-                }
-                Log.d(TAG, "isShortsLayout: TIER2 secondary found + no seekbar, "
-                        + "but secondary not full-screen → false");
-            } else {
-                Log.d(TAG, "isShortsLayout: TIER2 seekbar present → regular video, not Shorts");
-            }
-        } else {
-            Log.d(TAG, "isShortsLayout: TIER2 — no secondary signals found");
-        }
-
-        // --- TIER 3: Visible text scan ---
-        // Walk the accessibility tree (max depth 3) checking getText() and
-        // getContentDescription() on every visible node for the string "Shorts".
-        // This tier is resilient to view ID renames: as long as YouTube still renders
-        // "Shorts" as visible text (tab label, page heading, content descriptions),
-        // detection will work even if all view IDs above have changed.
-        if (hasShortsTextSignal(root)) {
-            Log.d(TAG, "isShortsLayout: TIER3 text scan matched → true");
-            notifyShortsState(true, "TIER3");
-            return true;
-        }
-
-        // --- TIER 4: Diagnostic dump (rate-limited) ---
-        // When all detection tiers fail, dump the YouTube accessibility tree
-        // view IDs to logcat so developers can discover the current IDs.
-        dumpYouTubeTreeIfNeeded(root);
-
-        Log.d(TAG, "isShortsLayout: all tiers failed → false");
-        return false;
-    }
 
     /**
      * Clears all scroll tracking state. Called on layout exit or intervention
@@ -1203,30 +947,6 @@ public class ReelsInterventionService extends AccessibilityService {
             titleView.setText("Time is up!");
             Log.d(TAG, "triggerIntervention: title set to 'Time is up!'");
 
-            // --- "Return to Feed" button (primary): navigate back within the app ---
-            // Fires GLOBAL_ACTION_BACK to exit the full-screen Reels/Shorts viewer
-            // and return to the app's main feed. Budget exhaustion state is NOT cleared —
-            // if the user navigates back to Reels, the overlay re-fires on the next scroll.
-            // Button btnReturnToFeed = interventionView.findViewById(R.id.btn_lock_in);
-            // btnReturnToFeed.setText("Return to Feed");
-            // btnReturnToFeed.setOnClickListener(v -> {
-            // Log.i(TAG, "return_to_feed tapped for " + pkg + " — pressing BACK to exit
-            // Reels viewer");
-            // dismissIntervention();
-            // // Reset only overlay-related flags so re-detection works if user re-enters
-            // // Reels.
-            // // Do NOT call resetReelsState() — that would clear the budget exhaustion
-            // // tracking.
-            // // Budget stays exhausted; re-entering Reels will re-trigger the overlay
-            // // immediately.
-            // wasInReelsLayout = false;
-            // // interventionShowing is already set to false by dismissIntervention()
-            // Log.d(TAG, "return_to_feed: wasInReelsLayout=false, budget exhaustion
-            // preserved");
-            // // performGlobalAction(GLOBAL_ACTION_BACK);
-            // goToHomePage();
-            // });
-
             // --- "Lock In" button (secondary): exit to Android home screen ---
             // Stronger action — user leaves the app entirely via GLOBAL_ACTION_HOME.
             // Budget exhaustion state is NOT cleared here either — it resets only when
@@ -1277,18 +997,6 @@ public class ReelsInterventionService extends AccessibilityService {
         interventionShowing = false;
     }
 
-    /*
-     * Relaucnhes Instagram app which opens with the home page as its default
-     * 
-     */
-    private void goToHomePage() {
-        Intent intent = new Intent();
-        intent.setComponent(new ComponentName(
-                "com.instagram.android",
-                "com.instagram.android.activity.MainTabActivity"));
-        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(intent);
-    }
 
     // =========================================================================
     // Reels state persistence (shared with AppUsageMonitor via SharedPreferences)
@@ -1460,8 +1168,11 @@ public class ReelsInterventionService extends AccessibilityService {
         // Package matches — verify the Reels/Shorts layout is still full-screen.
         // The user might still be in Instagram but navigated away from Reels
         // (e.g., tapped Home tab, opened DMs, etc.)
-        boolean inReels = expectedPackage.equals(PKG_INSTAGRAM)
-                ? isReelsLayout(root) : isShortsLayout(root);
+        // Delegates to InstagramDetector or YouTubeDetector (Step 2 refactor).
+        ShortFormDetector.DetectResult stillResult = expectedPackage.equals(PKG_INSTAGRAM)
+                ? instagramDetector.detect(root)
+                : youtubeDetector.detect(root);
+        boolean inReels = stillResult.inShortForm;
         root.recycle();
 
         Log.d(TAG, "[STILL_IN_REELS] pkg=" + expectedPackage + " inReels=" + inReels);
@@ -1625,68 +1336,10 @@ public class ReelsInterventionService extends AccessibilityService {
     }
 
 
-    /**
-     * Logs all view IDs in the top 2 levels of YouTube's accessibility tree.
-     * Rate-limited to once every YT_TREE_DUMP_INTERVAL_MS (10s) to prevent
-     * log spam.
-     *
-     * This is the PRIMARY debugging tool for YouTube Shorts detection failures.
-     * When YouTube changes their view IDs, a developer runs:
-     *   adb logcat -s REELS_WATCH | grep YT_TREE_DUMP
-     * while scrolling through Shorts to see the current IDs, then updates
-     * YOUTUBE_SHORTS_VIEW_IDS with the discovered IDs.
-     *
-     * @param root Root of the YouTube accessibility tree
-     */
-    private void dumpYouTubeTreeIfNeeded(AccessibilityNodeInfo root) {
-        long now = System.currentTimeMillis();
-        if (now - lastYtTreeDump < YT_TREE_DUMP_INTERVAL_MS) return;
-        lastYtTreeDump = now;
-
-        Log.w(TAG, "YT_TREE_DUMP === YouTube Shorts detection FAILED — dumping tree view IDs ===");
-        Log.w(TAG, "YT_TREE_DUMP To fix: find the Shorts container ID below and add it to "
-                + "YOUTUBE_SHORTS_VIEW_IDS array in ReelsInterventionService.java");
-        dumpNodeChildren(root, 0, 5);
-        Log.w(TAG, "YT_TREE_DUMP === End dump ===");
-    }
-
-    /**
-     * Recursively logs view IDs, class names, scrollability, and bounds for
-     * all children of a node up to maxDepth levels deep.
-     *
-     * @param node     Current node to inspect
-     * @param depth    Current depth in the tree
-     * @param maxDepth Maximum depth to traverse (prevents performance issues)
-     */
-    private void dumpNodeChildren(AccessibilityNodeInfo node, int depth, int maxDepth) {
-        if (node == null || depth > maxDepth) return;
-        StringBuilder indent = new StringBuilder();
-        for (int d = 0; d < depth; d++) indent.append("  ");
-        int childCount = node.getChildCount();
-        for (int i = 0; i < childCount; i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) {
-                String id = child.getViewIdResourceName();
-                String cls = child.getClassName() != null
-                        ? child.getClassName().toString() : "null";
-                boolean scrollable = child.isScrollable();
-                Rect bounds = new Rect();
-                child.getBoundsInScreen(bounds);
-                // getText() and getContentDescription() expose text-based signals
-                // used by TIER3 (hasShortsTextSignal). Including them here lets
-                // developers identify new text signals when TIER1/TIER2 fail.
-                String text = child.getText() != null
-                        ? "\"" + child.getText() + "\"" : "null";
-                String contentDesc = child.getContentDescription() != null
-                        ? "\"" + child.getContentDescription() + "\"" : "null";
-                Log.w(TAG, "YT_TREE_DUMP " + indent + "[" + depth + "." + i + "] "
-                        + "id=" + id + " class=" + cls
-                        + " text=" + text + " contentDesc=" + contentDesc
-                        + " scrollable=" + scrollable
-                        + " bounds=" + bounds.toShortString());
-                dumpNodeChildren(child, depth + 1, maxDepth);
-                child.recycle();
-            }
-        }
-    }
+    // dumpYouTubeTreeIfNeeded() and dumpNodeChildren() have been moved to
+    // YouTubeDetector (com.breqk.reels.detection.YouTubeDetector) as part of
+    // Step 2 of the reels-intervention-refactor.
+    // To trigger a tree dump, YouTubeDetector.dumpYouTubeTreeIfNeeded() is called
+    // automatically from youtubeDetector.detect() when all tiers fail.
+    // Filter: adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
 }
