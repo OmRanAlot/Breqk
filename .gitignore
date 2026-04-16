@@ -81,3 +81,12 @@ yarn-error.log
 /everything-claude-code
 
 .claude/plan/*
+# Added by code-review-graph
+.code-review-graph/
+
+everything-claude-code/
+.cursor/
+.claude/
+.github/
+.vscode/
+AGENTS.md
