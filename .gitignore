@@ -84,7 +84,6 @@ yarn-error.log
 # Added by code-review-graph
 .code-review-graph/
 
-everything-claude-code/
 .cursor/
 .claude/
 .github/
