@@ -1,5 +1,5 @@
 # TASKS.md — Breqk Launch Playbook
-> **Last updated:** 2026-04-13  
+> **Last updated:** 2026-04-19  
 > **Purpose:** Single source of truth for all tasks, architecture, and known issues. Read this first before making any changes.
 
 ---
@@ -16,6 +16,7 @@
 - [30-Day Launch Sprint](#30-day-launch-sprint)
 - [Logging & Debugging Reference](#logging--debugging-reference)
 - [Key Design Decisions](#key-design-decisions)
+- [Future Features](#future-features-not-urgent)
 
 ---
 
@@ -92,6 +93,12 @@
   - Fix: Add `{ packageName: 'com.zhiliaoapp.musically', label: 'TikTok' }` to the APPS array. Verify SettingsModule supports it.
   - Effort: 30 minutes
 
+- [ ] **Add a TikTok browser-mode opener with JS/CSS scroll lock**
+  - Files: `components/Browser/BrowserScreen.js`, `components/Browser/injections.js`
+  - Problem: We need an easy fallback path that opens the browser version of a blocked app and removes scrolling so the user stays in a more intentional flow.
+  - Fix: Add a one-tap browser entry point for blocked apps, inject JS/CSS to disable scroll, and verify the flow works reliably on TikTok first.
+  - Effort: 2-4 hours
+
 - [ ] **Rename "VPN" terminology throughout the codebase**
   - Files: `MyVpnService.java`, `VPNModule.java`, `SettingsModule.java`, JS files, AndroidManifest.xml
   - Problem: "VPN" is misleading. Users see "VPN Active" in the notification. The notification channel is called "BreqkVPN".
@@ -140,6 +147,13 @@
 - [ ] **Widget redesign** — show today's screen time + streak on home screen
 - [ ] **Scheduled modes with geofencing** — auto-activate Study Mode at the library
 - [ ] **iOS private beta** via Screen Time API (full rewrite of native layer)
+
+### ⚪ Future Features (Not Urgent)
+
+- [ ] Require a short "why do you want to open this app?" check-in before launching a blocked app
+- [ ] Show a reminder of today's to-do list or goals before opening a blocked app
+- [ ] Display a specific motivational image before opening a blocked app
+- [ ] Add a simple browser-version launcher for blocked apps with injected JS/CSS to remove scrolling
 
 ---
 

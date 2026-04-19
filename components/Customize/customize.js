@@ -508,42 +508,6 @@ const Customize = ({ navigation }) => {
           )}
         </View>
 
-        {/* ── Custom Modes ─────────────────────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Custom Modes</Text>
-          <Text style={styles.sectionCaption}>
-            Enable a mode to temporarily override the base settings above. Modes
-            can be scheduled to activate automatically.
-          </Text>
-
-          {Object.entries(modes).map(([id, mode]) => (
-            <ModeCard
-              key={id}
-              modeId={id}
-              mode={mode}
-              editing={editingMode === id}
-              onToggleEnabled={val => handleModeToggleEnabled(id, val)}
-              onEdit={() => {
-                LayoutAnimation.configureNext(
-                  LayoutAnimation.Presets.easeInEaseOut,
-                );
-                setEditingMode(editingMode === id ? null : id);
-              }}
-              onSave={handleModeSave}
-              onDelete={handleModeDelete}
-            />
-          ))}
-
-          {/* + Create Mode */}
-          <TouchableOpacity
-            style={styles.createModeBtn}
-            onPress={handleCreateMode}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.createModeBtnText}>+ Create Mode</Text>
-          </TouchableOpacity>
-        </View>
-
         {/* ── Scroll Budget — visible when any app has Reels ON ── */}
         {anyReelsOn && (
           <View style={styles.section}>
