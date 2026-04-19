@@ -27,14 +27,15 @@
       "Bash(adb shell:*)",
       "Bash(./gradlew installDebug)",
       "Bash(./gradlew compileDebugJavaSources)",
-      "Bash(./gradlew :app:compileDebugJavaWithJavac)"
+      "Bash(./gradlew :app:compileDebugJavaWithJavac)",
+      "mcp__code-review-graph__semantic_search_nodes_tool"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "code-review-graph"
   ],
   "enabledPlugins": {
     "everything-claude-code@everything-claude-code": true
-  },
-  "enableAllProjectMcpServers": true
+  }
 }

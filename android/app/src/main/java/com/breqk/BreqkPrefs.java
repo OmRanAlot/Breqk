@@ -113,11 +113,15 @@ public final class BreqkPrefs {
     public static final String KEY_WIDGET_MONITORING_ENABLED = "widget_monitoring_enabled";
     public static final String KEY_WIDGET_UPDATED_AT = "widget_updated_at";
 
+    // Home feed post limit (Instagram home feed scroll counter)
+    public static final String KEY_HOME_FEED_POST_LIMIT = "home_feed_post_limit";
+
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;
     public static final int DEFAULT_POPUP_DELAY_MINUTES = 10;
     public static final int DEFAULT_SCROLL_THRESHOLD = 4;
     public static final int DEFAULT_SCROLL_ALLOWANCE_MINUTES = 5;
+    public static final int DEFAULT_HOME_FEED_POST_LIMIT = 20;
     public static final int DEFAULT_SCROLL_WINDOW_MINUTES = 60;
 
     // ── Accessor ─────────────────────────────────────────────────────────────

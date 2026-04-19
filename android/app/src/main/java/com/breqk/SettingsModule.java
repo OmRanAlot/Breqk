@@ -179,6 +179,33 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
+     * Persists the Instagram home feed post limit.
+     * When this many debounced swipes are detected on the home feed, the
+     * "Time is up!" intervention fires. Clamped to 5–100.
+     */
+    @ReactMethod
+    public void saveHomeFeedPostLimit(int limit) {
+        int clamped = Math.max(5, Math.min(100, limit));
+        Log.d(TAG, "[SAVE] saveHomeFeedPostLimit limit=" + limit + " (clamped=" + clamped + ")");
+        BreqkPrefs.get(reactContext).edit()
+                .putInt(BreqkPrefs.KEY_HOME_FEED_POST_LIMIT, clamped)
+                .apply();
+    }
+
+    /**
+     * Retrieves the current Instagram home feed post limit.
+     * Returns default (20) if not yet set.
+     */
+    @ReactMethod
+    public void getHomeFeedPostLimit(Callback callback) {
+        Log.d(TAG, "[GET] getHomeFeedPostLimit called");
+        int limit = BreqkPrefs.get(reactContext)
+                .getInt(BreqkPrefs.KEY_HOME_FEED_POST_LIMIT, BreqkPrefs.DEFAULT_HOME_FEED_POST_LIMIT);
+        Log.d(TAG, "[GET] home_feed_post_limit=" + limit);
+        callback.invoke(limit);
+    }
+
+    /**
      * Persists the "20-Min Free Break" feature toggle.
      * When false (default), the break button is hidden on the Home screen.
      */

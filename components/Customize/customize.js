@@ -103,6 +103,9 @@ const Customize = ({ navigation }) => {
   const [scrollWindow, setScrollWindow] = useState(60);
   const [budgetStatus, setBudgetStatus] = useState(null);
 
+  // ── Home feed post limit ──────────────────────────────────────────────────
+  const [homeFeedLimit, setHomeFeedLimit] = useState(20);
+
   // ── Intercept message + delay ─────────────────────────────────────────────
   const [interceptMessage, setInterceptMessage] = useState(
     'Is this intentional?',
@@ -165,9 +168,9 @@ const Customize = ({ navigation }) => {
   useEffect(() => {
     const blurUnsub = navigation?.addListener
       ? navigation.addListener('blur', () => {
-          console.log('[Customize] blur → flushing saver');
-          saver.flush();
-        })
+        console.log('[Customize] blur → flushing saver');
+        saver.flush();
+      })
       : null;
     const appStateSub = AppState.addEventListener('change', next => {
       if (next !== 'active') {
@@ -194,7 +197,7 @@ const Customize = ({ navigation }) => {
         let parsed = {};
         try {
           parsed = JSON.parse(policiesJson || '{}');
-        } catch (_) {}
+        } catch (_) { }
         setAppPolicies(parsed);
         console.log(
           '[Customize] app policies loaded:',
@@ -207,6 +210,38 @@ const Customize = ({ navigation }) => {
           SettingsModule.getFreeBreakEnabled(v => resolve(v)),
         );
         setFreeBreakEnabled(freeBreak === true);
+
+        // Load active mode
+        const mode = await new Promise(resolve =>
+          SettingsModule.getActiveMode(m => resolve(m)),
+        );
+        setActiveMode(mode || '');
+        console.log('[Customize] active mode:', mode);
+
+        // Load custom modes (seed defaults if empty)
+        const modesJson = await new Promise(resolve =>
+          SettingsModule.getModes(json => resolve(json)),
+        );
+        let parsedModes = {};
+        try {
+          parsedModes = JSON.parse(modesJson || '{}');
+        } catch (_) { }
+        if (!parsedModes || Object.keys(parsedModes).length === 0) {
+          parsedModes = DEFAULT_MODES;
+          SettingsModule.saveModes(JSON.stringify(parsedModes));
+        }
+        setModes(parsedModes);
+        console.log(
+          '[Customize] modes loaded:',
+          Object.keys(parsedModes).length,
+        );
+
+        // Load home feed post limit
+        const feedLimit = await new Promise(resolve =>
+          SettingsModule.getHomeFeedPostLimit(v => resolve(v)),
+        );
+        setHomeFeedLimit(typeof feedLimit === 'number' ? feedLimit : 20);
+        console.log('[Customize] home feed post limit loaded:', feedLimit);
 
         // Load scroll budget
         await new Promise(resolve => {
@@ -251,7 +286,7 @@ const Customize = ({ navigation }) => {
       try {
         await SettingsModule.setAppFeature(packageName, featureKey, value);
         if (featureKey === 'app_open_intercept') {
-          VPNModule.startMonitoring().catch(() => {});
+          VPNModule.startMonitoring().catch(() => { });
         }
         showSavedPending();
       } catch (e) {
@@ -298,6 +333,17 @@ const Customize = ({ navigation }) => {
       showSaved();
     },
     [scrollAllowance, scrollWindow, showSaved],
+  );
+
+  const adjustHomeFeedLimit = useCallback(
+    delta => {
+      const next = Math.max(5, Math.min(100, homeFeedLimit + delta));
+      setHomeFeedLimit(next);
+      SettingsModule.saveHomeFeedPostLimit(next);
+      console.log('[Customize] home feed post limit →', next);
+      showSaved();
+    },
+    [homeFeedLimit, showSaved],
   );
 
   // Scroll budget polling (every 5s when any app has reels detection on)
@@ -462,10 +508,82 @@ const Customize = ({ navigation }) => {
           )}
         </View>
 
+        {/* ── Custom Modes ─────────────────────────────────────────── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Custom Modes</Text>
+          <Text style={styles.sectionCaption}>
+            Enable a mode to temporarily override the base settings above. Modes
+            can be scheduled to activate automatically.
+          </Text>
+
+          {Object.entries(modes).map(([id, mode]) => (
+            <ModeCard
+              key={id}
+              modeId={id}
+              mode={mode}
+              editing={editingMode === id}
+              onToggleEnabled={val => handleModeToggleEnabled(id, val)}
+              onEdit={() => {
+                LayoutAnimation.configureNext(
+                  LayoutAnimation.Presets.easeInEaseOut,
+                );
+                setEditingMode(editingMode === id ? null : id);
+              }}
+              onSave={handleModeSave}
+              onDelete={handleModeDelete}
+            />
+          ))}
+
+          {/* + Create Mode */}
+          <TouchableOpacity
+            style={styles.createModeBtn}
+            onPress={handleCreateMode}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.createModeBtnText}>+ Create Mode</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* ── Scroll Budget — visible when any app has Reels ON ── */}
         {anyReelsOn && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Scroll Budget</Text>
+
+            {/* Home feed post limit — Instagram only, under same Reels toggle */}
+            {appPolicies['com.instagram.android']?.reels_detection === true && (
+              <>
+                <Text style={styles.budgetSubLabel}>
+                  Instagram Feed Post Limit
+                </Text>
+                <Text style={styles.budgetSubCaption}>
+                  After this many posts on the home feed, you'll be prompted to
+                  lock in.
+                </Text>
+                <View style={[styles.budgetControls, { marginBottom: 20 }]}>
+                  <View style={styles.stepperGroup}>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() => adjustHomeFeedLimit(-5)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Decrease feed post limit"
+                    >
+                      <Text style={styles.stepperBtnText}>−</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.stepperValue}>{homeFeedLimit}</Text>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() => adjustHomeFeedLimit(5)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Increase feed post limit"
+                    >
+                      <Text style={styles.stepperBtnText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.budgetDivider}>posts</Text>
+                </View>
+                <View style={[styles.divider, { marginBottom: 16 }]} />
+              </>
+            )}
 
             <View style={styles.budgetControls}>
               <View style={styles.stepperGroup}>
@@ -519,13 +637,13 @@ const Customize = ({ navigation }) => {
                 const statusLabel = canScroll
                   ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
                   : `Scroll again in ${formatBudgetTime(
-                      budgetStatus.nextScrollAtMs - Date.now(),
-                    )}`;
+                    budgetStatus.nextScrollAtMs - Date.now(),
+                  )}`;
                 const filledRatio = canScroll
                   ? Math.min(
-                      1,
-                      budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0,
-                    )
+                    1,
+                    budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0,
+                  )
                   : 1;
                 return (
                   <View style={styles.budgetStatusSection}>
@@ -756,7 +874,238 @@ const styles = StyleSheet.create({
     color: L.charcoal,
   },
 
+  // ── Mode cards ───────────────────────────────────────────────────────────
+  modeCard: {
+    backgroundColor: L.cardBg,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: L.cardBorder,
+    padding: 16,
+    marginBottom: 10,
+  },
+  modeCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modeIcon: {
+    fontSize: 20,
+  },
+  modeCardInfo: {
+    flex: 1,
+  },
+  modeCardName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: L.charcoal,
+  },
+  modeCardSummary: {
+    fontSize: 12,
+    color: L.muted,
+    marginTop: 2,
+  },
+  modeEditLink: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: L.border,
+  },
+  modeEditLinkText: {
+    fontSize: 13,
+    color: L.muted,
+    fontWeight: '500',
+  },
+
+  // ── Mode editor (inline) ─────────────────────────────────────────────────
+  modeEditor: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: L.border,
+    gap: 12,
+  },
+  modeNameInput: {
+    fontSize: 16,
+    color: L.charcoal,
+    borderBottomWidth: 1.5,
+    borderBottomColor: L.inputBorder,
+    paddingVertical: 6,
+    paddingHorizontal: 0,
+  },
+  editorSectionLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: L.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+    marginTop: 8,
+  },
+  modeAppBlock: {
+    backgroundColor: 'rgba(0,0,0,0.02)',
+    borderRadius: 10,
+    padding: 12,
+    gap: 6,
+  },
+  modeAppLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: L.charcoal,
+    marginBottom: 4,
+  },
+  modeFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  modeFeatureLabel: {
+    fontSize: 14,
+    color: L.charcoal,
+  },
+  modeDelayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modeDelayInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modeDelayValue: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: L.charcoal,
+    minWidth: 36,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+
+  // ── Schedule ─────────────────────────────────────────────────────────────
+  addScheduleBtn: {
+    borderWidth: 1,
+    borderColor: L.border,
+    borderStyle: 'dashed',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  addScheduleBtnText: {
+    fontSize: 13,
+    color: L.muted,
+    fontWeight: '500',
+  },
+  scheduleBlock: {
+    backgroundColor: 'rgba(0,0,0,0.02)',
+    borderRadius: 10,
+    padding: 12,
+    gap: 10,
+  },
+  scheduleTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  scheduleTimeLabel: {
+    fontSize: 14,
+    color: L.charcoal,
+  },
+  scheduleTimeInput: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: L.charcoal,
+    borderBottomWidth: 1,
+    borderBottomColor: L.border,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    minWidth: 70,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  dayPickerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  dayBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayBtnActive: {
+    backgroundColor: L.charcoal,
+  },
+  dayBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: L.charcoal,
+  },
+  dayBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  removeScheduleText: {
+    fontSize: 12,
+    color: '#E53935',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+
+  // ── Mode editor actions ──────────────────────────────────────────────────
+  modeEditorActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  modeSaveBtn: {
+    backgroundColor: L.charcoal,
+    borderRadius: 9999,
+    paddingVertical: 10,
+    paddingHorizontal: 28,
+  },
+  modeSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  modeDeleteText: {
+    fontSize: 13,
+    color: '#E53935',
+    fontWeight: '500',
+  },
+
+  // ── Create mode button ───────────────────────────────────────────────────
+  createModeBtn: {
+    borderWidth: 1,
+    borderColor: L.border,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  createModeBtnText: {
+    fontSize: 14,
+    color: L.muted,
+    fontWeight: '500',
+  },
+
   // ── Scroll Budget ────────────────────────────────────────────────────────
+  budgetSubLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: L.charcoal,
+    marginBottom: 4,
+  },
+  budgetSubCaption: {
+    fontSize: 12,
+    color: L.muted,
+    lineHeight: 17,
+    marginBottom: 12,
+  },
   budgetControls: {
     flexDirection: 'row',
     alignItems: 'center',

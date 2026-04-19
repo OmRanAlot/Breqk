@@ -93,6 +93,7 @@ import com.breqk.reels.detection.ShortFormDetector;
 import com.breqk.reels.detection.YouTubeDetector;
 import com.breqk.reels.budget.BudgetState;
 import com.breqk.reels.budget.BudgetHeartbeat;
+import com.breqk.reels.budget.HomeFeedCounter;
 import com.breqk.reels.intervention.InterventionOverlay;
 import com.breqk.reels.intervention.ReelsStateMachine;
 
@@ -205,6 +206,12 @@ public class ReelsInterventionService extends AccessibilityService {
 
     private BudgetState budgetState;
     private BudgetHeartbeat budgetHeartbeat;
+
+    // --- Home feed scroll counter ---
+    // In-memory; resets when user leaves Instagram. Independent of BudgetState.
+    private final HomeFeedCounter homeFeedCounter = new HomeFeedCounter();
+    // Separate debounce timestamp so home feed scrolls don't share state with Reels.
+    private long lastFeedScrollTimestamp = 0;
 
     // =========================================================================
     // Service lifecycle
@@ -370,6 +377,23 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
         }
 
+        // [HOME_FEED] App-switch detection while on Instagram home feed (not in Reels).
+        // Reset the home feed counter when the user leaves Instagram, so the limit is
+        // per-session (each new Instagram visit starts fresh).
+        if (!stateMachine.isInReels()
+                && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && !packageName.equals(PKG_INSTAGRAM)
+                && !packageName.equals(PKG_YOUTUBE)
+                && !(interventionOverlay != null && interventionOverlay.isShowing())) {
+            String homeFeedSwitchClass = event.getClassName() != null ? event.getClassName().toString() : "";
+            if (!FrameworkClassFilter.isFrameworkClass(homeFeedSwitchClass)
+                    && !frameworkClassFilter.isSystemOverlayPackage(packageName, this, TAG)) {
+                homeFeedCounter.reset();
+                lastFeedScrollTimestamp = 0;
+                Log.d(TAG, "[HOME_FEED] app switch to pkg=" + packageName + " → counter reset");
+            }
+        }
+
         // Only process scroll/state events for scroll-budget logic from Instagram or YouTube.
         // TikTok is handled entirely by AppEventRouter (ContentFilter) above — no budget tracking.
         if (!packageName.equals(PKG_INSTAGRAM) && !packageName.equals(PKG_YOUTUBE))
@@ -398,6 +422,7 @@ public class ReelsInterventionService extends AccessibilityService {
         // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
         persistReelsState(false, "");
         if (budgetHeartbeat != null) budgetHeartbeat.stop();
+        homeFeedCounter.reset();
         // Destroy AppEventRouter subsystems (LaunchInterceptor + ContentFilter)
         if (eventRouter != null) {
             eventRouter.onDestroy();
@@ -582,13 +607,28 @@ public class ReelsInterventionService extends AccessibilityService {
                 Log.d(TAG, "Scroll outside Reels/Shorts — resetting state");
                 resetReelsState();
             }
-            // Emit SCROLL_DECISION line even for ignored scrolls (useful for debugging
-            // false positives)
+
+            // [HOME_FEED] Check if this is a scroll on the Instagram home feed.
+            // Only fires for Instagram, scroll events, when no overlay is already showing.
+            if (packageName.equals(PKG_INSTAGRAM)
+                    && eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
+                    && !(interventionOverlay != null && interventionOverlay.isShowing())
+                    && !budgetState.isFreeBreakActive(System.currentTimeMillis())) {
+                checkHomeFeedScroll(event, packageName);
+            }
+
             logVerbose("SCROLL_DECISION pkg=" + packageName
                     + " fastPath=" + usedFastPath
                     + " confirmedInReels=false"
                     + " action=IGNORED");
             return;
+        }
+
+        // User entered Reels — reset home feed counter so Reels visits don't count
+        // toward the feed limit, and the counter is fresh when they return to the feed.
+        if (!stateMachine.isInReels()) {
+            homeFeedCounter.reset();
+            lastFeedScrollTimestamp = 0;
         }
 
         // Persist Reels state for AppUsageMonitor to gate scroll budget accumulation
@@ -746,6 +786,66 @@ public class ReelsInterventionService extends AccessibilityService {
         if (budgetHeartbeat != null) budgetHeartbeat.stop();
         Log.d(TAG,
                 "resetReelsState: cleared (wasInReels=false, interventionShowing=false, inGracePeriod=false, lastScrollTimestamp=0, reelsState=false)");
+    }
+
+    // =========================================================================
+    // Home feed scroll detection
+    // =========================================================================
+
+    /**
+     * Checks whether a scroll event originates from the Instagram home feed RecyclerView.
+     * If so, increments the per-session counter and triggers the intervention when the
+     * configured post limit is reached.
+     *
+     * Detection: fast-path only — checks event.getSource().getViewIdResourceName() against
+     * ShortFormIds.INSTAGRAM_HOME_FEED_IDS. No tree traversal needed.
+     *
+     * Log filter: adb logcat -s REELS_WATCH | findstr "HOME_FEED"
+     */
+    private void checkHomeFeedScroll(AccessibilityEvent event, String packageName) {
+        AccessibilityNodeInfo source = event.getSource();
+        if (source == null) return;
+
+        String viewId = source.getViewIdResourceName();
+        source.recycle();
+
+        if (viewId == null) {
+            logVerbose("[HOME_FEED_SOURCE] source has no view ID — ignored");
+            return;
+        }
+
+        // Log every source ID to help discover the correct ID after Instagram updates.
+        // Filter: adb logcat -s REELS_WATCH | findstr "HOME_FEED_SOURCE"
+        logVerbose("[HOME_FEED_SOURCE] source viewId=" + viewId);
+
+        boolean isFeedScroll = false;
+        for (String feedId : ShortFormIds.INSTAGRAM_HOME_FEED_IDS) {
+            if (viewId.equals(feedId)) {
+                isFeedScroll = true;
+                break;
+            }
+        }
+
+        if (!isFeedScroll) return;
+
+        // Debounce: same window as Reels (600ms) — one physical swipe fires multiple events.
+        long now = System.currentTimeMillis();
+        if (now - lastFeedScrollTimestamp < SCROLL_DEBOUNCE_MS) {
+            logVerbose("[HOME_FEED] DEBOUNCED (elapsed=" + (now - lastFeedScrollTimestamp) + "ms)");
+            return;
+        }
+        lastFeedScrollTimestamp = now;
+
+        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        boolean limitReached = homeFeedCounter.increment(prefs);
+
+        if (limitReached) {
+            Log.i(TAG, "[HOME_FEED] Post limit reached (count=" + homeFeedCounter.getCount()
+                    + " limit=" + homeFeedCounter.getLimit(prefs)
+                    + ") — triggering intervention for " + packageName);
+            homeFeedCounter.reset(); // reset so repeated re-entries don't immediately re-trigger
+            triggerIntervention(packageName);
+        }
     }
 
     // =========================================================================

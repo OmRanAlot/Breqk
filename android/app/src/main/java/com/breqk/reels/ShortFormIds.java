@@ -24,6 +24,25 @@ package com.breqk.reels;
 public final class ShortFormIds {
 
     // =========================================================================
+    // Instagram Home Feed view IDs
+    // =========================================================================
+
+    /**
+     * RecyclerView IDs for the Instagram home feed (the main scrollable list).
+     *
+     * Used by HomeFeedCounter to detect post swipes on the home feed — distinct
+     * from the full-screen Reels viewer (INSTAGRAM_REELS_IDS below).
+     *
+     * If detection breaks after an Instagram update, dump the source view ID with:
+     *   adb logcat -s REELS_WATCH | findstr "HOME_FEED_SOURCE"
+     * then add the new ID here.
+     */
+    public static final String[] INSTAGRAM_HOME_FEED_IDS = {
+            "com.instagram.android:id/feed_main_recycler_view",   // primary home feed RecyclerView
+            "com.instagram.android:id/list",                       // fallback (older Instagram versions)
+    };
+
+    // =========================================================================
     // Instagram Reels view IDs
     // =========================================================================
 
