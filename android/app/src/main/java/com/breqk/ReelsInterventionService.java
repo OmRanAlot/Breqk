@@ -377,7 +377,9 @@ public class ReelsInterventionService extends AccessibilityService {
 
         // Per-app policy check: skip if reels_detection is disabled for this app.
         // Uses BreqkPrefs.isFeatureEnabled() which resolves active mode overrides → base policy.
-        if (!BreqkPrefs.isFeatureEnabled(this, packageName, BreqkPrefs.FEATURE_REELS_DETECTION)) {
+        boolean reelsEnabled = BreqkPrefs.isFeatureEnabled(this, packageName, BreqkPrefs.FEATURE_REELS_DETECTION);
+        Log.i(TAG, "[INTERCEPT_DECISION] pkg=" + packageName + " reels_detection=" + reelsEnabled);
+        if (!reelsEnabled) {
             Log.d(TAG, "[POLICY] reels_detection disabled for " + packageName + " — skipping event");
             // If we were tracking this app's Reels state, reset it
             if (stateMachine.isInReels()) {

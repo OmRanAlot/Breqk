@@ -274,9 +274,15 @@ public class SettingsModule extends ReactContextBaseJavaModule {
      * @param enabled     true/false
      */
     @ReactMethod
-    public void setAppFeature(String packageName, String featureKey, boolean enabled) {
+    public void setAppFeature(String packageName, String featureKey, boolean enabled, Promise promise) {
         Log.d(TAG, "[POLICY] setAppFeature pkg=" + packageName + " " + featureKey + "=" + enabled);
-        BreqkPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
+        try {
+            BreqkPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[POLICY] setAppFeature failed: " + e.getMessage());
+            promise.reject("SET_APP_FEATURE_FAILED", e.getMessage());
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

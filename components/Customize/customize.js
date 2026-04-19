@@ -614,7 +614,7 @@ const Customize = ({ navigation }) => {
   // ── Per-app feature toggle handler ─────────────────────────────────────────
 
   const handleAppFeatureToggle = useCallback(
-    (packageName, featureKey, value) => {
+    async (packageName, featureKey, value) => {
       console.log(
         '[Customize] app feature toggle:',
         packageName,
@@ -629,23 +629,20 @@ const Customize = ({ navigation }) => {
         updated[packageName] = { ...updated[packageName], [featureKey]: value };
         return updated;
       });
-      // Debounced commit — coalesces rapid toggles into one native write.
-      // Key is stable per app+feature so flipping the same toggle multiple
-      // times only ever produces one commit for the latest value.
-      saver.schedule(`appFeature:${packageName}:${featureKey}`, () => {
-        SettingsModule.setAppFeature(packageName, featureKey, value);
-      });
-
-      if (featureKey === 'app_open_intercept') {
-        // Immediate write to SharedPreferences BEFORE startMonitoring reads it.
-        // This fixes a race condition where the debounced write hadn't completed
-        // when the service tried to load the blocked apps list.
-        SettingsModule.setAppFeature(packageName, featureKey, value);
-        VPNModule.startMonitoring().catch(() => {});
+      // Write immediately (no debounce) — per-app toggles are discrete user actions.
+      // Awaiting guarantees syncBlockedAppsFromPolicies + dispatchBlockedAppsReload
+      // have completed before startMonitoring reads the updated blocked-apps set.
+      try {
+        await SettingsModule.setAppFeature(packageName, featureKey, value);
+        if (featureKey === 'app_open_intercept') {
+          VPNModule.startMonitoring().catch(() => {});
+        }
+        showSavedPending();
+      } catch (e) {
+        console.error('[Customize] setAppFeature failed:', e);
       }
-      showSavedPending();
     },
-    [saver, showSavedPending],
+    [showSavedPending],
   );
 
   const handleFreeBreakToggle = value => {

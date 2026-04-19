@@ -297,7 +297,12 @@ public class AppUsageMonitor {
 
                     if (foregroundApp != null && !foregroundApp.equals(context.getPackageName())) {
                         String appName = getAppName(foregroundApp);
-                        boolean isBlocked = blockedApps.contains(foregroundApp);
+                        // Read per-app policy directly so the decision is always live, regardless
+                        // of whether the in-memory blockedApps cache has been updated yet.
+                        boolean isBlocked = BreqkPrefs.isFeatureEnabled(context, foregroundApp, BreqkPrefs.FEATURE_APP_OPEN_INTERCEPT);
+                        Log.i(TAG, "[INTERCEPT_DECISION] pkg=" + foregroundApp
+                                + " app_open_intercept=" + isBlocked
+                                + " allowedSession=" + allowedThisSession.contains(foregroundApp));
                         boolean isAllowed = allowedThisSession.contains(foregroundApp);
                         Long lastShown = popupCooldown.get(foregroundApp);
                         long now = System.currentTimeMillis();

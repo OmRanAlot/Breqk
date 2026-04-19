@@ -30,7 +30,11 @@
       "Bash(./gradlew :app:compileDebugJavaWithJavac)"
     ]
   },
+  "enabledMcpjsonServers": [
+    "code-review-graph"
+  ],
   "enabledPlugins": {
     "everything-claude-code@everything-claude-code": true
-  }
+  },
+  "enableAllProjectMcpServers": true
 }
