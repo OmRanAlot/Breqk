@@ -91,20 +91,10 @@ const BackIcon = ({ color, size }) => (
 const Customize = ({ navigation }) => {
   const insets = useSafeAreaInsets();
 
-  // ── Per-app policies state ───────────────────────────────────────────────
-  // { "com.instagram.android": { app_open_intercept: true, reels_detection: true, ... }, ... }
-  const [appPolicies, setAppPolicies] = useState({});
-
-  // ── Global sub-feature toggles (kept global, not per-app) ─────────────
-  const [freeBreakEnabled, setFreeBreakEnabled] = useState(false);
-
   // ── Scroll budget state ───────────────────────────────────────────────────
   const [scrollAllowance, setScrollAllowance] = useState(5);
   const [scrollWindow, setScrollWindow] = useState(60);
   const [budgetStatus, setBudgetStatus] = useState(null);
-
-  // ── Home feed post limit ──────────────────────────────────────────────────
-  const [homeFeedLimit, setHomeFeedLimit] = useState(20);
 
   // ── Intercept message + delay ─────────────────────────────────────────────
   const [interceptMessage, setInterceptMessage] = useState(
@@ -168,9 +158,9 @@ const Customize = ({ navigation }) => {
   useEffect(() => {
     const blurUnsub = navigation?.addListener
       ? navigation.addListener('blur', () => {
-        console.log('[Customize] blur → flushing saver');
-        saver.flush();
-      })
+          console.log('[Customize] blur → flushing saver');
+          saver.flush();
+        })
       : null;
     const appStateSub = AppState.addEventListener('change', next => {
       if (next !== 'active') {
@@ -190,59 +180,6 @@ const Customize = ({ navigation }) => {
     const load = async () => {
       console.log('[Customize] loading saved settings');
       try {
-        // Load per-app policies
-        const policiesJson = await new Promise(resolve =>
-          SettingsModule.getAppPolicies(json => resolve(json)),
-        );
-        let parsed = {};
-        try {
-          parsed = JSON.parse(policiesJson || '{}');
-        } catch (_) { }
-        setAppPolicies(parsed);
-        console.log(
-          '[Customize] app policies loaded:',
-          Object.keys(parsed).length,
-          'apps',
-        );
-
-        // Load free break toggle (global)
-        const freeBreak = await new Promise(resolve =>
-          SettingsModule.getFreeBreakEnabled(v => resolve(v)),
-        );
-        setFreeBreakEnabled(freeBreak === true);
-
-        // Load active mode
-        const mode = await new Promise(resolve =>
-          SettingsModule.getActiveMode(m => resolve(m)),
-        );
-        setActiveMode(mode || '');
-        console.log('[Customize] active mode:', mode);
-
-        // Load custom modes (seed defaults if empty)
-        const modesJson = await new Promise(resolve =>
-          SettingsModule.getModes(json => resolve(json)),
-        );
-        let parsedModes = {};
-        try {
-          parsedModes = JSON.parse(modesJson || '{}');
-        } catch (_) { }
-        if (!parsedModes || Object.keys(parsedModes).length === 0) {
-          parsedModes = DEFAULT_MODES;
-          SettingsModule.saveModes(JSON.stringify(parsedModes));
-        }
-        setModes(parsedModes);
-        console.log(
-          '[Customize] modes loaded:',
-          Object.keys(parsedModes).length,
-        );
-
-        // Load home feed post limit
-        const feedLimit = await new Promise(resolve =>
-          SettingsModule.getHomeFeedPostLimit(v => resolve(v)),
-        );
-        setHomeFeedLimit(typeof feedLimit === 'number' ? feedLimit : 20);
-        console.log('[Customize] home feed post limit loaded:', feedLimit);
-
         // Load scroll budget
         await new Promise(resolve => {
           SettingsModule.getScrollBudget((allowance, window) => {
@@ -261,49 +198,6 @@ const Customize = ({ navigation }) => {
     };
     load();
   }, []);
-
-  // ── Per-app feature toggle handler ─────────────────────────────────────────
-
-  const handleAppFeatureToggle = useCallback(
-    async (packageName, featureKey, value) => {
-      console.log(
-        '[Customize] app feature toggle:',
-        packageName,
-        featureKey,
-        '→',
-        value,
-      );
-      // Update local state immediately for instant UI feedback.
-      setAppPolicies(prev => {
-        const updated = { ...prev };
-        if (!updated[packageName]) updated[packageName] = {};
-        updated[packageName] = { ...updated[packageName], [featureKey]: value };
-        return updated;
-      });
-      // Write immediately (no debounce) — per-app toggles are discrete user actions.
-      // Awaiting guarantees syncBlockedAppsFromPolicies + dispatchBlockedAppsReload
-      // have completed before startMonitoring reads the updated blocked-apps set.
-      try {
-        await SettingsModule.setAppFeature(packageName, featureKey, value);
-        if (featureKey === 'app_open_intercept') {
-          VPNModule.startMonitoring().catch(() => { });
-        }
-        showSavedPending();
-      } catch (e) {
-        console.error('[Customize] setAppFeature failed:', e);
-      }
-    },
-    [showSavedPending],
-  );
-
-  const handleFreeBreakToggle = value => {
-    console.log('[Customize] free break toggle →', value);
-    setFreeBreakEnabled(value);
-    saver.schedule('freeBreak', () => {
-      SettingsModule.saveFreeBreakEnabled(value);
-    });
-    showSavedPending();
-  };
 
   // ── Scroll budget handlers ────────────────────────────────────────────────
 
@@ -335,26 +229,8 @@ const Customize = ({ navigation }) => {
     [scrollAllowance, scrollWindow, showSaved],
   );
 
-  const adjustHomeFeedLimit = useCallback(
-    delta => {
-      const next = Math.max(5, Math.min(100, homeFeedLimit + delta));
-      setHomeFeedLimit(next);
-      SettingsModule.saveHomeFeedPostLimit(next);
-      console.log('[Customize] home feed post limit →', next);
-      showSaved();
-    },
-    [homeFeedLimit, showSaved],
-  );
-
-  // Scroll budget polling (every 5s when any app has reels detection on)
-  const anyReelsOn = Object.values(appPolicies).some(
-    p => p?.reels_detection === true,
-  );
+  // Scroll budget polling (every 5s)
   useEffect(() => {
-    if (!anyReelsOn) {
-      setBudgetStatus(null);
-      return;
-    }
     const poll = async () => {
       try {
         const status = await VPNModule.getScrollBudgetStatus();
@@ -366,7 +242,7 @@ const Customize = ({ navigation }) => {
     poll();
     const interval = setInterval(poll, 5000);
     return () => clearInterval(interval);
-  }, [anyReelsOn]);
+  }, []);
 
   // ── Intercept message + delay handlers ───────────────────────────────────
 
@@ -396,16 +272,6 @@ const Customize = ({ navigation }) => {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  // App list for cards
-  const MANAGED_APPS = [
-    { packageName: 'com.instagram.android', label: 'Instagram', emoji: '📷' },
-    {
-      packageName: 'com.google.android.youtube',
-      label: 'YouTube',
-      emoji: '▶️',
-    },
-  ];
-
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, 0) }]}>
       {/* ── Sticky header ───────────────────────────────────────────── */}
@@ -432,216 +298,105 @@ const Customize = ({ navigation }) => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── YOUR APPS (per-app base defaults) ───────────────────── */}
+        {/* ── Scroll Budget ─────────────────────────────────────────── */}
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Your Apps</Text>
+          <Text style={styles.sectionLabel}>Scroll Budget</Text>
 
-          {MANAGED_APPS.map(app => {
-            const policy = appPolicies[app.packageName] || {};
-            const reelsOn = policy.reels_detection === true;
-            const interceptOn = policy.app_open_intercept === true;
-
-            return (
-              <View key={app.packageName} style={styles.appCard}>
-                <Text style={styles.appCardTitle}>
-                  {app.emoji} {app.label}
-                </Text>
-
-                <View style={styles.divider} />
-
-                <View style={styles.toggleRow}>
-                  <Text style={styles.toggleLabel}>Reels Detection</Text>
-                  <Switch
-                    value={reelsOn}
-                    onValueChange={val =>
-                      handleAppFeatureToggle(
-                        app.packageName,
-                        'reels_detection',
-                        val,
-                      )
-                    }
-                    trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                <View style={styles.toggleRow}>
-                  <Text style={styles.toggleLabel}>App Open Intercept</Text>
-                  <Switch
-                    value={interceptOn}
-                    onValueChange={val =>
-                      handleAppFeatureToggle(
-                        app.packageName,
-                        'app_open_intercept',
-                        val,
-                      )
-                    }
-                    trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-              </View>
-            );
-          })}
-
-          {/* Global sub-features (shown when any app has Reels ON) */}
-          {anyReelsOn && (
-            <>
-              <View style={[styles.divider, { marginTop: 16 }]} />
-              <View style={styles.toggleRow}>
-                <View style={styles.toggleLabelGroup}>
-                  <Text style={styles.toggleLabel}>20-Min Free Break</Text>
-                  <Text style={styles.toggleCaption}>
-                    Once per day — scroll freely for 20 min with no
-                    interruptions.
-                  </Text>
-                </View>
-                <Switch
-                  value={freeBreakEnabled}
-                  onValueChange={handleFreeBreakToggle}
-                  trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                  thumbColor="#FFFFFF"
-                  accessibilityLabel="20-Minute Free Break toggle"
-                />
-              </View>
-            </>
-          )}
-        </View>
-
-        {/* ── Scroll Budget — visible when any app has Reels ON ── */}
-        {anyReelsOn && (
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Scroll Budget</Text>
-
-            {/* Home feed post limit — Instagram only, under same Reels toggle */}
-            {appPolicies['com.instagram.android']?.reels_detection === true && (
-              <>
-                <Text style={styles.budgetSubLabel}>
-                  Instagram Feed Post Limit
-                </Text>
-                <Text style={styles.budgetSubCaption}>
-                  After this many posts on the home feed, you'll be prompted to
-                  lock in.
-                </Text>
-                <View style={[styles.budgetControls, { marginBottom: 20 }]}>
-                  <View style={styles.stepperGroup}>
-                    <TouchableOpacity
-                      style={styles.stepperBtn}
-                      onPress={() => adjustHomeFeedLimit(-5)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Decrease feed post limit"
-                    >
-                      <Text style={styles.stepperBtnText}>−</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.stepperValue}>{homeFeedLimit}</Text>
-                    <TouchableOpacity
-                      style={styles.stepperBtn}
-                      onPress={() => adjustHomeFeedLimit(5)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Increase feed post limit"
-                    >
-                      <Text style={styles.stepperBtnText}>+</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <Text style={styles.budgetDivider}>posts</Text>
-                </View>
-                <View style={[styles.divider, { marginBottom: 16 }]} />
-              </>
-            )}
-
-            <View style={styles.budgetControls}>
-              <View style={styles.stepperGroup}>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => adjustAllowance(-1)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Decrease allowance"
-                >
-                  <Text style={styles.stepperBtnText}>−</Text>
-                </TouchableOpacity>
-                <Text style={styles.stepperValue}>{scrollAllowance}m</Text>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => adjustAllowance(1)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Increase allowance"
-                >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.budgetDivider}>per</Text>
-
-              <View style={styles.stepperGroup}>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => adjustWindow(-15)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Decrease window"
-                >
-                  <Text style={styles.stepperBtnText}>−</Text>
-                </TouchableOpacity>
-                <Text style={styles.stepperValue}>{scrollWindow}m</Text>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => adjustWindow(15)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Increase window"
-                >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </TouchableOpacity>
-              </View>
+          <View style={styles.budgetControls}>
+            <View style={styles.stepperGroup}>
+              <TouchableOpacity
+                style={styles.stepperBtn}
+                onPress={() => adjustAllowance(-1)}
+                accessibilityRole="button"
+                accessibilityLabel="Decrease allowance"
+              >
+                <Text style={styles.stepperBtnText}>−</Text>
+              </TouchableOpacity>
+              <Text style={styles.stepperValue}>{scrollAllowance}m</Text>
+              <TouchableOpacity
+                style={styles.stepperBtn}
+                onPress={() => adjustAllowance(1)}
+                accessibilityRole="button"
+                accessibilityLabel="Increase allowance"
+              >
+                <Text style={styles.stepperBtnText}>+</Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Live status row */}
-            {budgetStatus &&
-              (() => {
-                const canScroll = budgetStatus.canScroll;
-                const statusColor = canScroll ? '#4CAF50' : '#E53935';
-                const statusLabel = canScroll
-                  ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
-                  : `Scroll again in ${formatBudgetTime(
+            <Text style={styles.budgetDivider}>per</Text>
+
+            <View style={styles.stepperGroup}>
+              <TouchableOpacity
+                style={styles.stepperBtn}
+                onPress={() => adjustWindow(-15)}
+                accessibilityRole="button"
+                accessibilityLabel="Decrease window"
+              >
+                <Text style={styles.stepperBtnText}>−</Text>
+              </TouchableOpacity>
+              <Text style={styles.stepperValue}>{scrollWindow}m</Text>
+              <TouchableOpacity
+                style={styles.stepperBtn}
+                onPress={() => adjustWindow(15)}
+                accessibilityRole="button"
+                accessibilityLabel="Increase window"
+              >
+                <Text style={styles.stepperBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {scrollAllowance === 0 && (
+            <Text style={styles.budgetWarning}>
+              0m allowance = Reels blocked immediately on every attempt.
+            </Text>
+          )}
+
+          {/* Live status row */}
+          {budgetStatus &&
+            (() => {
+              const canScroll = budgetStatus.canScroll;
+              const statusColor = canScroll ? '#4CAF50' : '#E53935';
+              const statusLabel = canScroll
+                ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
+                : `Scroll again in ${formatBudgetTime(
                     budgetStatus.nextScrollAtMs - Date.now(),
                   )}`;
-                const filledRatio = canScroll
-                  ? Math.min(
+              const filledRatio = canScroll
+                ? Math.min(
                     1,
                     budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0,
                   )
-                  : 1;
-                return (
-                  <View style={styles.budgetStatusSection}>
-                    <View style={styles.budgetStatusRow}>
-                      <View
-                        style={[
-                          styles.budgetDot,
-                          { backgroundColor: statusColor },
-                        ]}
-                      />
-                      <Text
-                        style={[
-                          styles.budgetStatusText,
-                          { color: statusColor },
-                        ]}
-                      >
-                        {statusLabel}
-                      </Text>
-                    </View>
-                    <View style={styles.budgetProgressBg}>
-                      <View
-                        style={{
-                          flex: filledRatio,
-                          backgroundColor: statusColor,
-                          borderRadius: 2,
-                        }}
-                      />
-                      <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
-                    </View>
+                : 1;
+              return (
+                <View style={styles.budgetStatusSection}>
+                  <View style={styles.budgetStatusRow}>
+                    <View
+                      style={[
+                        styles.budgetDot,
+                        { backgroundColor: statusColor },
+                      ]}
+                    />
+                    <Text
+                      style={[styles.budgetStatusText, { color: statusColor }]}
+                    >
+                      {statusLabel}
+                    </Text>
                   </View>
-                );
-              })()}
-          </View>
-        )}
+                  <View style={styles.budgetProgressBg}>
+                    <View
+                      style={{
+                        flex: filledRatio,
+                        backgroundColor: statusColor,
+                        borderRadius: 2,
+                      }}
+                    />
+                    <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
+                  </View>
+                </View>
+              );
+            })()}
+        </View>
 
         {/* ── Intercept Message ────────────────────────────────────── */}
         <View style={styles.section}>
@@ -651,7 +406,6 @@ const Customize = ({ navigation }) => {
             style={styles.messageInput}
             value={interceptMessage}
             onChangeText={setInterceptMessage}
-            onBlur={handleMessageSubmit}
             onSubmitEditing={handleMessageSubmit}
             placeholder="Enter message..."
             placeholderTextColor={L.muted}
@@ -1131,6 +885,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.07)',
     borderRadius: 2,
     overflow: 'hidden',
+  },
+  budgetWarning: {
+    fontSize: 12,
+    color: '#C62828',
+    marginTop: 8,
+    lineHeight: 17,
   },
 
   // ── Intercept Message ────────────────────────────────────────────────────

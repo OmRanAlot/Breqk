@@ -22,7 +22,7 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const { SettingsModule } = require('react-native').NativeModules;
+const { SettingsModule, VPNModule } = require('react-native').NativeModules;
 
 const L = {
   bg: '#FAFAFA',
@@ -236,12 +236,26 @@ const ModesScreen = ({ navigation }) => {
     (modeId, newValue) => {
       console.log('[ModesScreen] mode toggle:', modeId, '→', newValue);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      const updatedModes = {
-        ...modes,
-        [modeId]: { ...modes[modeId], enabled: newValue },
-      };
-      setModes(updatedModes);
-      SettingsModule.saveModes(JSON.stringify(updatedModes));
+      // Native ModeManager supports one active mode at a time. Mirror that in
+      // the persisted JSON so the UI never shows two "enabled" at once.
+      const normalized = { ...modes };
+      if (newValue) {
+        Object.keys(normalized).forEach(id => {
+          normalized[id] = { ...normalized[id], enabled: id === modeId };
+        });
+      } else {
+        normalized[modeId] = { ...normalized[modeId], enabled: false };
+      }
+      setModes(normalized);
+      SettingsModule.saveModes(JSON.stringify(normalized));
+
+      // Drive the native ModeManager so scheduling + policy overrides apply.
+      const nativeCall = newValue
+        ? VPNModule.activateMode(modeId)
+        : VPNModule.deactivateMode();
+      Promise.resolve(nativeCall).catch(e =>
+        console.warn('[ModesScreen] native mode toggle failed:', e),
+      );
       showSaved();
     },
     [modes, showSaved],

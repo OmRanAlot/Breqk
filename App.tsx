@@ -11,12 +11,19 @@
 // Deep linking: breqk://browser/:platform → Browser screen (used by widget buttons)
 
 import React, { useState, useEffect } from 'react';
-import { NativeModules } from 'react-native';
+import {
+  NativeModules,
+  View,
+  Text,
+  ActivityIndicator,
+  StyleSheet,
+} from 'react-native';
 import Home from './components/Home/home';
 import Customize from './components/Customize/customize';
 import ModesScreen from './components/Modes/ModesScreen';
 import PermissionsScreen from './components/Permissions/PermissionsScreen';
 import { BrowserScreen } from './components/Browser/BrowserScreen';
+import AppDetail from './components/AppDetail/AppDetail';
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -76,10 +83,20 @@ const App = () => {
       });
   }, []);
 
-  // Render nothing while permission check is in flight
+  // Permission check in flight — show a branded splash so the first frame
+  // isn't a black screen flash. The check usually resolves in <100ms.
   if (permissionsGranted === null) {
-    console.log('[App] permission check in progress — rendering null');
-    return null;
+    console.log('[App] permission check in progress — rendering splash');
+    return (
+      <View style={splashStyles.container}>
+        <Text style={splashStyles.wordmark}>BREQK</Text>
+        <ActivityIndicator
+          size="small"
+          color="#757575"
+          style={splashStyles.spinner}
+        />
+      </View>
+    );
   }
 
   // Permissions missing — show the onboarding/permission request flow
@@ -119,10 +136,29 @@ const App = () => {
           <Stack.Screen name="Customize" component={Customize} />
           <Stack.Screen name="Modes" component={ModesScreen} />
           <Stack.Screen name="Browser" component={BrowserScreen} />
+          <Stack.Screen name="AppDetail" component={AppDetail} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
   );
 };
+
+const splashStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F8F8F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wordmark: {
+    fontSize: 28,
+    fontWeight: '300',
+    color: '#1A1A1A',
+    letterSpacing: 6,
+  },
+  spinner: {
+    marginTop: 28,
+  },
+});
 
 export default App;

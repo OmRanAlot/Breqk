@@ -36,6 +36,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Circle } from 'react-native-svg';
 import useDigitalWellbeing from './useDigitalWellbeing';
+import ManagedAppsList from './ManagedAppsList';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
@@ -136,9 +137,10 @@ const StatCard = ({ label, value, loading }) => (
 );
 
 /** One row in the top-apps list */
-const AppUsageRow = ({ appName, usageTimeMin, maxTimeMin }) => {
-  // Progress bar fill ratio relative to the top app in the list
-  const ratio = maxTimeMin > 0 ? usageTimeMin / maxTimeMin : 0;
+const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
+  // Progress bar fill ratio relative to TOTAL screen time — conveys absolute
+  // share rather than "tallest bar = 100%" which hides how big the top app is.
+  const ratio = totalMin > 0 ? Math.min(1, usageTimeMin / totalMin) : 0;
 
   return (
     <View style={styles.appUsageRow}>
@@ -173,31 +175,86 @@ const Home = ({ navigation }) => {
   // { enabled, active, startTimeMs, durationMs, remainingMs, usedToday }
   const [freeBreakStatus, setFreeBreakStatus] = useState(null);
 
+  // ── App policies + active mode (loaded from SharedPreferences) ───────────
+  // appPolicies shape: { [pkg]: { app_open_intercept, reels_detection } }
+  const [appPolicies, setAppPolicies] = useState({});
+  const [activeModeName, setActiveModeName] = useState(null);
+
+  useEffect(() => {
+    const loadPolicies = () => {
+      SettingsModule.getAppPolicies(json => {
+        try {
+          setAppPolicies(json ? JSON.parse(json) : {});
+        } catch (e) {
+          console.warn('[Home] parse appPolicies failed:', e);
+          setAppPolicies({});
+        }
+      });
+    };
+    const loadActiveMode = () => {
+      SettingsModule.getActiveMode(modeId => {
+        if (!modeId) {
+          setActiveModeName(null);
+          return;
+        }
+        SettingsModule.getModes(json => {
+          try {
+            const modes = json ? JSON.parse(json) : {};
+            setActiveModeName(modes[modeId]?.name || null);
+          } catch (e) {
+            console.warn('[Home] parse modes failed:', e);
+            setActiveModeName(null);
+          }
+        });
+      });
+    };
+    loadPolicies();
+    loadActiveMode();
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        loadPolicies();
+        loadActiveMode();
+      }
+    });
+    return () => sub?.remove();
+  }, []);
+
+  // Derived: any app has reels_detection enabled → scroll budget matters.
+  const anyReelsOn = Object.values(appPolicies).some(
+    p => p?.reels_detection === true,
+  );
+
   // ── Scroll budget status (polled every 5s) ───────────────────────────────
   // Reads from SharedPreferences via VPNModule so the displayed status reflects
-  // what MyVpnService's monitor has accumulated.
+  // what MyVpnService's monitor has accumulated. Gated on anyReelsOn — when no
+  // app has reels_detection enabled the budget is meaningless, so skip polling
+  // and hide the card entirely rather than showing stale data.
   const [budgetStatus, setBudgetStatus] = useState(null);
   const appStateRefBudget = useRef(AppState.currentState);
 
   useEffect(() => {
+    if (!anyReelsOn) {
+      setBudgetStatus(null);
+      return;
+    }
     const pollBudget = async () => {
       try {
         const status = await VPNModule.getScrollBudgetStatus();
         setBudgetStatus(status);
         console.log(
           '[Home] scroll budget polled: canScroll=' +
-            status.canScroll +
-            ' remainingMs=' +
-            status.remainingMs +
-            ' usedMs=' +
-            status.usedMs,
+          status.canScroll +
+          ' remainingMs=' +
+          status.remainingMs +
+          ' usedMs=' +
+          status.usedMs,
         );
       } catch (e) {
         console.warn('[Home] getScrollBudgetStatus failed:', e);
       }
     };
     pollBudget(); // initial fetch
-    const interval = setInterval(pollBudget, 5000);
+    const interval = setInterval(pollBudget, 2000);
 
     // Also refresh on foreground resume for immediate accuracy
     const sub = AppState.addEventListener('change', nextState => {
@@ -214,7 +271,7 @@ const Home = ({ navigation }) => {
       clearInterval(interval);
       sub?.remove();
     };
-  }, []);
+  }, [anyReelsOn]);
 
   // ── Free break polling (every 5s; also refreshes on foreground resume) ──────
   useEffect(() => {
@@ -451,6 +508,33 @@ const Home = ({ navigation }) => {
         </View>
       </View>
 
+      {/* ── Status strip: monitoring + active mode ──────────────────── */}
+      {/* Gives the user an at-a-glance answer to "is the app actually doing
+                    anything right now?" without opening Customize or Modes. */}
+      <View style={styles.statusStrip}>
+        <View style={styles.statusItem}>
+          <View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: isMonitoring ? L.accentGreen : L.muted,
+              },
+            ]}
+          />
+          <Text style={styles.statusText}>
+            {isMonitoring ? 'Monitoring on' : 'Monitoring off'}
+          </Text>
+        </View>
+        {activeModeName && (
+          <>
+            <Text style={styles.statusDivider}>·</Text>
+            <Text style={styles.statusText} numberOfLines={1}>
+              {activeModeName} mode
+            </Text>
+          </>
+        )}
+      </View>
+
       {/* ── Main scrollable content ─────────────────────────────────── */}
       <ScrollView
         style={styles.scrollView}
@@ -465,21 +549,21 @@ const Home = ({ navigation }) => {
             loading={loading}
           />
           {/* Only show unlock card if value is available (API 28+) */}
-          {(!loading && stats.unlockCount !== null) || loading ? (
+          {(loading || stats.unlockCount !== null) && (
             <StatCard
               label="Unlocks"
               value={formatCount(stats.unlockCount)}
               loading={loading}
             />
-          ) : null}
+          )}
           {/* Only show notification card if value is available */}
-          {(!loading && stats.notificationCount !== null) || loading ? (
+          {(loading || stats.notificationCount !== null) && (
             <StatCard
               label="Notifications"
               value={formatCount(stats.notificationCount)}
               loading={loading}
             />
-          ) : null}
+          )}
         </View>
 
         {/* ── Scroll Budget card ─────────────────────────────── */}
@@ -493,8 +577,8 @@ const Home = ({ navigation }) => {
             const statusLabel = canScroll
               ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
               : `Resets in ${formatBudgetTime(
-                  budgetStatus.nextScrollAtMs - Date.now(),
-                )}`;
+                budgetStatus.nextScrollAtMs - Date.now(),
+              )}`;
             const filledRatio = canScroll
               ? Math.min(1, budgetStatus.usedMs / allowanceMs || 0)
               : 1;
@@ -571,23 +655,29 @@ const Home = ({ navigation }) => {
             }
 
             if (usedToday) {
-              // Already used today: disabled pill
+              // Already used today: disabled pill. Caption tells the user WHEN
+              // it unlocks again so the dead-end state has a clear resolution.
               return (
-                <TouchableOpacity
-                  style={[
-                    styles.freeBreakButton,
-                    styles.freeBreakButtonDisabled,
-                  ]}
-                  disabled={true}
-                  activeOpacity={1}
-                  accessibilityRole="button"
-                  accessibilityLabel="Free break already used today"
-                  accessibilityState={{ disabled: true }}
-                >
-                  <Text style={styles.freeBreakButtonTextDisabled}>
-                    Free Break Used Today
+                <View style={styles.freeBreakDisabledWrap}>
+                  <TouchableOpacity
+                    style={[
+                      styles.freeBreakButton,
+                      styles.freeBreakButtonDisabled,
+                    ]}
+                    disabled={true}
+                    activeOpacity={1}
+                    accessibilityRole="button"
+                    accessibilityLabel="Free break already used today, resets at midnight"
+                    accessibilityState={{ disabled: true }}
+                  >
+                    <Text style={styles.freeBreakButtonTextDisabled}>
+                      Free Break Used Today
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.freeBreakResetCaption}>
+                    Resets at midnight
                   </Text>
-                </TouchableOpacity>
+                </View>
               );
             }
 
@@ -651,36 +741,22 @@ const Home = ({ navigation }) => {
                 key={app.packageName}
                 appName={app.appName}
                 usageTimeMin={app.usageTimeMin}
-                maxTimeMin={maxTopAppTime}
+                totalMin={stats.totalScreenTimeMin || maxTopAppTime}
               />
             ))
           )}
         </View>
 
-        <View>
-          <TouchableOpacity></TouchableOpacity>
-        </View>
+        {/* ── Managed Apps list ─────────────────────────────────── */}
+        <ManagedAppsList
+          appPolicies={appPolicies}
+          onSelect={pkg =>
+            navigation.navigate('AppDetail', { packageName: pkg })
+          }
+        />
+
+
       </ScrollView>
-
-      {/* ── Footer: action button + caption ────────────────────────── */}
-      <View style={styles.footer}>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          activeOpacity={0.85}
-          onPress={() => {
-            console.log('[Home] Open Instagram (Safe Mode) tapped');
-            navigation.navigate('Browser', { platform: 'instagram' });
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Open Instagram in Safe Mode"
-        >
-          <Text style={styles.primaryButtonText}>
-            Open Instagram (Safe Mode)
-          </Text>
-        </TouchableOpacity>
-
-        <Text style={styles.caption}>Reels are disabled</Text>
-      </View>
     </View>
   );
 };
@@ -707,7 +783,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
   },
   headerSpacer: {
-    width: 0,
+    width: 76,
   },
   appName: {
     fontSize: 13,
@@ -727,6 +803,36 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // ── Status strip ──────────────────────────────────────────────────────────
+  statusStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 28,
+    paddingTop: 6,
+  },
+  statusItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: L.muted,
+    letterSpacing: 0.3,
+  },
+  statusDivider: {
+    fontSize: 12,
+    color: L.muted,
   },
 
   // ── Scroll ────────────────────────────────────────────────────────────────
@@ -931,7 +1037,7 @@ const styles = StyleSheet.create({
     borderRadius: 9999,
     borderWidth: 1,
     borderColor: '#A5D6A7',
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
   },
   freeBreakEndButtonText: {
     fontSize: 13,
@@ -965,6 +1071,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '500',
   },
+  freeBreakDisabledWrap: {
+    gap: 6,
+    alignItems: 'center',
+  },
+  freeBreakResetCaption: {
+    fontSize: 11,
+    color: L.muted,
+    fontVariant: ['tabular-nums'],
+  },
 
   // ── Footer ────────────────────────────────────────────────────────────────
   footer: {
@@ -988,6 +1103,23 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: L.ctaText,
     fontSize: 17,
+    fontWeight: '500',
+  },
+  // Outlined variant for stacked Safe Mode buttons — used when both Instagram
+  // and YouTube are enabled so the hierarchy stays clear.
+  secondaryButton: {
+    backgroundColor: 'transparent',
+    borderRadius: 9999,
+    borderWidth: 1.5,
+    borderColor: L.ctaBg,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    width: '100%',
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: L.ctaBg,
+    fontSize: 16,
     fontWeight: '500',
   },
   caption: {
