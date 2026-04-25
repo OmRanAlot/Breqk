@@ -13,6 +13,8 @@ import com.facebook.react.ReactRootView;
 import android.content.Intent;
 import android.net.VpnService;
 import android.os.Bundle;
+import com.breqk.service.BreqkVpnService;
+import com.breqk.monitor.ServiceHelper;
 
 public class MainActivity extends ReactActivity {
     private static final int VPN_REQUEST_CODE = 1;
@@ -38,7 +40,7 @@ public class MainActivity extends ReactActivity {
         if (requestCode == VPN_REQUEST_CODE) {
             if (resultCode == RESULT_OK) {
                 // Permission granted, start the VPN service
-                Intent intent = new Intent(this, MyVpnService.class);
+                Intent intent = new Intent(this, BreqkVpnService.class);
                 intent.setAction("START_VPN");
                 ServiceHelper.startForegroundServiceCompat(this, intent);
             }

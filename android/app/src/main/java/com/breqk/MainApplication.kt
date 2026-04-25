@@ -17,18 +17,20 @@ import com.facebook.react.ReactNativeHost
 import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.breqk.VPNModule
-import com.breqk.AppUsageMonitor
-import com.breqk.AppBlockerPackage
-import com.breqk.SettingsModule
 import com.breqk.BuildConfig
+import com.breqk.bridge.BreqkReactPackage
+import com.breqk.bridge.VPNModule
+import com.breqk.bridge.SettingsModule
+import com.breqk.mode.ModeManager
+import com.breqk.monitor.AppUsageMonitor
+import com.breqk.prefs.BreqkPrefs
 
 class MainApplication : Application(), ReactApplication {
 
     override val reactNativeHost: ReactNativeHost = object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> {
             val packages = PackageList(this).packages.toMutableList()
-            packages.add(AppBlockerPackage()) // Add your custom package here
+            packages.add(BreqkReactPackage())
             return packages
         }   
 

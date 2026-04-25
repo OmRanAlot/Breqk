@@ -85,17 +85,22 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.breqk.reels.FrameworkClassFilter;
-import com.breqk.reels.FullScreenCheck;
-import com.breqk.reels.ShortFormIds;
-import com.breqk.reels.detection.InstagramDetector;
-import com.breqk.reels.detection.ShortFormDetector;
-import com.breqk.reels.detection.YouTubeDetector;
-import com.breqk.reels.budget.BudgetState;
-import com.breqk.reels.budget.BudgetHeartbeat;
-import com.breqk.reels.budget.HomeFeedCounter;
-import com.breqk.reels.intervention.InterventionOverlay;
-import com.breqk.reels.intervention.ReelsStateMachine;
+import com.breqk.prefs.BreqkPrefs;
+import com.breqk.service.BreqkVpnService;
+import com.breqk.shortform.AppEventRouter;
+import com.breqk.shortform.FrameworkClassFilter;
+import com.breqk.shortform.FullScreenCheck;
+import com.breqk.shortform.detection.InstagramDetector;
+import com.breqk.shortform.platform.PlatformRegistry;
+import com.breqk.shortform.platform.instagram.InstagramViewIds;
+import com.breqk.shortform.platform.youtube.YouTubeViewIds;
+import com.breqk.shortform.detection.ShortFormDetector;
+import com.breqk.shortform.detection.YouTubeDetector;
+import com.breqk.shortform.budget.BudgetState;
+import com.breqk.shortform.budget.BudgetHeartbeat;
+import com.breqk.shortform.budget.HomeFeedCounter;
+import com.breqk.shortform.intervention.InterventionOverlay;
+import com.breqk.shortform.intervention.ShortFormStateMachine;
 
 import java.util.List;
 
@@ -112,7 +117,6 @@ public class ReelsInterventionService extends AccessibilityService {
     // YouTube tier decisions:    adb logcat -s REELS_WATCH | findstr "TIER"
     private static final String TAG = "REELS_WATCH";
 
-    // Target package names — must stay in sync with AppEventRouter.MONITORED_PACKAGES
     private static final String PKG_INSTAGRAM = "com.instagram.android";
     private static final String PKG_YOUTUBE = "com.google.android.youtube";
     private static final String PKG_TIKTOK = "com.zhiliaoapp.musically";
@@ -123,17 +127,6 @@ public class ReelsInterventionService extends AccessibilityService {
      * Initialized in onServiceConnected(), destroyed in onInterrupt().
      */
     private AppEventRouter eventRouter;
-
-    // -----------------------------------------------------------------------
-    // YouTube Shorts view ID constants — now consolidated in ShortFormIds
-    // -----------------------------------------------------------------------
-    // All view ID arrays and full-screen threshold constants have been moved to
-    // com.breqk.reels.ShortFormIds (Step 1 of reels-intervention-refactor).
-    // This kills Bug B1 — a single edit to ShortFormIds propagates to both
-    // ReelsInterventionService and ContentFilter automatically.
-    //
-    // To discover new IDs after a YouTube update:
-    //   adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
 
     /**
      * Minimum milliseconds between two processed scroll events.
@@ -149,12 +142,6 @@ public class ReelsInterventionService extends AccessibilityService {
      */
     private static final long SCROLL_DEBOUNCE_MS = 600;
 
-    // Full-screen detection thresholds are now in ShortFormIds:
-    //   ShortFormIds.MIN_WIDTH_RATIO  = 0.90f
-    //   ShortFormIds.MIN_HEIGHT_RATIO = 0.70f
-    //   ShortFormIds.MAX_TOP_OFFSET_PX = 200
-    // FullScreenCheck.isFullScreen() uses these thresholds automatically.
-
     // --- Scroll tracking state ---
 
     /**
@@ -163,7 +150,7 @@ public class ReelsInterventionService extends AccessibilityService {
      */
     private long lastScrollTimestamp = 0;
 
-    private final ReelsStateMachine stateMachine = new ReelsStateMachine();
+    private final ShortFormStateMachine stateMachine = new ShortFormStateMachine();
 
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
@@ -279,12 +266,12 @@ public class ReelsInterventionService extends AccessibilityService {
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
         Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
-        Log.d(TAG, "  watching (router): " + AppEventRouter.MONITORED_PACKAGES);
+        Log.d(TAG, "  watching (router): " + PlatformRegistry.monitoredPackageList());
         Log.d(TAG, "  packageFilter: NONE (receives events from all apps for app-switch detection)");
         Log.d(TAG, "  trigger: scroll budget exhaustion (from SharedPreferences)");
-        Log.d(TAG, "  full-screen thresholds: widthRatio>=" + ShortFormIds.MIN_WIDTH_RATIO
-                + " heightRatio>=" + ShortFormIds.MIN_HEIGHT_RATIO
-                + " topOffset<=" + ShortFormIds.MAX_TOP_OFFSET_PX + "px");
+        Log.d(TAG, "  full-screen thresholds: widthRatio>=" + FullScreenCheck.MIN_WIDTH_RATIO
+                + " heightRatio>=" + FullScreenCheck.MIN_HEIGHT_RATIO
+                + " topOffset<=" + FullScreenCheck.MAX_TOP_OFFSET_PX + "px");
         Log.d(TAG, "  eventTypes: VIEW_SCROLLED | WINDOW_STATE_CHANGED (CONTENT_CHANGED excluded from budget)");
         Log.d(TAG, "  false-positive guards: heartbeat isStillInReels() + app-switch detection");
         Log.d(TAG, "  AppEventRouter: LaunchInterceptor + ContentFilter (blockShortForm / launchPopup flags)");
@@ -366,7 +353,7 @@ public class ReelsInterventionService extends AccessibilityService {
                 // (~0ms) than the 1s polling loop in AppUsageMonitor, so we can proactively
                 // dismiss any delay overlay here instead of waiting for the next poll tick.
                 Log.i(TAG, "[HOME_DISMISS] Sending DISMISS_OVERLAY intent to MyVpnService for newPkg=" + packageName);
-                Intent dismissIntent = new Intent(this, MyVpnService.class);
+                Intent dismissIntent = new Intent(this, BreqkVpnService.class);
                 dismissIntent.setAction("DISMISS_OVERLAY");
                 try {
                     startService(dismissIntent);
@@ -566,15 +553,15 @@ public class ReelsInterventionService extends AccessibilityService {
                 if (packageName.equals(PKG_INSTAGRAM)
                         && viewId.equals("com.instagram.android:id/clips_viewer_view_pager")) {
                     // Verify this isn't a back-stack or embedded node.
-                    // FullScreenCheck.isFullScreen delegates to ShortFormIds thresholds.
+                    // FullScreenCheck.isFullScreen checks bounds against its own thresholds.
                     confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                     usedFastPath = true;
                     logVerbose("Fast path: source=clips_viewer_view_pager fullScreen=" + confirmedInReels);
                 } else if (packageName.equals(PKG_YOUTUBE)) {
                     // YouTube Shorts: loop over all known container IDs and verify
                     // full-screen bounds (matching Instagram's pattern for consistency).
-                    // ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS is the single source of truth.
-                    for (String shortsId : ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS) {
+                    // YouTubeViewIds.SHORTS_VIEW_IDS is the single source of truth.
+                    for (String shortsId : YouTubeViewIds.SHORTS_VIEW_IDS) {
                         if (viewId.equals(shortsId)) {
                             confirmedInReels = FullScreenCheck.isFullScreen(source, this, TAG);
                             usedFastPath = true;
@@ -798,7 +785,7 @@ public class ReelsInterventionService extends AccessibilityService {
      * configured post limit is reached.
      *
      * Detection: fast-path only — checks event.getSource().getViewIdResourceName() against
-     * ShortFormIds.INSTAGRAM_HOME_FEED_IDS. No tree traversal needed.
+     * InstagramViewIds.HOME_FEED_IDS. No tree traversal needed.
      *
      * Log filter: adb logcat -s REELS_WATCH | findstr "HOME_FEED"
      */
@@ -819,7 +806,7 @@ public class ReelsInterventionService extends AccessibilityService {
         logVerbose("[HOME_FEED_SOURCE] source viewId=" + viewId);
 
         boolean isFeedScroll = false;
-        for (String feedId : ShortFormIds.INSTAGRAM_HOME_FEED_IDS) {
+        for (String feedId : InstagramViewIds.HOME_FEED_IDS) {
             if (viewId.equals(feedId)) {
                 isFeedScroll = true;
                 break;

@@ -33,7 +33,7 @@
 
         <!-- VPN Service (optional - mainly using UsageStatsManager instead) -->
         <service
-            android:name=".MyVpnService"
+            android:name=".service.BreqkVpnService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse"
@@ -43,20 +43,7 @@
             </intent-filter>
         </service>
 
-        <!-- Browser URL-based content filtering -->
-        <service
-            android:name=".ContentFilterService"
-            android:exported="true"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/content_filter_accessibility_config" />
-        </service>
-
-        <!-- Instagram Reels and YouTube Shorts scroll intervention -->
+<!-- Instagram Reels and YouTube Shorts scroll intervention -->
         <service
             android:name=".ReelsInterventionService"
             android:exported="true"
@@ -80,7 +67,7 @@
               adb uninstall com.breqk
         -->
         <receiver
-            android:name=".BreqkDeviceAdminReceiver"
+            android:name=".deviceadmin.BreqkDeviceAdminReceiver"
             android:exported="true"
             android:permission="android.permission.BIND_DEVICE_ADMIN">
             <meta-data
@@ -100,7 +87,7 @@
             Logcat tag: MODE_SCHED
         -->
         <receiver
-            android:name=".ModeSchedulerReceiver"
+            android:name=".mode.ModeSchedulerReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -110,7 +97,7 @@
         </receiver>
 
         <receiver
-            android:name=".BreqkWidgetProvider"
+            android:name=".widget.BreqkWidgetProvider"
             android:exported="true"
             android:label="@string/widget_description">
             <intent-filter>
@@ -127,7 +114,7 @@
             Logcat tag: ACC_PERM_GATE
         -->
         <activity
-            android:name=".AccessibilityPermissionActivity"
+            android:name=".accessibility.AccessibilityPermissionActivity"
             android:exported="true"
             android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
             <intent-filter>
