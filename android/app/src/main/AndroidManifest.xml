@@ -14,9 +14,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     
-    <!-- VPN permission (if you want to keep VPN functionality) -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"
-        tools:ignore="ProtectedPermissions" />
+
 
     <!-- Exact alarms for mode scheduling (Bedtime, Study Mode, etc.) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -31,17 +29,13 @@
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
 
-        <!-- VPN Service (optional - mainly using UsageStatsManager instead) -->
+        <!-- Foreground monitoring service — keeps AppUsageMonitor alive in the background.
+             NOT a VPN. Uses foregroundServiceType=specialUse to avoid OS kill. -->
         <service
             android:name=".service.BreqkVpnService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-        </service>
+            android:foregroundServiceType="specialUse" />
 
 <!-- Instagram Reels and YouTube Shorts scroll intervention -->
         <service

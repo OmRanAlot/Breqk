@@ -1,5 +1,5 @@
 # TASKS.md — Breqk Launch Playbook
-> **Last updated:** 2026-04-19  
+> **Last updated:** 2026-04-30  
 > **Purpose:** Single source of truth for all tasks, architecture, and known issues. Read this first before making any changes.
 
 ---
@@ -24,18 +24,13 @@
 
 ### 🔴 P0 — Launch Blockers (Must fix before any public release)
 
-- [ ] **B2: Migrate MyVpnService away from VpnService**
-  - File: `android/app/src/main/java/com/breqk/MyVpnService.java` (line 36)
-  - Problem: `MyVpnService extends VpnService` but never establishes a VPN tunnel. This triggers the system VPN permission dialog and risks Google Play rejection.
-  - Fix: Change to `extends Service`. Remove `requestVpnPermission()` from `VPNModule.java`. Remove `<service android:name=".MyVpnService" android:permission="android.permission.BIND_VPN_SERVICE">` from AndroidManifest and replace with a regular service declaration. Update the notification text from "VPN Active" to "Breqk Active" or "Monitoring Active".
-  - Ripple: `VPNModule.java` has `requestVpnPermission()` (line 487) — remove or stub it. JS callers in permissions flow may reference it.
-  - Effort: 3 hours
+- [x] **B2: Migrate BreqkVpnService away from VpnService** ✅ 2026-04-30
+  - File: `android/app/src/main/java/com/breqk/service/BreqkVpnService.java`
+  - Fix applied: Changed `extends VpnService` → `extends Service`. Removed `BIND_VPN_SERVICE` permission from AndroidManifest. Replaced VPN service declaration with a plain foreground service (`foregroundServiceType=specialUse`). Removed VPN intent-filter. Updated notification channel to `"BreqkMonitoring"`, notification text to `"Breqk Active"`. Renamed actions to `START_MONITORING`/`STOP_MONITORING`. Stubbed `requestVpnPermission()` as a no-op in `VPNModule.java`.
 
-- [ ] **B4: Null-check `action` in MyVpnService.onStartCommand()**
-  - File: `android/app/src/main/java/com/breqk/MyVpnService.java` (line 90)
-  - Problem: `switch(action)` will throw NPE if the OS restarts the service (START_STICKY) with a null intent or null action.
-  - Fix: Add `if (action == null) return START_STICKY;` before the switch statement.
-  - Effort: 15 minutes
+- [x] **B4: Null-check `action` in BreqkVpnService.onStartCommand()** ✅ 2026-04-30
+  - File: `android/app/src/main/java/com/breqk/service/BreqkVpnService.java`
+  - Fix applied: Added null guards for both `intent` and `action` before the switch statement. Service now returns `START_STICKY` cleanly on OS-initiated restarts.
 
 - [ ] **B5: Set real versionCode/versionName**
   - File: `android/app/build.gradle` (lines 86-87)
@@ -99,12 +94,8 @@
   - Fix: Add a one-tap browser entry point for blocked apps, inject JS/CSS to disable scroll, and verify the flow works reliably on TikTok first.
   - Effort: 2-4 hours
 
-- [ ] **Rename "VPN" terminology throughout the codebase**
-  - Files: `MyVpnService.java`, `VPNModule.java`, `SettingsModule.java`, JS files, AndroidManifest.xml
-  - Problem: "VPN" is misleading. Users see "VPN Active" in the notification. The notification channel is called "BreqkVPN".
-  - Fix: Rename to `BreqkMonitorService`, `MonitoringModule`, etc. Update notification text to "Breqk is active" or "Monitoring your apps". Update notification channel ID and name.
-  - Note: This is a large refactor. Can be done incrementally (rename notification text first, then class names later).
-  - Effort: 2-4 hours
+- [x] **Rename "VPN" terminology throughout the codebase** ✅ 2026-04-30
+  - Fix applied (as part of B2): Notification text → "Breqk Active". Channel ID → "BreqkMonitoring". Actions → START_MONITORING/STOP_MONITORING. `BreqkVpnService` → `service/BreqkVpnService`. `VPNModule.requestVpnPermission()` stubbed as no-op. AndroidManifest cleaned of all VPN references. Class name `VPNModule` retained for JS bridge backward compatibility.
 
 ### 🟢 P2 — Growth Features (Weeks 2-4)
 
@@ -182,24 +173,57 @@ DoomScrollStopper/
 └── android/app/src/main/
     ├── AndroidManifest.xml           # Service declarations, permissions, receivers
     ├── java/com/breqk/
-    │   ├── ReelsInterventionService.java  # 🔴 CORE — AccessibilityService: Reels/Shorts detection, scroll budget, overlay (800 lines)
-    │   ├── VPNModule.java                 # RN bridge: monitoring, permissions, free break, modes, stats (1,136 lines)
-    │   ├── AppUsageMonitor.java           # Foreground polling (1s) + delay overlay injection (800 lines)
-    │   ├── BreqkPrefs.java                # SharedPreferences hub, policy resolution, migrations (609 lines)
-    │   ├── ScreenTimeTracker.java         # Digital wellbeing: screen time, unlocks, notifications (624 lines)
-    │   ├── ContentFilter.java             # Surgical Reels/Shorts EJECTION via GLOBAL_ACTION_BACK (477 lines)
-    │   ├── SettingsModule.java            # RN bridge: settings read/write, blocked apps, modes (355 lines)
-    │   ├── ModeManager.java               # Mode lifecycle, AlarmManager scheduling (340 lines)
-    │   ├── LaunchInterceptor.java         # 15s mindfulness overlay on app launch (332 lines)
-    │   ├── ContentFilterService.java      # Browser URL blocker (adult content) (270 lines)
-    │   ├── MyVpnService.java              # ⚠️ Foreground service (NOT a VPN) — keeps monitoring alive (264 lines)
-    │   ├── AppEventRouter.java            # Event dispatcher with 5s config cache (210 lines)
-    │   ├── ModeSchedulerReceiver.java     # BroadcastReceiver for AlarmManager mode triggers
-    │   ├── BootReceiver.java              # Re-registers alarms on BOOT_COMPLETED
-    │   ├── BreqkDeviceAdminReceiver.java  # DeviceAdmin for anti-uninstall friction
-    │   ├── AppNameResolver.java           # LRU cache for package → app name resolution
-    │   ├── ServiceHelper.java             # startForegroundServiceCompat() wrapper
-    │   └── MainActivity.java             # RN host activity
+    │   ├── ReelsInterventionService.java      # 🔴 CORE — AccessibilityService: Reels/Shorts detection, scroll budget, overlay
+    │   ├── MainApplication.kt                 # RN application class, module registration
+    │   ├── MainActivity.java                  # RN host activity
+    │   │
+    │   ├── accessibility/
+    │   │   └── AccessibilityPermissionActivity.java  # Permission gate shown before MainActivity
+    │   ├── bridge/
+    │   │   ├── VPNModule.java                 # RN bridge: monitoring, permissions, free break, modes, stats
+    │   │   ├── SettingsModule.java             # RN bridge: settings read/write, blocked apps, modes
+    │   │   └── BreqkReactPackage.java          # Registers VPNModule + SettingsModule with RN
+    │   ├── deviceadmin/
+    │   │   └── BreqkDeviceAdminReceiver.java   # DeviceAdmin for anti-uninstall friction
+    │   ├── mode/
+    │   │   ├── ModeManager.java                # Mode lifecycle, AlarmManager scheduling
+    │   │   └── ModeSchedulerReceiver.java      # BroadcastReceiver for AlarmManager mode triggers
+    │   ├── monitor/
+    │   │   ├── AppUsageMonitor.java            # Foreground polling (1s) + delay overlay injection
+    │   │   ├── AppNameResolver.java            # LRU cache for package → app name resolution
+    │   │   ├── LaunchInterceptor.java          # 15s mindfulness overlay on app launch
+    │   │   ├── ScreenTimeTracker.java          # Digital wellbeing: screen time, unlocks, notifications
+    │   │   └── ServiceHelper.java              # startForegroundServiceCompat() wrapper
+    │   ├── prefs/
+    │   │   └── BreqkPrefs.java                 # SharedPreferences hub, policy resolution, migrations
+    │   ├── service/
+    │   │   └── BreqkVpnService.java            # Foreground service — keeps AppUsageMonitor alive (plain Service, not VPN)
+    │   ├── shortform/
+    │   │   ├── AppConfig.java                  # Per-app configuration (top-level, ex-inner class)
+    │   │   ├── AppEventRouter.java             # Event dispatcher with 5s config cache
+    │   │   ├── ContentFilter.java              # Surgical Reels/Shorts EJECTION via GLOBAL_ACTION_BACK
+    │   │   ├── FilterHandler.java              # Interface for per-platform filter handlers
+    │   │   ├── FullScreenCheck.java            # Geometry constants for full-screen detection
+    │   │   ├── Platform.java                   # Enum of supported platforms
+    │   │   ├── PlatformRegistry.java           # Maps package names → FilterHandler instances
+    │   │   ├── ShortFormStateMachine.java      # State machine for scroll intervention flow
+    │   │   ├── instagram/
+    │   │   │   ├── InstagramFilterHandler.java
+    │   │   │   └── InstagramViewIds.java
+    │   │   ├── youtube/
+    │   │   │   ├── YouTubeFilterHandler.java
+    │   │   │   └── YouTubeViewIds.java
+    │   │   ├── tiktok/
+    │   │   │   ├── TikTokFilterHandler.java (stub)
+    │   │   │   └── TikTokViewIds.java (stub)
+    │   │   ├── facebook/
+    │   │   │   ├── FacebookFilterHandler.java (stub)
+    │   │   │   └── FacebookViewIds.java (stub)
+    │   │   └── snapchat/
+    │   │       ├── SnapchatFilterHandler.java (stub)
+    │   │       └── SnapchatViewIds.java (stub)
+    │   └── widget/
+    │       └── BreqkWidgetProvider.java        # Home screen widget provider
     │
     └── res/
         ├── layout/
@@ -225,8 +249,8 @@ User toggles setting in Customize
   → SettingsModule.setAppFeature() writes to SharedPreferences (breqk_prefs)
   → BreqkPrefs.syncBlockedAppsFromPolicies() updates legacy blocked_apps set
   → SharedPreferences listener in VPNModule re-syncs its AppUsageMonitor
-  → UPDATE_BLOCKED_APPS intent sent to MyVpnService
-  → MyVpnService's AppUsageMonitor updates its blocked apps set
+  → UPDATE_BLOCKED_APPS intent sent to BreqkVpnService
+  → BreqkVpnService's AppUsageMonitor updates its blocked apps set
   → ReelsInterventionService reads BreqkPrefs.isFeatureEnabled() on next event (5s cache)
 ```
 
@@ -267,7 +291,7 @@ VPNModule (React Native bridge)
   └── AppUsageMonitor instance #1   ← used ONLY for getAppName(), usage stats queries
                                        NOT started for monitoring
 
-MyVpnService (foreground service)
+BreqkVpnService (foreground service)
   └── AppUsageMonitor instance #2   ← runs the actual 1s polling loop
                                        manages delay overlay
                                        
@@ -305,9 +329,9 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
-| B2 | MyVpnService extends VpnService but never tunnels — Play Store rejection risk | MyVpnService.java | 36 | [ ] TODO |
-| B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | VPNModule.java + MyVpnService.java | 81, 55 | [ ] TODO |
-| B4 | Null action in onStartCommand crashes on OS service restart | MyVpnService.java | 90 | [ ] TODO |
+| B2 | BreqkVpnService extends VpnService but never tunnels — Play Store rejection risk | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |
+| B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | bridge/VPNModule.java + service/BreqkVpnService.java | 81, 55 | [ ] TODO |
+| B4 | Null action in onStartCommand crashes on OS service restart | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |
 | B5 | versionCode=1 blocks future Play Store updates | build.gradle | 86-87 | [ ] TODO |
 | B8 | Release builds use debug keystore — permanent key lock-in | build.gradle | 106 | [ ] TODO |
 
@@ -315,10 +339,10 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
-| B1 | YOUTUBE_SHORTS_VIEW_IDS duplicated between two files | ContentFilter.java + ReelsInterventionService.java | 86-94 | [ ] TODO |
+| B1 | YOUTUBE_SHORTS_VIEW_IDS duplicated between two files | ContentFilter.java + ReelsInterventionService.java | 86-94 | [x] FIXED 2026-04-15 |
 | B6 | Empty TouchableOpacity renders invisible tappable area | home.js | 556-562 | [ ] TODO |
 | B7 | source.recycle() before slow path — fragile control flow | ContentFilter.java | 211 | [ ] TODO |
-| B9 | VERBOSE_LOGGING=true in production — battery drain | ScreenTimeTracker.java | 58 | [ ] TODO |
+| B9 | VERBOSE_LOGGING=true in production — battery drain | ReelsInterventionService.java | — | [x] FIXED 2026-04-15 |
 | B10 | Hardcoded adult content domains, no user config, false-positive risk | ContentFilterService.java | 55-68 | [ ] TODO |
 
 ### 🟢 Low
@@ -432,7 +456,7 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 
 | Day | Task | Bug IDs |
 |-----|------|---------|
-| 1 | Migrate MyVpnService → regular Service | B2 |
+| 1 | Migrate BreqkVpnService → regular Service | B2 |
 | 2 | Fix null-check, versionCode, empty view, verbose logging | B4, B5, B6, B9 |
 | 3 | Extract shared view ID constants. Generate release keystore. | B1, B8 |
 | 4 | Integrate Firebase Crashlytics + Analytics | — |
@@ -481,7 +505,7 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 | `APP_ROUTER` | AppEventRouter | `adb logcat -s APP_ROUTER` |
 | `CONTENT_FILTER` | ContentFilter | `adb logcat -s CONTENT_FILTER` |
 | `BROWSER_WATCH` | ContentFilterService | `adb logcat -s BROWSER_WATCH` |
-| `MyVpnService` | MyVpnService | `adb logcat -s MyVpnService` |
+| `BreqkVpnService` | BreqkVpnService | `adb logcat -s BreqkVpnService` |
 | `VPNModule` | VPNModule | `adb logcat -s VPNModule` |
 | `MODE_MGR` | ModeManager | `adb logcat -s MODE_MGR` |
 | `ScreenTimeTracker` | ScreenTimeTracker | `adb logcat -s ScreenTimeTracker` |
@@ -492,7 +516,7 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 
 ```bash
 # All Breqk logs
-adb logcat -s REELS_WATCH APP_ROUTER CONTENT_FILTER MyVpnService VPNModule MODE_MGR
+adb logcat -s REELS_WATCH APP_ROUTER CONTENT_FILTER BreqkVpnService VPNModule MODE_MGR
 
 # Just detection events (for debugging "it didn't block")
 adb logcat -s REELS_WATCH CONTENT_FILTER | findstr "EJECT\|confirmed\|DETECTED"
@@ -531,8 +555,8 @@ adb shell pm clear com.breqk
 - Migration path: If we ever need structured queries or multi-process access, move to Room + ContentProvider.
 
 ### Why two AppUsageMonitor instances?
-- **Historical accident**, not a design choice. VPNModule created one for usage stats queries. MyVpnService created another for the polling loop.
-- The correct fix is to make VPNModule's instance query-only (no polling) and have MyVpnService own the only running monitor. This is already the case in practice — VPNModule's monitor is never started for monitoring.
+- **Historical accident**, not a design choice. VPNModule created one for usage stats queries. BreqkVpnService created another for the polling loop.
+- The correct fix is to make VPNModule's instance query-only (no polling) and have BreqkVpnService own the only running monitor. This is already the case in practice — VPNModule's monitor is never started for monitoring.
 - The risk is blocked-apps desync. Mitigated by SharedPreferences listener + UPDATE_BLOCKED_APPS intent.
 
 ### Why the 5-second config cache in AppEventRouter?

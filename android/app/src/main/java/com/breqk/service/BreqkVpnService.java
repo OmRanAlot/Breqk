@@ -1,12 +1,10 @@
 package com.breqk.service;
 
 /*
- * BreqkVpnService (renamed from MyVpnService)
- * --------------------------------------------
- * Foreground service used to maintain background monitoring.
- * This implementation does not tunnel traffic; it keeps a persistent
- * notification to reduce the chance of the OS killing the process
- * while AppUsageMonitor runs.
+ * BreqkVpnService
+ * ---------------
+ * Plain foreground service (NOT a VPN) used to keep AppUsageMonitor alive
+ * in the background. Does not tunnel any traffic.
  *
  * Key Points:
  *  - Creates notification channel and runs as foreground service.
@@ -26,7 +24,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.net.VpnService;
+import android.app.Service;
 import android.os.Build;
 import android.util.Log;
 import android.os.IBinder;
@@ -38,9 +36,9 @@ import com.breqk.R;
 import java.util.Set;
 import java.util.HashSet;
 
-public class BreqkVpnService extends VpnService {
+public class BreqkVpnService extends Service {
     private static final String TAG = "BreqkVpnService";
-    private static final String NOTIFICATION_CHANNEL_ID = "BreqkVPN";
+    private static final String NOTIFICATION_CHANNEL_ID = "BreqkMonitoring";
     private static final int NOTIFICATION_ID = 1;
 
     private AppUsageMonitor monitor;
@@ -52,7 +50,7 @@ public class BreqkVpnService extends VpnService {
 
         Log.d(TAG, "[CREATE] BreqkVpnService onCreate");
 
-        Notification notification = createNotification("VPN Active");
+        Notification notification = createNotification("Breqk Active");
         startForeground(NOTIFICATION_ID, notification);
 
         Log.d(TAG, "[CREATE] Initializing AppUsageMonitor");
@@ -87,17 +85,27 @@ public class BreqkVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "[CMD] onStartCommand intent=" + intent);
 
-        if (intent != null) {
-            String action = intent.getAction();
-            Log.d(TAG, "[CMD] action=" + action);
+        // B4: Guard against null intent (OS restarts service with START_STICKY)
+        if (intent == null) {
+            Log.w(TAG, "[CMD] null intent — OS restart, ignoring");
+            return START_STICKY;
+        }
 
-            switch (action) {
-                case "START_VPN":
-                    Notification notification = createNotification("VPN Active");
+        String action = intent.getAction();
+        Log.d(TAG, "[CMD] action=" + action);
+
+        if (action == null) {
+            Log.w(TAG, "[CMD] null action — ignoring");
+            return START_STICKY;
+        }
+
+        switch (action) {
+                case "START_MONITORING":
+                    Notification notification = createNotification("Breqk Active");
                     startForeground(NOTIFICATION_ID, notification);
                     startMonitoring();
                     break;
-                case "STOP_VPN":
+                case "STOP_MONITORING":
                     stopMonitoring();
                     stopForeground(true);
                     stopSelf();
@@ -158,7 +166,6 @@ public class BreqkVpnService extends VpnService {
                     break;
                 default:
                     Log.w(TAG, "[CMD] Unknown action: " + action);
-            }
         }
 
         // Return START_STICKY so service restarts if killed
@@ -206,7 +213,7 @@ public class BreqkVpnService extends VpnService {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "App Monitoring",
+                "Breqk Monitoring",
                 NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("Monitors app usage to show delay screens");

@@ -47,7 +47,8 @@
       "Bash(sed -i '/^package com\\\\.breqk\\\\.mode;/a import com.breqk.prefs.BreqkPrefs;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/mode/ModeSchedulerReceiver.java)",
       "Bash(sed -i '/^package com\\\\.breqk\\\\.accessibility;/a import com.breqk.ReelsInterventionService;\\\\nimport com.breqk.MainActivity;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/accessibility/AccessibilityPermissionActivity.java)",
       "Bash(sed -i '/^package com\\\\.breqk\\\\.bridge;/a import com.breqk.monitor.AppUsageMonitor;\\\\nimport com.breqk.monitor.ServiceHelper;\\\\nimport com.breqk.monitor.ScreenTimeTracker;\\\\nimport com.breqk.prefs.BreqkPrefs;\\\\nimport com.breqk.mode.ModeManager;\\\\nimport com.breqk.MyVpnService;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/bridge/VPNModule.java)",
-      "Bash(sed -i '/^package com\\\\.breqk\\\\.bridge;/a import com.breqk.prefs.BreqkPrefs;\\\\nimport com.breqk.mode.ModeManager;\\\\nimport com.breqk.BreqkWidgetProvider;\\\\nimport com.breqk.WidgetPrefs;\\\\nimport com.breqk.monitor.AppUsageMonitor;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/bridge/SettingsModule.java)"
+      "Bash(sed -i '/^package com\\\\.breqk\\\\.bridge;/a import com.breqk.prefs.BreqkPrefs;\\\\nimport com.breqk.mode.ModeManager;\\\\nimport com.breqk.BreqkWidgetProvider;\\\\nimport com.breqk.WidgetPrefs;\\\\nimport com.breqk.monitor.AppUsageMonitor;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/bridge/SettingsModule.java)",
+      "Bash(./gradlew assembleDebug --quiet)"
     ]
   },
   "enableAllProjectMcpServers": true,
