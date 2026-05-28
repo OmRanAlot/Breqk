@@ -48,13 +48,49 @@
       "Bash(sed -i '/^package com\\\\.breqk\\\\.accessibility;/a import com.breqk.ReelsInterventionService;\\\\nimport com.breqk.MainActivity;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/accessibility/AccessibilityPermissionActivity.java)",
       "Bash(sed -i '/^package com\\\\.breqk\\\\.bridge;/a import com.breqk.monitor.AppUsageMonitor;\\\\nimport com.breqk.monitor.ServiceHelper;\\\\nimport com.breqk.monitor.ScreenTimeTracker;\\\\nimport com.breqk.prefs.BreqkPrefs;\\\\nimport com.breqk.mode.ModeManager;\\\\nimport com.breqk.MyVpnService;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/bridge/VPNModule.java)",
       "Bash(sed -i '/^package com\\\\.breqk\\\\.bridge;/a import com.breqk.prefs.BreqkPrefs;\\\\nimport com.breqk.mode.ModeManager;\\\\nimport com.breqk.BreqkWidgetProvider;\\\\nimport com.breqk.WidgetPrefs;\\\\nimport com.breqk.monitor.AppUsageMonitor;' C:/Users/omran/code/DoomScrollStopper/android/app/src/main/java/com/breqk/bridge/SettingsModule.java)",
-      "Bash(./gradlew assembleDebug --quiet)"
+      "Bash(./gradlew assembleDebug --quiet)",
+      "Bash(python3 -c ' *)",
+      "Bash(python *)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\android\\\\app\\\\src\\\\main\\\\java\\\\com\\\\breqk\\\\ContentFilterService.java\" -Force)",
+      "Bash(Remove-Item \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\android\\\\app\\\\src\\\\main\\\\res\\\\xml\\\\content_filter_accessibility_config.xml\" -Force)",
+      "Bash(Write-Host \"Deleted ContentFilterService.java and content_filter_accessibility_config.xml\")",
+      "Bash(Remove-Item *)",
+      "PowerShell(Remove-Item *)",
+      "Bash(./android/gradlew.bat :app:compileDebugJavaSources)",
+      "Bash(./gradlew.bat :app:compileDebugJavaSources)",
+      "Bash(./gradlew.bat :app:compileDebugJavaWithJavac)",
+      "Bash(cmd *)",
+      "Skill(update-config)",
+      "Bash(echo '{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:\\\\\\\\Users\\\\\\\\omran\\\\\\\\code\\\\\\\\DoomScrollStopper\\\\\\\\android\\\\\\\\app\\\\\\\\src\\\\\\\\main\\\\\\\\java\\\\\\\\com\\\\\\\\breqk\\\\\\\\ReelsInterventionService.java\"}}')",
+      "Bash(node .claude/hooks/logging-reminder.js)",
+      "Bash(echo '{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:\\\\\\\\Users\\\\\\\\omran\\\\\\\\code\\\\\\\\DoomScrollStopper\\\\\\\\docs\\\\\\\\LOGGING.md\"}}')",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const i=JSON.parse\\(d\\);const p=\\(i.tool_input.file_path||''\\).replace\\(/\\\\\\\\\\\\\\\\/g,'/'\\);console.error\\('PATH='+p\\);console.error\\('MATCH='+/\\\\/\\(android|components\\)\\\\/.*\\\\.\\(java|jsx?|tsx?\\)$/.test\\(p\\)\\);}\\)\")",
+      "Bash(echo \"[exit=$?]\")",
+      "Bash(node *)",
+      "Bash(powershell *)",
+      "Bash(findstr /I \"youtube recents recent\" \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\logYOOOO.txt\")",
+      "Bash(Get-Content \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\logYOOOO.txt\")",
+      "Bash(Select-String \"youtube|recents|overlay.*dismiss\" -AllMatches)"
     ]
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "code-review-graph"
   ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/logging-reminder.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
   "enabledPlugins": {
     "everything-claude-code@everything-claude-code": true
   }

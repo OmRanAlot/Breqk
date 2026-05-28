@@ -18,6 +18,7 @@ import com.breqk.monitor.AppUsageMonitor;
 import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.appwidget.AppWidgetManager;
+import android.provider.Settings;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -234,6 +235,30 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         callback.invoke(enabled);
     }
 
+    /**
+     * Persists the deletion-prevention (uninstall lock) feature toggle.
+     * When false (default), ReelsInterventionService never inspects the Settings
+     * uninstall screen and the lock screen never appears.
+     */
+    @ReactMethod
+    public void saveUninstallLockEnabled(boolean enabled) {
+        Log.d(TAG, "[SAVE] saveUninstallLockEnabled called with enabled=" + enabled);
+        BreqkPrefs.setUninstallLockEnabled(reactContext, enabled);
+        Log.d(TAG, "[SAVE] uninstall_lock_enabled=" + enabled + " saved");
+    }
+
+    /**
+     * Retrieves the deletion-prevention toggle.
+     * Defaults to false so existing users are unaffected until they opt in.
+     */
+    @ReactMethod
+    public void getUninstallLockEnabled(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getUninstallLockEnabled called");
+        boolean enabled = BreqkPrefs.isUninstallLockEnabled(reactContext);
+        Log.d(TAG, "[GET] uninstall_lock_enabled=" + enabled);
+        callback.invoke(enabled);
+    }
+
     @ReactMethod
     public void saveBlockedApps(ReadableArray apps) {
         Log.d(TAG, "[SAVE] saveBlockedApps called with size=" + apps.size());
@@ -315,6 +340,48 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
     }
 
+    @ReactMethod
+    public void getAppInterceptSettings(String packageName, Promise promise) {
+        try {
+            org.json.JSONObject entry = BreqkPrefs.getAppInterceptSettings(reactContext, packageName);
+            com.facebook.react.bridge.WritableMap map = com.facebook.react.bridge.Arguments.createMap();
+            map.putString("message", entry.optString("message", ""));
+            map.putInt("delaySecs", entry.optInt("delay_secs", BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS));
+            map.putInt("popupDelayMin", entry.optInt("popup_delay_min", BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES));
+            Log.d(TAG, "[INTERCEPT_SETTINGS] getAppInterceptSettings pkg=" + packageName);
+            promise.resolve(map);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] getAppInterceptSettings failed: " + e.getMessage());
+            promise.reject("GET_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void setAppInterceptSettings(String packageName, String message, int delaySecs, int popupDelayMin, Promise promise) {
+        try {
+            BreqkPrefs.setAppInterceptSettings(reactContext, packageName, message, delaySecs, popupDelayMin);
+            Log.d(TAG, "[INTERCEPT_SETTINGS] setAppInterceptSettings pkg=" + packageName
+                    + " delaySecs=" + delaySecs + " popupDelayMin=" + popupDelayMin);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] setAppInterceptSettings failed: " + e.getMessage());
+            promise.reject("SET_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void setAllAppsInterceptSettings(String message, int delaySecs, int popupDelayMin, Promise promise) {
+        try {
+            BreqkPrefs.setAllAppsInterceptSettings(reactContext, message, delaySecs, popupDelayMin);
+            Log.d(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings delaySecs=" + delaySecs
+                    + " popupDelayMin=" + popupDelayMin);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings failed: " + e.getMessage());
+            promise.reject("SET_ALL_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Mode methods
     // ═══════════════════════════════════════════════════════════════════════════
@@ -385,6 +452,88 @@ public class SettingsModule extends ReactContextBaseJavaModule {
             Log.e(TAG, "[MODE] deactivateMode error: " + e.getMessage());
             promise.reject("MODE_ERROR", e.getMessage());
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Browser content filter methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Enables or disables the browser content filter.
+     * ContentFilterService checks this pref on every accessibility event.
+     */
+    @ReactMethod
+    public void saveContentFilterEnabled(boolean enabled, Promise promise) {
+        Log.d(TAG, "[FILTER] saveContentFilterEnabled=" + enabled);
+        try {
+            BreqkPrefs.setContentFilterEnabled(reactContext, enabled);
+            promise.resolve(null);
+        } catch (Exception e) {
+            Log.e(TAG, "[FILTER] saveContentFilterEnabled error: " + e.getMessage());
+            promise.reject("FILTER_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the current content filter enabled state (default true if never set).
+     */
+    @ReactMethod
+    public void getContentFilterEnabled(Callback callback) {
+        boolean enabled = BreqkPrefs.isContentFilterEnabled(reactContext);
+        Log.d(TAG, "[FILTER] getContentFilterEnabled=" + enabled);
+        callback.invoke(enabled);
+    }
+
+    /**
+     * Returns true if ContentFilterService is currently enabled in Android
+     * Accessibility Settings (i.e. the user has granted the permission).
+     * This is independent of the content_filter_enabled pref.
+     */
+    @ReactMethod
+    public void isContentFilterServiceEnabled(Callback callback) {
+        try {
+            String enabled = Settings.Secure.getString(
+                    reactContext.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            // ContentFilterService merged into ReelsInterventionService — single toggle.
+            boolean active = enabled != null &&
+                    enabled.contains("com.breqk/com.breqk.ReelsInterventionService");
+            Log.d(TAG, "[FILTER] isContentFilterServiceEnabled=" + active);
+            callback.invoke(active);
+        } catch (Exception e) {
+            Log.e(TAG, "[FILTER] isContentFilterServiceEnabled error: " + e.getMessage());
+            callback.invoke(false);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Intercept message & delay getters
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Retrieves the saved intercept message from SharedPreferences.
+     * Returns default "Is this intentional?" if not yet set.
+     */
+    @ReactMethod
+    public void getDelayMessage(Callback callback) {
+        Log.d(TAG, "[GET] getDelayMessage called");
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        String message = prefs.getString(BreqkPrefs.KEY_DELAY_MESSAGE, "Is this intentional?");
+        Log.d(TAG, "[GET] delay_message=" + message);
+        callback.invoke(message);
+    }
+
+    /**
+     * Retrieves the saved forced pause duration from SharedPreferences.
+     * Returns default (15 seconds) if not yet set.
+     */
+    @ReactMethod
+    public void getDelayTime(Callback callback) {
+        Log.d(TAG, "[GET] getDelayTime called");
+        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        int seconds = prefs.getInt(BreqkPrefs.KEY_DELAY_TIME_SECONDS, 15);
+        Log.d(TAG, "[GET] delay_time_seconds=" + seconds);
+        callback.invoke(seconds);
     }
 
 }

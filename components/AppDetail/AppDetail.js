@@ -16,7 +16,7 @@
  * Logging prefix: [AppDetail]
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -25,12 +25,17 @@ import {
   ScrollView,
   StyleSheet,
   NativeModules,
+  TextInput,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Slider from '@react-native-community/slider';
 import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
 
 const { VPNModule, SettingsModule } = NativeModules;
+
+const POPUP_DELAY_ONCE_SENTINEL = 2147483647;
 
 const L = {
   bg: '#FAFAFA',
@@ -66,13 +71,52 @@ const AppDetail = ({ navigation, route }) => {
 
   const [policy, setPolicy] = useState({});
   const [postLimit, setPostLimit] = useState(DEFAULT_POST_LIMIT);
+  const [activeModeId, setActiveModeId] = useState(null);
+  const [modes, setModes] = useState({});
+
+  // ── Per-app intercept settings ─────────────────────────────────────────────
+  const [interceptMessage, setInterceptMessage] = useState('');
+  const [interceptDelaySecs, setInterceptDelaySecs] = useState(15);
+  const [interceptFreqMode, setInterceptFreqMode] = useState('repeat'); // 'once' | 'repeat'
+  const [interceptRepeatMin, setInterceptRepeatMin] = useState(10);
+  const [showApplyAllModal, setShowApplyAllModal] = useState(false);
+  const interceptSaveTimer = useRef(null);
 
   useEffect(() => {
     console.log('[AppDetail] loading policy for', packageName);
-    SettingsModule.getAppPolicies(json => {
+    const loadData = async () => {
       try {
-        const policies = JSON.parse(json || '{}');
-        const p = policies[packageName] || {};
+        const activeId = await new Promise(resolve =>
+          SettingsModule.getActiveMode(resolve),
+        );
+        setActiveModeId(activeId || null);
+
+        const modesJson = await new Promise(resolve =>
+          SettingsModule.getModes(resolve),
+        );
+        let parsedModes = {};
+        try {
+          parsedModes = JSON.parse(modesJson || '{}');
+        } catch (e) {}
+        setModes(parsedModes);
+
+        const policiesJson = await new Promise(resolve =>
+          SettingsModule.getAppPolicies(resolve),
+        );
+        let basePolicies = {};
+        try {
+          basePolicies = JSON.parse(policiesJson || '{}');
+        } catch (e) {}
+
+        let p = basePolicies[packageName] || {};
+
+        // If a mode is active, layer its overrides on top so the UI reflects the true effective state
+        if (activeId && parsedModes[activeId]?.policy_overrides) {
+          const overrides =
+            parsedModes[activeId].policy_overrides[packageName] || {};
+          p = { ...p, ...overrides };
+        }
+
         setPolicy(p);
 
         if (typeof p.session_post_limit === 'number') {
@@ -83,27 +127,127 @@ const AppDetail = ({ navigation, route }) => {
           });
         }
 
-        console.log('[AppDetail] policy loaded:', JSON.stringify(p));
+        console.log('[AppDetail] effective policy loaded:', JSON.stringify(p));
+
+        // Load per-app intercept settings
+        try {
+          const s = await SettingsModule.getAppInterceptSettings(packageName);
+          setInterceptMessage(s.message ?? '');
+          setInterceptDelaySecs(s.delaySecs ?? 15);
+          if (s.popupDelayMin === POPUP_DELAY_ONCE_SENTINEL) {
+            setInterceptFreqMode('once');
+            setInterceptRepeatMin(10);
+          } else {
+            setInterceptFreqMode('repeat');
+            setInterceptRepeatMin(s.popupDelayMin ?? 10);
+          }
+        } catch (e) {
+          console.warn('[AppDetail] load intercept settings failed:', e);
+        }
       } catch (e) {
-        console.warn('[AppDetail] parse policy failed:', e);
+        console.warn('[AppDetail] load data failed:', e);
       }
-    });
+    };
+    loadData();
   }, [packageName]);
+
+  // Flush intercept settings on unmount
+  useEffect(
+    () => () => {
+      if (interceptSaveTimer.current) clearTimeout(interceptSaveTimer.current);
+    },
+    [],
+  );
+
+  const scheduleInterceptSave = useCallback(
+    (msg, secs, mode, repeatMin) => {
+      if (interceptSaveTimer.current) clearTimeout(interceptSaveTimer.current);
+      interceptSaveTimer.current = setTimeout(async () => {
+        const delayMin =
+          mode === 'once' ? POPUP_DELAY_ONCE_SENTINEL : repeatMin;
+        try {
+          await SettingsModule.setAppInterceptSettings(
+            packageName,
+            msg,
+            secs,
+            delayMin,
+          );
+          console.log(
+            '[AppDetail] intercept settings saved pkg=' +
+              packageName +
+              ' secs=' +
+              secs +
+              ' delayMin=' +
+              delayMin,
+          );
+        } catch (e) {
+          console.warn('[AppDetail] save intercept settings failed:', e);
+        }
+      }, 1500);
+    },
+    [packageName],
+  );
+
+  const applyInterceptToAll = useCallback(async () => {
+    const delayMin =
+      interceptFreqMode === 'once'
+        ? POPUP_DELAY_ONCE_SENTINEL
+        : interceptRepeatMin;
+    try {
+      await SettingsModule.setAllAppsInterceptSettings(
+        interceptMessage,
+        interceptDelaySecs,
+        delayMin,
+      );
+      console.log('[AppDetail] intercept settings applied to all apps');
+    } catch (e) {
+      console.warn('[AppDetail] apply to all failed:', e);
+    }
+  }, [
+    interceptMessage,
+    interceptDelaySecs,
+    interceptFreqMode,
+    interceptRepeatMin,
+  ]);
 
   const setFeature = useCallback(
     async (key, value) => {
       console.log('[AppDetail] setFeature', packageName, key, '→', value);
       setPolicy(prev => ({ ...prev, [key]: value }));
       try {
+        // Update base policy
         await SettingsModule.setAppFeature(packageName, key, value);
+
+        // If a mode is active, propagate the change so it persists in the mode
+        if (activeModeId && modes[activeModeId]) {
+          const updatedModes = { ...modes };
+          if (!updatedModes[activeModeId].policy_overrides) {
+            updatedModes[activeModeId].policy_overrides = {};
+          }
+          if (!updatedModes[activeModeId].policy_overrides[packageName]) {
+            updatedModes[activeModeId].policy_overrides[packageName] = {};
+          }
+          updatedModes[activeModeId].policy_overrides[packageName][key] = value;
+          setModes(updatedModes);
+          SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+          // Re-trigger activation to sync blocked_apps natively
+          VPNModule.activateMode(activeModeId).catch(() => {});
+        }
+
         if (key === 'app_open_intercept') {
           VPNModule.startMonitoring().catch(() => {});
+        }
+        // Sync the global free_break_enabled pref so Home's getFreeBreakStatus()
+        // picks up the change (it reads from the global pref, not per-app policy).
+        if (key === 'free_break_enabled') {
+          SettingsModule.saveFreeBreakEnabled(value);
         }
       } catch (e) {
         console.error('[AppDetail] setAppFeature failed:', e);
       }
     },
-    [packageName],
+    [packageName, activeModeId, modes],
   );
 
   const stepperFeature = appInfo?.features.find(
@@ -122,11 +266,30 @@ const AppDetail = ({ navigation, route }) => {
       setPostLimit(next);
       console.log('[AppDetail] session_post_limit →', next);
       SettingsModule.setAppFeature(packageName, 'session_post_limit', next);
+
+      // If a mode is active, propagate the change so it persists in the mode
+      if (activeModeId && modes[activeModeId]) {
+        const updatedModes = { ...modes };
+        if (!updatedModes[activeModeId].policy_overrides) {
+          updatedModes[activeModeId].policy_overrides = {};
+        }
+        if (!updatedModes[activeModeId].policy_overrides[packageName]) {
+          updatedModes[activeModeId].policy_overrides[packageName] = {};
+        }
+        updatedModes[activeModeId].policy_overrides[packageName][
+          'session_post_limit'
+        ] = next;
+        setModes(updatedModes);
+        SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+        VPNModule.activateMode(activeModeId).catch(() => {});
+      }
+
       if (packageName === 'com.instagram.android') {
         SettingsModule.saveHomeFeedPostLimit(next);
       }
     },
-    [packageName, postLimit, stepperFeature],
+    [packageName, postLimit, stepperFeature, activeModeId, modes],
   );
 
   if (!appInfo) {
@@ -201,7 +364,203 @@ const AppDetail = ({ navigation, route }) => {
                   accessibilityLabel="App Open Intercept"
                 />
               </View>
+
+              {/* Per-app intercept customization — only shown when intercept is on */}
+              {policy.app_open_intercept === true && (
+                <View style={styles.interceptBox}>
+                  {/* Message */}
+                  <Text style={styles.interceptFieldLabel}>
+                    Overlay message
+                  </Text>
+                  <TextInput
+                    style={styles.interceptInput}
+                    value={interceptMessage}
+                    onChangeText={text => {
+                      setInterceptMessage(text);
+                      scheduleInterceptSave(
+                        text,
+                        interceptDelaySecs,
+                        interceptFreqMode,
+                        interceptRepeatMin,
+                      );
+                    }}
+                    placeholder="Take a moment before opening this app…"
+                    placeholderTextColor={L.muted}
+                    multiline
+                    maxLength={120}
+                  />
+
+                  {/* Duration */}
+                  <View style={styles.interceptRow}>
+                    <Text style={styles.interceptFieldLabel}>Countdown</Text>
+                    <Text style={styles.interceptValue}>
+                      {interceptDelaySecs}s
+                    </Text>
+                  </View>
+                  <Slider
+                    style={styles.interceptSlider}
+                    minimumValue={5}
+                    maximumValue={30}
+                    step={1}
+                    value={interceptDelaySecs}
+                    onValueChange={v => {
+                      setInterceptDelaySecs(v);
+                      scheduleInterceptSave(
+                        interceptMessage,
+                        v,
+                        interceptFreqMode,
+                        interceptRepeatMin,
+                      );
+                    }}
+                    minimumTrackTintColor={L.charcoal}
+                    maximumTrackTintColor={L.border}
+                    thumbTintColor={L.charcoal}
+                  />
+
+                  {/* Frequency */}
+                  <Text style={[styles.interceptFieldLabel, { marginTop: 6 }]}>
+                    Re-show overlay
+                  </Text>
+                  <View style={styles.interceptSegment}>
+                    <TouchableOpacity
+                      style={[
+                        styles.interceptSegBtn,
+                        interceptFreqMode === 'once' &&
+                          styles.interceptSegBtnActive,
+                      ]}
+                      onPress={() => {
+                        setInterceptFreqMode('once');
+                        scheduleInterceptSave(
+                          interceptMessage,
+                          interceptDelaySecs,
+                          'once',
+                          interceptRepeatMin,
+                        );
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text
+                        style={[
+                          styles.interceptSegText,
+                          interceptFreqMode === 'once' &&
+                            styles.interceptSegTextActive,
+                        ]}
+                      >
+                        Once per open
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.interceptSegBtn,
+                        interceptFreqMode === 'repeat' &&
+                          styles.interceptSegBtnActive,
+                      ]}
+                      onPress={() => {
+                        setInterceptFreqMode('repeat');
+                        scheduleInterceptSave(
+                          interceptMessage,
+                          interceptDelaySecs,
+                          'repeat',
+                          interceptRepeatMin,
+                        );
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text
+                        style={[
+                          styles.interceptSegText,
+                          interceptFreqMode === 'repeat' &&
+                            styles.interceptSegTextActive,
+                        ]}
+                      >
+                        Every X min
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {interceptFreqMode === 'repeat' && (
+                    <>
+                      <View style={styles.interceptRow}>
+                        <Text style={styles.interceptFieldLabel}>
+                          Repeat interval
+                        </Text>
+                        <Text style={styles.interceptValue}>
+                          {interceptRepeatMin}m
+                        </Text>
+                      </View>
+                      <Slider
+                        style={styles.interceptSlider}
+                        minimumValue={1}
+                        maximumValue={60}
+                        step={1}
+                        value={interceptRepeatMin}
+                        onValueChange={v => {
+                          setInterceptRepeatMin(v);
+                          scheduleInterceptSave(
+                            interceptMessage,
+                            interceptDelaySecs,
+                            interceptFreqMode,
+                            v,
+                          );
+                        }}
+                        minimumTrackTintColor={L.charcoal}
+                        maximumTrackTintColor={L.border}
+                        thumbTintColor={L.charcoal}
+                      />
+                    </>
+                  )}
+
+                  {/* Apply to all */}
+                  <TouchableOpacity
+                    style={styles.applyAllButton}
+                    onPress={() => setShowApplyAllModal(true)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.applyAllButtonText}>
+                      Apply to all apps
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
+
+            {/* Apply-to-all confirmation modal */}
+            <Modal
+              visible={showApplyAllModal}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setShowApplyAllModal(false)}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalCard}>
+                  <Text style={styles.modalTitle}>Apply to all apps?</Text>
+                  <Text style={styles.modalBody}>
+                    This will overwrite the intercept message, countdown, and
+                    re-show settings for every managed app with {appInfo.label}
+                    's current values.
+                  </Text>
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity
+                      style={styles.modalCancel}
+                      onPress={() => setShowApplyAllModal(false)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.modalCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.modalConfirm}
+                      onPress={async () => {
+                        setShowApplyAllModal(false);
+                        await applyInterceptToAll();
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.modalConfirmText}>Apply</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
 
             {/* Feature toggles */}
             {toggleFeatures.length > 0 && (
@@ -439,6 +798,146 @@ const styles = StyleSheet.create({
   safeModeButtonText: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '500',
+  },
+
+  // ── Per-app intercept customization ─────────────────────────────────────
+  interceptBox: {
+    marginTop: 16,
+    padding: 16,
+    backgroundColor: L.cardBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: L.cardBorder,
+  },
+  interceptFieldLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: L.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
+  interceptInput: {
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: L.charcoal,
+    marginBottom: 16,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  interceptRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  interceptValue: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: L.charcoal,
+  },
+  interceptSlider: {
+    width: '100%',
+    height: 36,
+    marginBottom: 12,
+  },
+  interceptSegment: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  interceptSegBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: L.cardBg,
+  },
+  interceptSegBtnActive: {
+    backgroundColor: L.charcoal,
+  },
+  interceptSegText: {
+    fontSize: 13,
+    color: L.muted,
+    fontWeight: '500',
+  },
+  interceptSegTextActive: {
+    color: '#FFFFFF',
+  },
+  applyAllButton: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  applyAllButtonText: {
+    fontSize: 14,
+    color: L.charcoal,
+    fontWeight: '500',
+  },
+
+  // ── Apply-to-all modal ───────────────────────────────────────────────────
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: L.cardBg,
+    borderRadius: 16,
+    padding: 24,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: L.charcoal,
+    marginBottom: 10,
+  },
+  modalBody: {
+    fontSize: 14,
+    color: L.muted,
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  modalCancel: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 9999,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    fontSize: 15,
+    color: L.charcoal,
+    fontWeight: '500',
+  },
+  modalConfirm: {
+    flex: 1,
+    backgroundColor: L.charcoal,
+    borderRadius: 9999,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modalConfirmText: {
+    fontSize: 15,
+    color: '#FFFFFF',
     fontWeight: '500',
   },
 });

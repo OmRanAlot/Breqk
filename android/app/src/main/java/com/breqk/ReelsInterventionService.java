@@ -56,7 +56,7 @@ package com.breqk;
  *   2. Slow path: full accessibility tree traversal for Reels view IDs
  *   Both paths gate through isFullScreenReelsViewPager() before confirming.
  *
- * Scroll budget status is read from SharedPreferences ("breqk_prefs"):
+ * Scroll budget status is read from SharedPreferences (BreqkPrefs.PREFS_NAME):
  *   - scroll_budget_exhausted_at (long): >0 means budget is exhausted
  *   - scroll_window_start_time (long): when the current budget window started
  *   - scroll_window_minutes (int): duration of the budget window
@@ -72,6 +72,7 @@ import android.content.SharedPreferences;
 import android.content.Intent;
 import android.content.ComponentName;
 import android.graphics.PixelFormat;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -101,6 +102,8 @@ import com.breqk.shortform.budget.BudgetHeartbeat;
 import com.breqk.shortform.budget.HomeFeedCounter;
 import com.breqk.shortform.intervention.InterventionOverlay;
 import com.breqk.shortform.intervention.ShortFormStateMachine;
+import com.breqk.uninstall.UninstallLockOverlay;
+import com.breqk.uninstall.UninstallScreenDetector;
 
 import java.util.List;
 
@@ -115,11 +118,16 @@ public class ReelsInterventionService extends AccessibilityService {
     // Shorts text signal:        adb logcat -s REELS_WATCH | findstr "SHORTS_TEXT"
     // YouTube tree dump:         adb logcat -s REELS_WATCH | findstr "YT_TREE_DUMP"
     // YouTube tier decisions:    adb logcat -s REELS_WATCH | findstr "TIER"
+    // Uninstall screen detection: adb logcat -s REELS_WATCH | findstr "UNINSTALL_WATCH"
     private static final String TAG = "REELS_WATCH";
 
     private static final String PKG_INSTAGRAM = "com.instagram.android";
     private static final String PKG_YOUTUBE = "com.google.android.youtube";
     private static final String PKG_TIKTOK = "com.zhiliaoapp.musically";
+    private static final String PKG_SETTINGS = "com.android.settings";
+
+    // Minimum ms between Settings tree scans — Settings spams CONTENT_CHANGED heavily.
+    private static final long UNINSTALL_CHECK_DEBOUNCE_MS = 500;
 
     /**
      * AppEventRouter — dispatches events to LaunchInterceptor (launch popup) and
@@ -154,6 +162,10 @@ public class ReelsInterventionService extends AccessibilityService {
 
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
+    private UninstallLockOverlay uninstallOverlay;
+
+    // Timestamp of the last Settings tree scan (debounce).
+    private long lastUninstallCheckMs = 0;
 
     /** Handler on main looper — WindowManager calls must be on the UI thread. */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -210,20 +222,28 @@ public class ReelsInterventionService extends AccessibilityService {
         if (info == null)
             info = new AccessibilityServiceInfo();
 
-        // TYPE_VIEW_SCROLLED: needed to detect scrolls within Reels/Shorts
-        // TYPE_WINDOW_STATE_CHANGED: needed to detect layout changes (entering/leaving
-        // Reels)
-        // TYPE_WINDOW_CONTENT_CHANGED is intentionally excluded — too noisy, causes
-        // false positives
-        // on home feed embeds; layout re-check only happens on STATE_CHANGED (tab
-        // navigation)
+        // Unified event types — Reels/Shorts budget (REELS_WATCH) + browser filtering (BROWSER_WATCH).
+        // TYPE_VIEW_SCROLLED: scroll counting for Reels/Shorts.
+        // TYPE_WINDOW_STATE_CHANGED: Reels navigation + browser tab changes.
+        // TYPE_WINDOW_CONTENT_CHANGED: browser URL bar updates in-place.
+        //   NOTE: Reels code explicitly skips CONTENT_CHANGED in handleReelsScrollEvent()
+        //   so the noisier browser events don't affect Reels budget logic.
+        // TYPE_VIEW_TEXT_CHANGED, TYPE_VIEW_FOCUSED: browser omnibar typing/focus.
+        // TYPE_WINDOWS_CHANGED: multi-window browser URL changes (API 29+).
         info.eventTypes = AccessibilityEvent.TYPE_VIEW_SCROLLED
-                | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+                | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                | AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+                | AccessibilityEvent.TYPE_VIEW_FOCUSED;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            info.eventTypes |= AccessibilityEvent.TYPE_WINDOWS_CHANGED;
+        }
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-        // FLAG_REPORT_VIEW_IDS is CRITICAL: without it
-        // findAccessibilityNodeInfosByViewId() returns nothing
+        // FLAG_REPORT_VIEW_IDS: required for findAccessibilityNodeInfosByViewId().
+        // FLAG_INCLUDE_NOT_IMPORTANT_VIEWS: required for omnibar discovery in some browsers.
         info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+                | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
         info.notificationTimeout = 100;
         setServiceInfo(info);
 
@@ -236,15 +256,67 @@ public class ReelsInterventionService extends AccessibilityService {
         instagramDetector = new InstagramDetector(this, TAG);
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
+        uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
         budgetState       = new BudgetState(this);
-        budgetState.load(getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE));
-        budgetHeartbeat   = new BudgetHeartbeat(budgetState, mainHandler, getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE), new BudgetHeartbeat.HeartbeatCallback() {
+        budgetState.load(BreqkPrefs.get(this));
+        budgetHeartbeat   = new BudgetHeartbeat(budgetState, mainHandler, BreqkPrefs.get(this), new BudgetHeartbeat.HeartbeatCallback() {
+            // Counts consecutive strict-detection failures while the overlay is showing.
+            // Allows 1 glitch tick before dismissing (resets to 0 on any success).
+            private int stickyFailCount = 0;
+
             @Override
             public boolean isStillInReels(String packageName) {
                 if (interventionOverlay.isShowing()) {
-                    Log.d(TAG, "[STICKY-FIX-HEARTBEAT] Heartbeat: interventionShowing=true — skipping isStillInReels() check");
+                    // Determine which window is active while our overlay is up.
+                    AccessibilityNodeInfo root = getRootInActiveWindow();
+                    if (root == null) {
+                        // No active window info — be conservative and keep the overlay.
+                        Log.d(TAG, "[STICKY-FIX-HEARTBEAT] root null while overlay showing -> true (conservative)");
+                        return true;
+                    }
+                    CharSequence rootPkg = root.getPackageName();
+                    String rootPkgStr = rootPkg != null ? rootPkg.toString() : "";
+
+                    // Our own overlay window is active — the user is still beneath it in the Shorts app.
+                    if ("com.breqk".equals(rootPkgStr)) {
+                        root.recycle();
+                        stickyFailCount = 0;
+                        Log.d(TAG, "[STICKY-FIX-HEARTBEAT] own overlay is active window -> true");
+                        return true;
+                    }
+
+                    // Active window is a completely different app — user switched away.
+                    if (!packageName.equals(rootPkgStr)) {
+                        root.recycle();
+                        stickyFailCount = 0;
+                        Log.d(TAG, "[STICKY-FIX-HEARTBEAT] active window=" + rootPkgStr
+                                + " expected=" + packageName + " -> false (user left app)");
+                        return false;
+                    }
+
+                    // Active window IS the expected package.
+                    // For YouTube, verify with strict detection to catch navigation away from Shorts.
+                    if (PKG_YOUTUBE.equals(packageName)) {
+                        boolean strictOk = youtubeDetector.detectStrict(root).inShortForm;
+                        root.recycle();
+                        if (!strictOk) {
+                            stickyFailCount++;
+                            Log.d(TAG, "[STICKY-FIX-HEARTBEAT] YouTube strict check failed count=" + stickyFailCount);
+                            // Allow 1 transient failure (tree rebuild glitch) before dismissing.
+                            return stickyFailCount < 2;
+                        }
+                        stickyFailCount = 0;
+                        Log.d(TAG, "[STICKY-FIX-HEARTBEAT] YouTube strict confirmed -> true");
+                        return true;
+                    }
+
+                    // Instagram: active window package matches — keep overlay.
+                    root.recycle();
+                    stickyFailCount = 0;
+                    Log.d(TAG, "[STICKY-FIX-HEARTBEAT] Instagram pkg matches while overlay showing -> true");
                     return true;
                 }
+                stickyFailCount = 0;
                 return ReelsInterventionService.this.isStillInReels(packageName);
             }
             @Override
@@ -264,7 +336,10 @@ public class ReelsInterventionService extends AccessibilityService {
             }
         });
 
-        Log.d(TAG, "=== ReelsInterventionService CONNECTED ===");
+        // Log browser-filter startup under BROWSER_WATCH tag (merged service).
+        BrowserBarContentFilter.logStandaloneServiceConnected(this);
+
+        Log.d(TAG, "=== ReelsInterventionService CONNECTED (unified: Reels + Browser) ===");
         Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
         Log.d(TAG, "  watching (router): " + PlatformRegistry.monitoredPackageList());
         Log.d(TAG, "  packageFilter: NONE (receives events from all apps for app-switch detection)");
@@ -381,6 +456,65 @@ public class ReelsInterventionService extends AccessibilityService {
             }
         }
 
+        // Browser content filter dispatch — runs before the Reels-only early exit.
+        // Packages in BrowserBarContentFilter.BROWSER_URL_IDS are disjoint from IG/YT,
+        // so this branch is mutually exclusive with all Reels budget logic below.
+        // BrowserBarContentFilter.onAccessibilityEvent() internally checks the
+        // content_filter_enabled pref and logs [SKIP_PREFS_OFF] if disabled.
+        if (BrowserBarContentFilter.isBrowserPackage(packageName)) {
+            BrowserBarContentFilter.onAccessibilityEvent(this, event);
+            return;
+        }
+
+        // ── Uninstall-screen detection (UNINSTALL_WATCH) ──────────────────────────────
+        // When the user opens Settings → Apps → Breqk → Uninstall, show a lock-in popup.
+        // We receive Settings events because packageNames filter is absent from the XML config.
+        // Only scan on STATE_CHANGED or CONTENT_CHANGED to avoid reacting to scroll events.
+        // Debounced to UNINSTALL_CHECK_DEBOUNCE_MS — Settings spams CONTENT_CHANGED.
+        if (PKG_SETTINGS.equals(packageName)) {
+            // Feature is opt-in. If the user hasn't enabled deletion prevention in
+            // Customize, never inspect Settings or show the lock screen. Dismiss any
+            // stale overlay defensively (e.g. setting was just turned off).
+            if (!BreqkPrefs.isUninstallLockEnabled(this)) {
+                if (uninstallOverlay != null && uninstallOverlay.isShowing()) {
+                    uninstallOverlay.dismiss();
+                }
+                return;
+            }
+
+            int evtType = event.getEventType();
+            if (evtType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                    || evtType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                long nowCheck = System.currentTimeMillis();
+                if (nowCheck - lastUninstallCheckMs >= UNINSTALL_CHECK_DEBOUNCE_MS) {
+                    lastUninstallCheckMs = nowCheck;
+                    AccessibilityNodeInfo settingsRoot = getRootInActiveWindow();
+                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreqkUninstallScreen(settingsRoot);
+                    if (settingsRoot != null) settingsRoot.recycle();
+
+                    // STICKY: once the lock overlay is up it must persist regardless
+                    // of subsequent screen changes. The opaque overlay window itself
+                    // makes getRootInActiveWindow() stop reporting the uninstall
+                    // screen (onUninstallScreen flips to false), and adding the
+                    // overlay fires a STATE_CHANGED for pkg=com.breqk — previously
+                    // both tore the overlay down ~140ms after show, before the
+                    // mandatory 30s wait could elapse. We now ONLY show; the
+                    // overlay's own buttons ("Return to home" / "Keep Breqk" /
+                    // "delete anyway" after 30s) are the sole dismissal paths.
+                    if (onUninstallScreen
+                            && uninstallOverlay != null && !uninstallOverlay.isShowing()) {
+                        Log.i(TAG, "[UNINSTALL_WATCH] Breqk uninstall screen detected — showing lock overlay");
+                        uninstallOverlay.show(() -> performGlobalAction(GLOBAL_ACTION_HOME));
+                    }
+                }
+            }
+            return;
+        }
+
+        // NOTE: Intentionally NO "user left Settings" auto-dismiss here. The lock
+        // overlay is sticky by design — leaving it only via its own buttons
+        // enforces the mandatory 30s wait before uninstall can proceed.
+
         // Only process scroll/state events for scroll-budget logic from Instagram or YouTube.
         // TikTok is handled entirely by AppEventRouter (ContentFilter) above — no budget tracking.
         if (!packageName.equals(PKG_INSTAGRAM) && !packageName.equals(PKG_YOUTUBE))
@@ -406,16 +540,27 @@ public class ReelsInterventionService extends AccessibilityService {
     public void onInterrupt() {
         // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
+        if (uninstallOverlay != null) uninstallOverlay.dismiss();
         // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
         persistReelsState(false, "");
         if (budgetHeartbeat != null) budgetHeartbeat.stop();
         homeFeedCounter.reset();
+        // Cancel any pending deferred browser URL peeks (merged browser filter)
+        BrowserBarContentFilter.cancelDeferredCallbacks();
         // Destroy AppEventRouter subsystems (LaunchInterceptor + ContentFilter)
         if (eventRouter != null) {
             eventRouter.onDestroy();
             eventRouter = null;
         }
-        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed, reels state cleared, router destroyed");
+        Log.d(TAG, "onInterrupt: service interrupted, intervention dismissed, reels state cleared, browser callbacks cancelled, router destroyed");
+    }
+
+    @Override
+    public void onDestroy() {
+        BrowserBarContentFilter.cancelDeferredCallbacks();
+        if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        super.onDestroy();
+        Log.d(TAG, "onDestroy: browser deferred callbacks cancelled, uninstall overlay dismissed");
     }
 
     // =========================================================================
@@ -508,10 +653,20 @@ public class ReelsInterventionService extends AccessibilityService {
             }
 
             // Run the appropriate detector — delegates to InstagramDetector or YouTubeDetector.
+            // For YouTube, use strict detection (Tier 1+2 only) when already in Shorts to
+            // avoid Tier 3 bottom-nav "Shorts" tab false positives on exit checks.
+            // Use lenient detect() on entry (!isInReels) so a view-ID rename doesn't break
+            // initial detection.
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            ShortFormDetector.DetectResult detectResult = packageName.equals(PKG_INSTAGRAM)
-                    ? instagramDetector.detect(root)
-                    : youtubeDetector.detect(root);
+            ShortFormDetector.DetectResult detectResult;
+            if (packageName.equals(PKG_INSTAGRAM)) {
+                detectResult = instagramDetector.detect(root);
+            } else if (stateMachine.isInReels()) {
+                Log.d(TAG, "[STRICT_DETECT] STATE_CHANGED: already in Shorts -> strict detection");
+                detectResult = youtubeDetector.detectStrict(root);
+            } else {
+                detectResult = youtubeDetector.detect(root);
+            }
             boolean inReelsLayout = detectResult.inShortForm;
             if (root != null)
                 root.recycle();
@@ -579,9 +734,27 @@ public class ReelsInterventionService extends AccessibilityService {
         // Delegates to InstagramDetector or YouTubeDetector (Step 2 refactor).
         if (!usedFastPath) {
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            ShortFormDetector.DetectResult slowResult = packageName.equals(PKG_INSTAGRAM)
-                    ? instagramDetector.detect(root)
-                    : youtubeDetector.detect(root);
+            ShortFormDetector.DetectResult slowResult;
+            if (packageName.equals(PKG_INSTAGRAM)) {
+                slowResult = instagramDetector.detect(root);
+            } else {
+                // [BG_PLAYER] Guard: YouTube keeps a background Shorts player alive as a floating
+                // overlay window. If getRootInActiveWindow() returns that overlay (identifiable by
+                // a generic Android framework class name), treat it as not-in-shorts rather than
+                // running detection against the overlay tree and getting a false positive.
+                String rootClass = (root != null && root.getClassName() != null)
+                        ? root.getClassName().toString() : "";
+                if (FrameworkClassFilter.isFrameworkClass(rootClass)) {
+                    Log.d(TAG, "[BG_PLAYER] Scroll slow path: YouTube root class='" + rootClass
+                            + "' is framework class -- skipping (background shorts player overlay)");
+                    slowResult = ShortFormDetector.DetectResult.notDetected();
+                } else if (stateMachine.isInReels()) {
+                    // Already confirmed in Shorts -- strict detection avoids bottom-nav false positives.
+                    slowResult = youtubeDetector.detectStrict(root);
+                } else {
+                    slowResult = youtubeDetector.detect(root);
+                }
+            }
             confirmedInReels = slowResult.inShortForm;
             if (root != null)
                 root.recycle();
@@ -637,12 +810,21 @@ public class ReelsInterventionService extends AccessibilityService {
             budgetHeartbeat.start(packageName);
             budgetState.tick(BudgetHeartbeat.REELS_HEARTBEAT_INTERVAL_MS);
 
-            // Immediate budget check: if budget was already exhausted from a previous
-            // session (or allowance=0), intervene now.
-            long graceEndNow = System.currentTimeMillis();
-            if (budgetState.isExhausted(graceEndNow) && !interventionOverlay.isShowing()) {
-                Log.i(TAG, "[GRACE] Budget already exhausted after grace period — immediate intervention for " + packageName);
-                triggerIntervention(packageName);
+            // [FIRST-SHORT-GRACE] For YouTube, skip the immediate exhaustion check here.
+            // YouTube sometimes auto-opens directly into a short; without this guard the
+            // user would be blocked instantly on their very first scroll, even though they
+            // haven't intentionally started browsing. Letting the heartbeat handle it means
+            // the overlay fires ~1s into the second short instead — the first short is
+            // genuinely free. Instagram keeps the immediate check (Reels require intentional
+            // navigation, so instant enforcement is the correct behaviour there).
+            if (packageName.equals(PKG_YOUTUBE)) {
+                Log.d(TAG, "[FIRST-SHORT-GRACE] YouTube: skipping immediate grace-end exhaustion check -- heartbeat will intervene after first short");
+            } else {
+                long graceEndNow = System.currentTimeMillis();
+                if (budgetState.isExhausted(graceEndNow) && !interventionOverlay.isShowing()) {
+                    Log.i(TAG, "[GRACE] Budget already exhausted after grace period -- immediate intervention for " + packageName);
+                    triggerIntervention(packageName);
+                }
             }
         }
 
@@ -823,7 +1005,7 @@ public class ReelsInterventionService extends AccessibilityService {
         }
         lastFeedScrollTimestamp = now;
 
-        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(this);
         boolean limitReached = homeFeedCounter.increment(prefs);
 
         if (limitReached) {
@@ -909,7 +1091,7 @@ public class ReelsInterventionService extends AccessibilityService {
      *                    inReels=false)
      */
     private void persistReelsState(boolean inReels, String packageName) {
-        SharedPreferences prefs = getSharedPreferences("breqk_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = BreqkPrefs.get(this);
         prefs.edit()
                 .putBoolean(PREF_IS_IN_REELS, inReels)
                 .putLong(PREF_IS_IN_REELS_TIMESTAMP, System.currentTimeMillis())
@@ -987,10 +1169,11 @@ public class ReelsInterventionService extends AccessibilityService {
         // Package matches — verify the Reels/Shorts layout is still full-screen.
         // The user might still be in Instagram but navigated away from Reels
         // (e.g., tapped Home tab, opened DMs, etc.)
-        // Delegates to InstagramDetector or YouTubeDetector (Step 2 refactor).
+        // For YouTube, use strict detection (Tier 1+2 only) to avoid the Tier 3 text
+        // scan falsely confirming Shorts via the bottom-nav "Shorts" tab.
         ShortFormDetector.DetectResult stillResult = expectedPackage.equals(PKG_INSTAGRAM)
                 ? instagramDetector.detect(root)
-                : youtubeDetector.detect(root);
+                : youtubeDetector.detectStrict(root);
         boolean inReels = stillResult.inShortForm;
         root.recycle();
 

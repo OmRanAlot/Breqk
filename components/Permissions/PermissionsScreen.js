@@ -1,22 +1,19 @@
 /**
  * PermissionsScreen.js
  * ─────────────────────────────────────────────────────────────────────────────
- * 6-screen onboarding flow (Tether light design system):
+ * 5-screen onboarding flow (Tether light design system):
  *   0 — Welcome          ("Stay Intentional")
  *   1 — Usage Access     (requestPermissions → PACKAGE_USAGE_STATS)
  *   2 — Overlay          (requestOverlayPermission → SYSTEM_ALERT_WINDOW)
  *   3 — VPN Background   (requestVpnPermission → BIND_VPN_SERVICE)
- *   4 — Uninstall Guard  (activateDeviceAdmin → DevicePolicyManager)
- *   5 — Success          ("You're All Set")
+ *   4 — Success          ("You're All Set")
  *
  * When the user returns from Android Settings (AppState change), the screen
  * auto-advances if the relevant permission has been granted.
  * The VPN screen auto-advances on any app-return (no programmatic check).
- * The Device Admin screen checks checkPermissions().deviceAdmin on return.
  *
- * DEV bypass for Device Admin (ADB):
- *   adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
- *   adb uninstall com.breqk
+ * Deletion prevention is no longer part of onboarding — it now lives entirely
+ * in the Customize screen's "Prevent deletion" toggle.
  *
  * Logging prefix: [PermissionsScreen]
  */
@@ -120,24 +117,6 @@ const LockIcon = () => (
   </Svg>
 );
 
-// Shield with a lock inside — used for the Device Admin (uninstall guard) screen
-const ShieldLockIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    <Rect x={9} y={11} width={6} height={5} rx={1} />
-    <Path d="M10 11V9a2 2 0 0 1 4 0v2" />
-  </Svg>
-);
-
 const CheckCircleIcon = () => (
   <Svg
     width={96}
@@ -198,22 +177,6 @@ const SCREENS = [
     primaryLabel: 'Grant Permission',
     permKey: null, // checkPermissions() doesn't expose VPN — auto-advance on return
     callPermission: () => VPNModule.requestVpnPermission(),
-  },
-  {
-    // Screen 4 — Device Admin (uninstall protection)
-    // permKey 'deviceAdmin' is checked by checkPermissions() on app return.
-    // Skippable: committed users activate it; others can proceed without it.
-    type: 'permission',
-    Icon: ShieldLockIcon,
-    headline: 'Protect Your Commitment',
-    subtitle:
-      'Prevent impulsive deletion. Activating Device Admin means you\u2019ll need to go through an extra step before uninstalling Breqk.',
-    primaryLabel: 'Activate Protection',
-    permKey: 'deviceAdmin',
-    callPermission: () => VPNModule.activateDeviceAdmin(),
-    // Rendered as an "Optional" pill above the headline so users understand
-    // this step is different from the three hard requirements above it.
-    optional: true,
   },
   {
     type: 'success', // no box; large check icon
@@ -325,8 +288,11 @@ export default function PermissionsScreen({ onComplete }) {
     }
 
     // Permission screen: open system dialog
-    if (screen.permKey === null) {
-      // VPN — mark visited before leaving so AppState handler can advance
+    if (screen.permKey === null && screen.callPermission) {
+      // No programmatic check available (e.g. VPN screen). If the native call
+      // is a no-op (resolves immediately without leaving the app), we need to
+      // advance right away. Set vpnVisited as a fallback for the AppState
+      // handler in case the call *does* open a system dialog.
       vpnVisited.current = true;
     }
     try {
@@ -337,13 +303,15 @@ export default function PermissionsScreen({ onComplete }) {
         'result:',
         result,
       );
-      // If the native method returns true it means the permission was already granted
-      // (e.g. Device Admin was already active). Advance immediately rather than waiting
-      // for an AppState change that will never come.
-      if (result === true && screen.permKey) {
+      // If the native method returns true it means the permission was already
+      // granted or is a no-op (e.g. VPN stub, Device Admin already active).
+      // Advance immediately rather than waiting for an AppState change that
+      // may never come.
+      if (result === true) {
         console.log(
-          '[PermissionsScreen] already granted — advancing immediately',
+          '[PermissionsScreen] resolved true — advancing immediately',
         );
+        vpnVisited.current = false; // no need for AppState fallback
         advanceTo(screenIndex + 1);
       }
     } catch (e) {
@@ -432,13 +400,6 @@ export default function PermissionsScreen({ onComplete }) {
             // Welcome + Success: no box, just the icon
             <View style={styles.iconWrapper}>
               <Icon />
-            </View>
-          )}
-
-          {/* Optional pill — only on skippable, non-critical screens */}
-          {screen.optional && (
-            <View style={styles.optionalPill}>
-              <Text style={styles.optionalPillText}>OPTIONAL</Text>
             </View>
           )}
 
@@ -551,20 +512,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 40,
-  },
-
-  optionalPill: {
-    backgroundColor: 'rgba(26,26,26,0.06)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 9999,
-    marginBottom: 12,
-  },
-  optionalPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: L.muted,
-    letterSpacing: 1.4,
   },
 
   headline: {

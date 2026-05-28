@@ -1,5 +1,5 @@
 # TASKS.md — Breqk Launch Playbook
-> **Last updated:** 2026-04-30  
+> **Last updated:** 2026-05-01  
 > **Purpose:** Single source of truth for all tasks, architecture, and known issues. Read this first before making any changes.
 
 ---
@@ -23,6 +23,13 @@
 ## Task Tracker
 
 ### 🔴 P0 — Launch Blockers (Must fix before any public release)
+
+- [ ] **B15 (PRIORITY 1): YouTube "Lock In" overlay persists on home / long-form after leaving Shorts**
+  - Files: `android/app/src/main/java/com/breqk/shortform/detection/YouTubeDetector.java`, `ReelsInterventionService.java`, `shortform/budget/BudgetHeartbeat.java`
+  - Symptom: With scroll budget exhausted on YouTube only, opening a Short and then leaving it (tap Home tab, open a long-form video, etc.) leaves the "Time is up! Lock In" overlay attached on the YouTube home feed and long-form video player. It never dismisses on its own.
+  - Root cause: `YouTubeDetector` Tier 3 (`scanNodeForShortsText`, lines 256-287) walks the accessibility tree for any "shorts" text — and matches YouTube's persistent **bottom-nav "Shorts" tab** even when the user has clearly left the Shorts player. `ReelsInterventionService.handleReelsScrollEvent()` and `isStillInReels()` therefore think the user is still in Shorts → no `resetReelsState()` → no `dismissIntervention()`. Compounded by empty `SHORTS_CLASS_NAMES` (Tier 0 never fires), `STICKY-FIX-HEARTBEAT` (heartbeat refuses to dismiss while overlay is up), and the framework-class STATE_CHANGED early-return that swallows real exit transitions.
+  - Fix: see plan `.claude/plan/youtube-shorts-overlay-persistence-fix.md`. Three layers: (1) add `YouTubeDetector.detectStrict()` (Tier 1+2 only, no text walk) and use it for "still-in" / exit checks; (2) tighten Tier 3 with bounds check (reject nodes < 30% screen height or in bottom 15%) + seekbar-absence sanity; (3) replace `BudgetHeartbeat` `STICKY-FIX-HEARTBEAT` unconditional-true with a 2-tick failure counter using the strict detector.
+  - Effort: 2-3 hours including manual QA on a real device.
 
 - [x] **B2: Migrate BreqkVpnService away from VpnService** ✅ 2026-04-30
   - File: `android/app/src/main/java/com/breqk/service/BreqkVpnService.java`
@@ -183,8 +190,6 @@ DoomScrollStopper/
     │   │   ├── VPNModule.java                 # RN bridge: monitoring, permissions, free break, modes, stats
     │   │   ├── SettingsModule.java             # RN bridge: settings read/write, blocked apps, modes
     │   │   └── BreqkReactPackage.java          # Registers VPNModule + SettingsModule with RN
-    │   ├── deviceadmin/
-    │   │   └── BreqkDeviceAdminReceiver.java   # DeviceAdmin for anti-uninstall friction
     │   ├── mode/
     │   │   ├── ModeManager.java                # Mode lifecycle, AlarmManager scheduling
     │   │   └── ModeSchedulerReceiver.java      # BroadcastReceiver for AlarmManager mode triggers
@@ -234,7 +239,6 @@ DoomScrollStopper/
         └── xml/
             ├── reels_intervention_service_config.xml   # AccessibilityService config for ReelsInterventionService
             ├── content_filter_accessibility_config.xml  # AccessibilityService config for ContentFilterService
-            ├── device_admin.xml                        # DeviceAdmin policies
             └── widget_breqk_info.xml                   # Widget metadata
 ```
 
@@ -314,7 +318,8 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | Custom modes (Study, Bedtime) | ✅ Working | ModeManager.java, BreqkPrefs.java | customize.js | `modes` JSON, `active_mode` |
 | Scheduled modes (AlarmManager) | ✅ Working | ModeManager.java, ModeSchedulerReceiver.java | customize.js | Mode schedule JSON |
 | Browser adult content blocker | ✅ Working | ContentFilterService.java | — (no UI) | Hardcoded domain list |
-| Device Admin (anti-uninstall) | ✅ Working | BreqkDeviceAdminReceiver.java | PermissionsScreen.js | System DeviceAdmin API |
+| Deletion prevention (uninstall pause overlay) | ✅ Working | UninstallScreenDetector.java, UninstallLockOverlay.java | customize.js (Prevent deletion toggle) | `uninstall_lock_enabled` |
+| 24-hour Uninstall Lock | ✅ Implemented 2026-05-05 | UninstallLockManager.java, UninstallExpiryReceiver.java | DangerZone.js, useUninstallLock.js | `uninstall_lock_enabled`, `delete_request_at_wall`, `delete_request_expires_at` |
 | Screen time dashboard | ✅ Working | ScreenTimeTracker.java | home.js, useDigitalWellbeing.js | UsageStatsManager |
 | Top apps by usage | ✅ Working | ScreenTimeTracker.java | home.js | UsageEvents |
 | Unlock count | ✅ Working (API 28+) | ScreenTimeTracker.java | home.js | KEYGUARD_HIDDEN events |
@@ -329,6 +334,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
+| B15 | YouTube "Lock In" overlay persists on home / long-form after leaving Shorts (Tier 3 matches bottom-nav Shorts tab) | shortform/detection/YouTubeDetector.java + ReelsInterventionService.java | 256-287, 510-521, 991-998 | [ ] TODO (P0 #1) |
 | B2 | BreqkVpnService extends VpnService but never tunnels — Play Store rejection risk | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |
 | B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | bridge/VPNModule.java + service/BreqkVpnService.java | 81, 55 | [ ] TODO |
 | B4 | Null action in onStartCommand crashes on OS service restart | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |

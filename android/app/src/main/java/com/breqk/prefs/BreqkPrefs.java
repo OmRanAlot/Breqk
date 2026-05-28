@@ -21,13 +21,14 @@ import java.util.Set;
 /**
  * BreqkPrefs
  * -----------
- * Centralized SharedPreferences constants and accessor for the breqk_prefs file.
+ * Centralized SharedPreferences constants and accessor for the breqk_prefs
+ * file.
  * All preference keys used across the app are defined here as constants to
  * prevent typo-induced bugs and make key discovery trivial.
  *
  * Usage:
- *   SharedPreferences prefs = BreqkPrefs.get(context);
- *   Set<String> blocked = BreqkPrefs.getBlockedApps(context);
+ * SharedPreferences prefs = BreqkPrefs.get(context);
+ * Set<String> blocked = BreqkPrefs.getBlockedApps(context);
  *
  * Logging: No logging — this is a constants/utility-only class.
  */
@@ -66,17 +67,26 @@ public final class BreqkPrefs {
     public static final String KEY_IS_IN_REELS_TIMESTAMP = "is_in_reels_timestamp";
     public static final String KEY_IS_IN_REELS_PACKAGE = "is_in_reels_package";
 
-    // Free break — one-time 20-min daily suspension of all Reels/Shorts interventions
-    public static final String KEY_FREE_BREAK_ENABLED        = "free_break_enabled";
-    public static final String KEY_FREE_BREAK_ACTIVE         = "free_break_active";
-    public static final String KEY_FREE_BREAK_START_TIME     = "free_break_start_time";
+    // Free break — one-time 20-min daily suspension of all Reels/Shorts
+    // interventions
+    public static final String KEY_FREE_BREAK_ENABLED = "free_break_enabled";
+    public static final String KEY_FREE_BREAK_ACTIVE = "free_break_active";
+    public static final String KEY_FREE_BREAK_START_TIME = "free_break_start_time";
     public static final String KEY_FREE_BREAK_LAST_USED_DATE = "free_break_last_used_date";
     /** Fixed duration for the free break: 20 minutes in milliseconds. */
-    public static final long   FREE_BREAK_DURATION_MS        = 20 * 60 * 1000L;
+    public static final long FREE_BREAK_DURATION_MS = 20 * 60 * 1000L;
 
     // ── Per-app feature policies ───────────────────────────────────────────
-    // JSON map: { "com.instagram.android": { "app_open_intercept": true, ... }, ... }
+    // JSON map: { "com.instagram.android": { "app_open_intercept": true, ... }, ...
+    // }
     public static final String KEY_APP_POLICIES = "app_policies";
+
+    /**
+     * Per-app intercept overlay customization.
+     * JSON: { "com.instagram.android": { "message": "...", "delay_secs": 15, "popup_delay_min": 10 }, ... }
+     * Integer.MAX_VALUE for popup_delay_min means "show once per open".
+     */
+    public static final String KEY_INTERCEPT_SETTINGS = "intercept_settings";
 
     // ── Modes ────────────────────────────────────────────────────────────────
     // JSON map of mode definitions: { "study": { "name": "Study Mode", ... }, ... }
@@ -92,24 +102,32 @@ public final class BreqkPrefs {
     public static final String FEATURE_SCROLL_BUDGET = "scroll_budget";
     public static final String FEATURE_FREE_BREAK = "free_break";
 
-    // ── AppEventRouter feature flags (used by LaunchInterceptor + ContentFilter) ──
-    /** Whether short-form content (Reels / Shorts / FYP) should be ejected via GLOBAL_ACTION_BACK. */
+    // ── AppEventRouter feature flags (used by LaunchInterceptor + ContentFilter)
+    // ──
+    /**
+     * Whether short-form content (Reels / Shorts / FYP) should be ejected via
+     * GLOBAL_ACTION_BACK.
+     */
     public static final String FEATURE_BLOCK_SHORT_FORM = "block_short_form";
-    /** Whether a 15-second mindfulness overlay should appear on fresh app launch. */
+    /**
+     * Whether a 15-second mindfulness overlay should appear on fresh app launch.
+     */
     public static final String FEATURE_LAUNCH_POPUP = "launch_popup";
 
     /**
      * SharedPreferences key prefix for LaunchInterceptor debounce timestamps.
      * Full key = KEY_LAUNCH_LAST_FOREGROUND + packageName
      * Example: "launch_last_foreground_com.instagram.android"
-     * Stores the System.currentTimeMillis() of the last time the overlay was dismissed
+     * Stores the System.currentTimeMillis() of the last time the overlay was
+     * dismissed
      * (or the app was last foregrounded during an active session).
      */
     public static final String KEY_LAUNCH_LAST_FOREGROUND = "launch_last_foreground_";
 
     private static final String TAG = "BreqkPrefs";
 
-    // Widget cache keys (also defined in WidgetPrefs; aligned here for discoverability)
+    // Widget cache keys (also defined in WidgetPrefs; aligned here for
+    // discoverability)
     public static final String KEY_WIDGET_FOCUS_SCORE = "widget_focus_score";
     public static final String KEY_WIDGET_TIME_SAVED_MIN = "widget_time_saved_min";
     public static final String KEY_WIDGET_APPS_BLOCKED = "widget_apps_blocked";
@@ -119,9 +137,38 @@ public final class BreqkPrefs {
     // Home feed post limit (Instagram home feed scroll counter)
     public static final String KEY_HOME_FEED_POST_LIMIT = "home_feed_post_limit";
 
+    // Browser content filter — whether ContentFilterService redirects blocked
+    // domains
+    public static final String KEY_CONTENT_FILTER_ENABLED = "content_filter_enabled";
+
+    // ── Uninstall Lock ────────────────────────────────────────────────────────
+    // Opt-in 24-hour cooldown before Breqk can be uninstalled. Plan:
+    // .claude/plan/24h-delete-lock.md
+    // CRITICAL: NEVER include any of these keys in a "reset to defaults" routine —
+    // wiping them while a delete request is active would let the user bypass the
+    // wait.
+    public static final String KEY_UNINSTALL_LOCK_ENABLED = "uninstall_lock_enabled";
+    public static final String KEY_UNINSTALL_LOCK_CONSENT_VERSION = "uninstall_lock_consent_version";
+    public static final String KEY_UNINSTALL_LOCK_CONSENT_AT = "uninstall_lock_consent_at";
+
+    // Twin-clock state for tamper detection (see UninstallLockManager).
+    // request_at_wall = System.currentTimeMillis() captured at requestDelete()
+    // request_at_boot = SystemClock.elapsedRealtime() captured at requestDelete()
+    // boot_id = approximate boot wall-time; lets us detect a reboot
+    // expires_at = wall-clock target (request_at_wall + 24h)
+    public static final String KEY_DELETE_REQUEST_AT_WALL = "delete_request_at_wall";
+    public static final String KEY_DELETE_REQUEST_AT_BOOT = "delete_request_at_boot";
+    public static final String KEY_DELETE_REQUEST_EXPIRES_AT = "delete_request_expires_at";
+    public static final String KEY_DELETE_REQUEST_BOOT_ID = "delete_request_boot_id";
+
+    public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 30-second delay
+    public static final String UNINSTALL_LOCK_CONSENT_VERSION_CURRENT = "2026-05-12-v1";
+
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;
     public static final int DEFAULT_POPUP_DELAY_MINUTES = 10;
+    /** Sentinel for "show once per app open, never re-show on a timer". */
+    public static final int POPUP_DELAY_ONCE_SENTINEL = Integer.MAX_VALUE;
     public static final int DEFAULT_SCROLL_THRESHOLD = 4;
     public static final int DEFAULT_SCROLL_ALLOWANCE_MINUTES = 5;
     public static final int DEFAULT_HOME_FEED_POST_LIMIT = 20;
@@ -131,7 +178,8 @@ public final class BreqkPrefs {
 
     /**
      * Returns the SharedPreferences instance for breqk_prefs.
-     * Android caches SharedPreferences internally so calling this repeatedly is cheap.
+     * Android caches SharedPreferences internally so calling this repeatedly is
+     * cheap.
      */
     public static SharedPreferences get(Context context) {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -139,7 +187,8 @@ public final class BreqkPrefs {
 
     /**
      * Returns a defensive copy of the blocked apps set.
-     * Android documentation warns that getStringSet() returns the internal backing set
+     * Android documentation warns that getStringSet() returns the internal backing
+     * set
      * which must not be modified. This method always returns a safe copy.
      *
      * @return New HashSet containing blocked package names; never null.
@@ -161,7 +210,8 @@ public final class BreqkPrefs {
     public static Map<String, Map<String, Boolean>> getAppPolicies(Context context) {
         String json = get(context).getString(KEY_APP_POLICIES, "");
         Map<String, Map<String, Boolean>> result = new HashMap<>();
-        if (json == null || json.isEmpty()) return result;
+        if (json == null || json.isEmpty())
+            return result;
         try {
             JSONObject root = new JSONObject(json);
             Iterator<String> pkgs = root.keys();
@@ -185,7 +235,8 @@ public final class BreqkPrefs {
     /**
      * Saves the full app policies map to SharedPreferences as JSON.
      *
-     * Also syncs the legacy blocked_apps set (derived from app_open_intercept flags)
+     * Also syncs the legacy blocked_apps set (derived from app_open_intercept
+     * flags)
      * so AppUsageMonitor/MyVpnService continue working without changes.
      */
     public static void saveAppPolicies(Context context, Map<String, Map<String, Boolean>> policies) {
@@ -210,6 +261,80 @@ public final class BreqkPrefs {
         dispatchBlockedAppsReload(context);
     }
 
+    // ── Per-app intercept settings ────────────────────────────────────────────
+
+    /**
+     * Returns the raw intercept_settings JSONObject, or empty object on error.
+     */
+    private static JSONObject getInterceptSettingsJson(Context context) {
+        String json = get(context).getString(KEY_INTERCEPT_SETTINGS, "{}");
+        try {
+            return new JSONObject(json != null ? json : "{}");
+        } catch (JSONException e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] Parse error: " + e.getMessage());
+            return new JSONObject();
+        }
+    }
+
+    /**
+     * Returns the intercept settings for one app, or an empty JSONObject if none set.
+     * Keys: "message" (String), "delay_secs" (int), "popup_delay_min" (int).
+     */
+    public static JSONObject getAppInterceptSettings(Context context, String packageName) {
+        try {
+            return getInterceptSettingsJson(context).optJSONObject(packageName) != null
+                    ? getInterceptSettingsJson(context).getJSONObject(packageName)
+                    : new JSONObject();
+        } catch (JSONException e) {
+            return new JSONObject();
+        }
+    }
+
+    /**
+     * Saves intercept settings for a single app.
+     * Pass null/empty message to clear the override and fall back to global.
+     */
+    public static void setAppInterceptSettings(Context context, String packageName,
+            String message, int delaySecs, int popupDelayMin) {
+        try {
+            JSONObject all = getInterceptSettingsJson(context);
+            JSONObject entry = new JSONObject();
+            entry.put("message", message != null ? message : "");
+            entry.put("delay_secs", delaySecs);
+            entry.put("popup_delay_min", popupDelayMin);
+            all.put(packageName, entry);
+            get(context).edit().putString(KEY_INTERCEPT_SETTINGS, all.toString()).apply();
+            Log.d(TAG, "[INTERCEPT_SETTINGS] Saved pkg=" + packageName
+                    + " delaySecs=" + delaySecs + " popupDelayMin=" + popupDelayMin);
+        } catch (JSONException e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] Save error pkg=" + packageName + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Copies the given intercept settings to every app that has an entry in app_policies.
+     * Creates entries for apps that don't have one yet.
+     */
+    public static void setAllAppsInterceptSettings(Context context,
+            String message, int delaySecs, int popupDelayMin) {
+        try {
+            Map<String, Map<String, Boolean>> policies = getAppPolicies(context);
+            JSONObject all = getInterceptSettingsJson(context);
+            for (String pkg : policies.keySet()) {
+                JSONObject entry = new JSONObject();
+                entry.put("message", message != null ? message : "");
+                entry.put("delay_secs", delaySecs);
+                entry.put("popup_delay_min", popupDelayMin);
+                all.put(pkg, entry);
+            }
+            get(context).edit().putString(KEY_INTERCEPT_SETTINGS, all.toString()).apply();
+            Log.d(TAG, "[INTERCEPT_SETTINGS] Applied to all " + policies.size() + " apps"
+                    + " delaySecs=" + delaySecs + " popupDelayMin=" + popupDelayMin);
+        } catch (JSONException e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] setAllApps error: " + e.getMessage());
+        }
+    }
+
     /**
      * Gets the base policy for a single app. Returns a map with all feature flags.
      * Missing features default to false.
@@ -217,12 +342,14 @@ public final class BreqkPrefs {
     public static Map<String, Boolean> getAppPolicy(Context context, String packageName) {
         Map<String, Map<String, Boolean>> all = getAppPolicies(context);
         Map<String, Boolean> policy = all.get(packageName);
-        if (policy == null) policy = new HashMap<>();
+        if (policy == null)
+            policy = new HashMap<>();
         return policy;
     }
 
     /**
-     * Checks if a feature is enabled for a given app, considering active mode overrides.
+     * Checks if a feature is enabled for a given app, considering active mode
+     * overrides.
      * Resolution order: active mode override → base policy → false.
      *
      * This is the primary method services should call to check feature state.
@@ -251,7 +378,8 @@ public final class BreqkPrefs {
 
     /**
      * Returns the effective value of a global setting, considering mode overrides.
-     * Resolution: active mode setting_overrides → base SharedPreferences → defaultValue.
+     * Resolution: active mode setting_overrides → base SharedPreferences →
+     * defaultValue.
      */
     public static int getEffectiveSettingInt(Context context, String settingKey, int defaultValue) {
         SharedPreferences prefs = get(context);
@@ -301,11 +429,13 @@ public final class BreqkPrefs {
 
     /**
      * Returns the modes JSON object from SharedPreferences.
-     * Each mode has: name, icon, color, policy_overrides, setting_overrides, schedule.
+     * Each mode has: name, icon, color, policy_overrides, setting_overrides,
+     * schedule.
      */
     public static JSONObject getModes(Context context) {
         String json = get(context).getString(KEY_MODES, "");
-        if (json == null || json.isEmpty()) return new JSONObject();
+        if (json == null || json.isEmpty())
+            return new JSONObject();
         try {
             return new JSONObject(json);
         } catch (JSONException e) {
@@ -323,20 +453,26 @@ public final class BreqkPrefs {
     }
 
     /**
-     * Returns the feature override value from a specific mode for a specific app+feature.
-     * Returns null if the mode doesn't override this feature (caller should fall through).
+     * Returns the feature override value from a specific mode for a specific
+     * app+feature.
+     * Returns null if the mode doesn't override this feature (caller should fall
+     * through).
      */
     public static Boolean getModeFeatureOverride(Context context, String modeId,
-                                                  String packageName, String featureKey) {
+            String packageName, String featureKey) {
         try {
             JSONObject modes = getModes(context);
-            if (!modes.has(modeId)) return null;
+            if (!modes.has(modeId))
+                return null;
             JSONObject mode = modes.getJSONObject(modeId);
-            if (!mode.has("policy_overrides")) return null;
+            if (!mode.has("policy_overrides"))
+                return null;
             JSONObject policyOverrides = mode.getJSONObject("policy_overrides");
-            if (!policyOverrides.has(packageName)) return null;
+            if (!policyOverrides.has(packageName))
+                return null;
             JSONObject appOverrides = policyOverrides.getJSONObject(packageName);
-            if (!appOverrides.has(featureKey)) return null;
+            if (!appOverrides.has(featureKey))
+                return null;
             return appOverrides.getBoolean(featureKey);
         } catch (JSONException e) {
             Log.w(TAG, "[MODE] Error reading mode override: " + e.getMessage());
@@ -356,9 +492,11 @@ public final class BreqkPrefs {
     /**
      * Migrates from the legacy blocked_apps set to the new per-app policy format.
      * Only runs if app_policies is empty and blocked_apps has entries.
-     * All features are enabled for each previously blocked app (preserves old behavior).
+     * All features are enabled for each previously blocked app (preserves old
+     * behavior).
      *
-     * Should be called once during app startup (e.g., from MainApplication or first module init).
+     * Should be called once during app startup (e.g., from MainApplication or first
+     * module init).
      */
     public static void migrateIfNeeded(Context context) {
         SharedPreferences prefs = get(context);
@@ -425,7 +563,8 @@ public final class BreqkPrefs {
     public static void createDefaultModesIfNeeded(Context context) {
         SharedPreferences prefs = get(context);
         int currentVersion = prefs.getInt(KEY_DEFAULT_MODES_VERSION, 0);
-        if (currentVersion >= DEFAULT_MODES_VERSION) return;
+        if (currentVersion >= DEFAULT_MODES_VERSION)
+            return;
 
         // Mark version immediately to prevent re-runs
         prefs.edit().putInt(KEY_DEFAULT_MODES_VERSION, DEFAULT_MODES_VERSION).apply();
@@ -514,7 +653,7 @@ public final class BreqkPrefs {
             JSONObject schedule = new JSONObject();
             schedule.put("start_time", "22:00");
             schedule.put("end_time", "07:00");
-            schedule.put("days", new org.json.JSONArray(new int[]{0, 1, 2, 3, 4, 5, 6}));
+            schedule.put("days", new org.json.JSONArray(new int[] { 0, 1, 2, 3, 4, 5, 6 }));
             bedtime.put("schedule", schedule);
             modes.put("bedtime", bedtime);
 
@@ -536,12 +675,15 @@ public final class BreqkPrefs {
 
     /**
      * Recomputes the legacy blocked_apps set from effective per-app policies.
-     * An app is "blocked" (in the legacy sense) if its effective app_open_intercept is true.
+     * An app is "blocked" (in the legacy sense) if its effective app_open_intercept
+     * is true.
      * This keeps AppUsageMonitor and MyVpnService working without changes.
      *
      * CRITICAL: Must iterate ALL known apps — both from base policies AND from the
-     * active mode's policy_overrides. A mode can enable app_open_intercept for an app
-     * that has it disabled in base policy. Only iterating base policy keys would miss
+     * active mode's policy_overrides. A mode can enable app_open_intercept for an
+     * app
+     * that has it disabled in base policy. Only iterating base policy keys would
+     * miss
      * these mode-added apps entirely.
      */
     public static void syncBlockedAppsFromPolicies(Context context) {
@@ -554,7 +696,8 @@ public final class BreqkPrefs {
         Map<String, Map<String, Boolean>> policies = getAppPolicies(context);
         allApps.addAll(policies.keySet());
 
-        // 2. Apps from active mode's policy_overrides (mode can add new app-level overrides)
+        // 2. Apps from active mode's policy_overrides (mode can add new app-level
+        // overrides)
         String activeMode = get(context).getString(KEY_ACTIVE_MODE, "");
         if (activeMode != null && !activeMode.isEmpty()) {
             try {
@@ -593,7 +736,8 @@ public final class BreqkPrefs {
      * picks up the change without requiring a service restart.
      *
      * VPNModule's appMonitor instance is updated separately via a
-     * SharedPreferences.OnSharedPreferenceChangeListener registered in its constructor.
+     * SharedPreferences.OnSharedPreferenceChangeListener registered in its
+     * constructor.
      *
      * Logging: [POLICY_RELOAD]
      */
@@ -613,7 +757,7 @@ public final class BreqkPrefs {
     // ── Widget cache accessors (consolidated from WidgetPrefs) ────────────────
 
     public static void updateWidgetCache(Context context, int focusScore, int timeSavedMin,
-                                         int appsBlocked, boolean monitoringEnabled) {
+            int appsBlocked, boolean monitoringEnabled) {
         get(context).edit()
                 .putInt(KEY_WIDGET_FOCUS_SCORE, focusScore)
                 .putInt(KEY_WIDGET_TIME_SAVED_MIN, timeSavedMin)
@@ -643,6 +787,41 @@ public final class BreqkPrefs {
         return get(context).getLong(KEY_WIDGET_UPDATED_AT, 0L);
     }
 
+    // ── Content filter helpers ────────────────────────────────────────────────
+
+    /**
+     * Browser bar / blocked-domain redirects
+     * ({@link com.breqk.ContentFilterService}).
+     * Default true so enabling the Accessibility entry alone matches pre-reorg
+     * behavior
+     * (Customize switch can still turn it off explicitly).
+     */
+    public static boolean isContentFilterEnabled(Context context) {
+        return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, true);
+    }
+
+    /** Enables or disables the browser content filter. */
+    public static void setContentFilterEnabled(Context context, boolean enabled) {
+        get(context).edit().putBoolean(KEY_CONTENT_FILTER_ENABLED, enabled).apply();
+    }
+
+    // ── Uninstall lock helpers ────────────────────────────────────────────────
+
+    /**
+     * Whether the deletion-prevention lock screen is active. Opt-in: default false
+     * so the uninstall friction never fires unless the user explicitly enabled it
+     * in Customize. Gates the detection branch in ReelsInterventionService.
+     */
+    public static boolean isUninstallLockEnabled(Context context) {
+        return get(context).getBoolean(KEY_UNINSTALL_LOCK_ENABLED, false);
+    }
+
+    /** Enables or disables the deletion-prevention lock screen. */
+    public static void setUninstallLockEnabled(Context context, boolean enabled) {
+        get(context).edit().putBoolean(KEY_UNINSTALL_LOCK_ENABLED, enabled).apply();
+    }
+
     // Prevent instantiation
-    private BreqkPrefs() {}
+    private BreqkPrefs() {
+    }
 }

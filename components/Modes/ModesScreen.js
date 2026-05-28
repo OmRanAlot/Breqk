@@ -10,6 +10,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -181,6 +182,7 @@ const ModesScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
 
   const [modes, setModes] = useState({});
+  const [activeModeId, setActiveModeId] = useState(null);
   const [editingModeId, setEditingModeId] = useState(null);
   const [editingMode, setEditingMode] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
@@ -206,11 +208,14 @@ const ModesScreen = ({ navigation }) => {
   }, [savedOpacity]);
 
   useEffect(() => {
-    const load = async () => {
-      console.log('[ModesScreen] loading modes');
+    const loadData = async () => {
+      console.log('[ModesScreen] loading modes and active mode');
       try {
+        const activeId = await new Promise(resolve => SettingsModule.getActiveMode(resolve));
+        setActiveModeId(activeId || null);
+
         const modesJson = await new Promise(resolve =>
-          SettingsModule.getModes(json => resolve(json)),
+          SettingsModule.getModes(resolve),
         );
         let parsedModes = {};
         try {
@@ -218,18 +223,35 @@ const ModesScreen = ({ navigation }) => {
         } catch (_) {}
         if (!parsedModes || Object.keys(parsedModes).length === 0) {
           parsedModes = DEFAULT_MODES;
+        }
+
+        let needsSave = false;
+        Object.keys(parsedModes).forEach(id => {
+          const shouldBeEnabled = (id === activeId);
+          if (parsedModes[id].enabled !== shouldBeEnabled) {
+            parsedModes[id].enabled = shouldBeEnabled;
+            needsSave = true;
+          }
+        });
+
+        if (needsSave) {
           SettingsModule.saveModes(JSON.stringify(parsedModes));
         }
+
         setModes(parsedModes);
-        console.log(
-          '[ModesScreen] modes loaded:',
-          Object.keys(parsedModes).length,
-        );
       } catch (e) {
         console.warn('[ModesScreen] load error:', e);
       }
     };
-    load();
+    loadData();
+
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        loadData();
+      }
+    });
+
+    return () => sub?.remove();
   }, []);
 
   const handleToggleActive = useCallback(
@@ -253,9 +275,24 @@ const ModesScreen = ({ navigation }) => {
       const nativeCall = newValue
         ? VPNModule.activateMode(modeId)
         : VPNModule.deactivateMode();
-      Promise.resolve(nativeCall).catch(e =>
-        console.warn('[ModesScreen] native mode toggle failed:', e),
-      );
+      Promise.resolve(nativeCall)
+        .then(() => {
+          SettingsModule.getActiveMode(id => {
+            setActiveModeId(id || null);
+            // Native fallback to default on deactivate
+            if (!newValue && id === 'default' && normalized['default']) {
+              setModes(prev => {
+                const next = { ...prev };
+                Object.keys(next).forEach(k => next[k].enabled = (k === 'default'));
+                SettingsModule.saveModes(JSON.stringify(next));
+                return next;
+              });
+            }
+          });
+        })
+        .catch(e =>
+          console.warn('[ModesScreen] native mode toggle failed:', e),
+        );
       showSaved();
     },
     [modes, showSaved],
@@ -356,8 +393,7 @@ const ModesScreen = ({ navigation }) => {
         {activeModes.length > 0 && (
           <View style={styles.activeBanner}>
             <Text style={styles.activeBannerText}>
-              {activeModes.length} mode{activeModes.length > 1 ? 's' : ''}{' '}
-              active
+              {activeModeId && modes[activeModeId] ? modes[activeModeId].name : 'A mode'} active
             </Text>
           </View>
         )}
@@ -373,7 +409,7 @@ const ModesScreen = ({ navigation }) => {
             key={id}
             modeId={id}
             mode={mode}
-            isActive={mode.enabled}
+            isActive={id === activeModeId}
             onToggleActive={handleToggleActive}
             onEdit={handleEdit}
           />

@@ -20,6 +20,21 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!--
+        Package visibility (Android 11+, API 30+).
+        QUERY_ALL_PACKAGES (above) currently grants visibility into every installed app,
+        which is what VPNModule.getInstalledApps() relies on for the "Manage Apps"
+        settings screen. The <queries> block below is a forward-compatible fallback:
+        if/when QUERY_ALL_PACKAGES is removed (Play Store sensitive permission policy),
+        we still see every launcher-visible app via this LAUNCHER intent declaration.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".MainApplication"
         android:label="@string/app_name"
@@ -51,30 +66,6 @@
         </service>
 
         <!--
-            Device Administrator receiver.
-            Registers Breqk as a Device Admin so it cannot be uninstalled without
-            first deactivating admin privileges — deliberate friction against deletion.
-            Logcat tag: DEVICE_ADMIN
-
-            DEV bypass (ADB):
-              adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
-              adb uninstall com.breqk
-        -->
-        <receiver
-            android:name=".deviceadmin.BreqkDeviceAdminReceiver"
-            android:exported="true"
-            android:permission="android.permission.BIND_DEVICE_ADMIN">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-                <action android:name="android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED" />
-                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
-            </intent-filter>
-        </receiver>
-
-        <!--
             Mode schedule receiver.
             Handles AlarmManager intents for mode auto-activation/deactivation
             (e.g., Bedtime mode at 10pm) and re-registers alarms on boot.
@@ -100,6 +91,20 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_breqk_info" />
+        </receiver>
+
+        <!--
+            Uninstall-lock expiry receiver.
+            Fired by AlarmManager when the 24-hour (or debug 60-second) cooldown elapses.
+            Also handles BOOT_COMPLETED to re-schedule the alarm after a device reboot.
+            Logcat tag: UNINSTALL_LOCK
+        -->
+        <receiver
+            android:name=".lock.UninstallExpiryReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
         </receiver>
 
         <!--

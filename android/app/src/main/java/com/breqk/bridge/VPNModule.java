@@ -1,12 +1,11 @@
 package com.breqk.bridge;
+
 import com.breqk.monitor.AppUsageMonitor;
 import com.breqk.monitor.ServiceHelper;
 import com.breqk.monitor.ScreenTimeTracker;
 import com.breqk.prefs.BreqkPrefs;
 import com.breqk.mode.ModeManager;
 import com.breqk.service.BreqkVpnService;
-import com.breqk.deviceadmin.BreqkDeviceAdminReceiver;
-
 /*
  * VPNModule
  * ---------
@@ -30,8 +29,6 @@ import com.breqk.deviceadmin.BreqkDeviceAdminReceiver;
  * and usage stats queries. BreqkVpnService's monitor handles the actual polling loop.
  */
 
-import android.app.admin.DevicePolicyManager;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.provider.Settings;
@@ -69,28 +66,34 @@ public class VPNModule extends ReactContextBaseJavaModule {
     private ScreenTimeTracker screenTimeTracker;
 
     // Free break — schedules the auto-end callback after 20 minutes
-    private final android.os.Handler freeBreakHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final android.os.Handler freeBreakHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable freeBreakEndRunnable = null;
 
-    // Strong reference to the prefs listener so Android doesn't GC it via WeakReference.
-    // Picks up KEY_BLOCKED_APPS changes written by BreqkPrefs.syncBlockedAppsFromPolicies
-    // and re-syncs VPNModule's private appMonitor instance. This is the mechanism that
+    // Strong reference to the prefs listener so Android doesn't GC it via
+    // WeakReference.
+    // Picks up KEY_BLOCKED_APPS changes written by
+    // BreqkPrefs.syncBlockedAppsFromPolicies
+    // and re-syncs VPNModule's private appMonitor instance. This is the mechanism
+    // that
     // makes Customize toggles take effect on the live monitor without a restart.
     private SharedPreferences.OnSharedPreferenceChangeListener blockedAppsListener;
 
     public VPNModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
-        // Use applicationContext for long-lived objects to prevent Activity context leak.
-        // AppUsageMonitor and ScreenTimeTracker only need Context for SharedPreferences,
-        // PackageManager, and system services — all of which work with applicationContext.
+        // Use applicationContext for long-lived objects to prevent Activity context
+        // leak.
+        // AppUsageMonitor and ScreenTimeTracker only need Context for
+        // SharedPreferences,
+        // PackageManager, and system services — all of which work with
+        // applicationContext.
         this.appMonitor = new AppUsageMonitor(reactContext.getApplicationContext());
         this.screenTimeTracker = new ScreenTimeTracker(reactContext.getApplicationContext());
         Log.d(TAG, "[INIT] VPNModule initialized");
 
         // CRITICAL FIX: Load blocked apps immediately when VPNModule is created
-        // This ensures appMonitor has blocked apps even before startMonitoring() is called
+        // This ensures appMonitor has blocked apps even before startMonitoring() is
+        // called
         loadBlockedAppsIntoMonitor();
 
         // Set up listener
@@ -139,12 +142,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Helper method to load blocked apps from SharedPreferences into VPNModule's appMonitor.
-     * Uses BreqkPrefs.getBlockedApps() which returns a defensive copy (safe from mutation).
+     * Helper method to load blocked apps from SharedPreferences into VPNModule's
+     * appMonitor.
+     * Uses BreqkPrefs.getBlockedApps() which returns a defensive copy (safe from
+     * mutation).
      *
      * CALLED FROM:
      * - Constructor: Loads blocked apps when module is first created
-     * - startMonitoring(): Reloads to ensure we have the latest list before monitoring starts
+     * - startMonitoring(): Reloads to ensure we have the latest list before
+     * monitoring starts
      */
     private void loadBlockedAppsIntoMonitor() {
         try {
@@ -152,7 +158,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
             if (!blockedAppsCopy.isEmpty()) {
                 appMonitor.setBlockedApps(blockedAppsCopy);
-                Log.d(TAG, "[LOAD_BLOCKED] Loaded " + blockedAppsCopy.size() + " blocked apps into VPNModule's monitor");
+                Log.d(TAG,
+                        "[LOAD_BLOCKED] Loaded " + blockedAppsCopy.size() + " blocked apps into VPNModule's monitor");
                 Log.d(TAG, "[LOAD_BLOCKED] Blocked apps: " + blockedAppsCopy.toString());
             } else {
                 Log.d(TAG, "[LOAD_BLOCKED] No saved blocked apps found in SharedPreferences");
@@ -204,7 +211,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     public void startMonitoring(Promise promise) {
         Log.d(TAG, "[START] ========== startMonitoring called ==========");
         try {
-            // STEP 1: Start the foreground service (keeps monitoring alive even when app is backgrounded)
+            // STEP 1: Start the foreground service (keeps monitoring alive even when app is
+            // backgrounded)
             Log.d(TAG, "[START] Step 1: Starting BreqkVpnService foreground service...");
             Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
             serviceIntent.setAction("START_MONITORING");
@@ -328,7 +336,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
         try {
             long startTimeLong = (long) startTime;
             long endTimeLong = (long) endTime;
-            List<AppUsageMonitor.AppUsageInfo> topApps = appMonitor.getTopAppsByUsage(startTimeLong, endTimeLong, limit);
+            List<AppUsageMonitor.AppUsageInfo> topApps = appMonitor.getTopAppsByUsage(startTimeLong, endTimeLong,
+                    limit);
 
             WritableArray appArray = Arguments.createArray();
             for (AppUsageMonitor.AppUsageInfo appInfo : topApps) {
@@ -375,7 +384,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * setBlockedApps - Called from React Native (Customize screen) when user toggles apps
+     * setBlockedApps - Called from React Native (Customize screen) when user
+     * toggles apps
      *
      * CRITICAL: This method must update TWO places:
      * 1. VPNModule's own appMonitor instance (for overlay detection)
@@ -431,7 +441,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * requestPermissions — Opens Usage Access settings.
-     * Functionally identical to openUsageAccessSettings(); kept for JS backward compatibility.
+     * Functionally identical to openUsageAccessSettings(); kept for JS backward
+     * compatibility.
      */
     @ReactMethod
     public void requestPermissions(Promise promise) {
@@ -468,8 +479,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
             // Get list of installed apps
             android.content.pm.PackageManager pm = reactContext.getPackageManager();
             List<android.content.pm.ApplicationInfo> packages = pm.getInstalledApplications(
-                android.content.pm.PackageManager.GET_META_DATA
-            );
+                    android.content.pm.PackageManager.GET_META_DATA);
 
             for (android.content.pm.ApplicationInfo packageInfo : packages) {
                 // Filter out system apps
@@ -489,7 +499,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
         }
     }
 
-    // requestVpnPermission — stubbed out. BreqkVpnService no longer extends VpnService,
+    // requestVpnPermission — stubbed out. BreqkVpnService no longer extends
+    // VpnService,
     // so no VPN permission is needed. Kept for JS backward compatibility.
     @ReactMethod
     public void requestVpnPermission(Promise promise) {
@@ -499,7 +510,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * @deprecated Use startMonitoring() instead. This method starts the service but
-     * doesn't reload blocked apps or log diagnostics. Kept for backward compatibility.
+     *             doesn't reload blocked apps or log diagnostics. Kept for backward
+     *             compatibility.
      */
     @ReactMethod
     public void startVpnService(Promise promise) {
@@ -541,8 +553,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     private void sendEvent(String eventName, WritableMap params) {
         if (reactContext != null && reactContext.hasActiveCatalystInstance()) {
             reactContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-                .emit(eventName, params);
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                    .emit(eventName, params);
         }
     }
 
@@ -551,89 +563,18 @@ public class VPNModule extends ReactContextBaseJavaModule {
         WritableMap result = Arguments.createMap();
         result.putBoolean("overlay", Settings.canDrawOverlays(reactContext));
         result.putBoolean("usage", hasUsageAccessPermission());
-        result.putBoolean("deviceAdmin", isDeviceAdminActiveInternal());
         promise.resolve(result);
-    }
-
-    // ── Device Admin helpers ──────────────────────────────────────────────────
-
-    /**
-     * Returns true if Breqk is currently an active Device Administrator.
-     * Internal helper — also exposed to JS via isDeviceAdminActive().
-     */
-    private boolean isDeviceAdminActiveInternal() {
-        DevicePolicyManager dpm =
-                (DevicePolicyManager) reactContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
-        ComponentName adminComponent =
-                new ComponentName(reactContext, BreqkDeviceAdminReceiver.class);
-        return dpm != null && dpm.isAdminActive(adminComponent);
-    }
-
-    /**
-     * JS-callable: check whether Device Admin is active.
-     * Returns { active: boolean }.
-     */
-    @ReactMethod
-    public void isDeviceAdminActive(Promise promise) {
-        boolean active = isDeviceAdminActiveInternal();
-        Log.d(TAG, "[DEVICE_ADMIN] isDeviceAdminActive → " + active);
-        WritableMap result = Arguments.createMap();
-        result.putBoolean("active", active);
-        promise.resolve(result);
-    }
-
-    /**
-     * JS-callable: launch the system Device Admin activation dialog.
-     * The user sees a standard Android "Activate device administrator?" screen.
-     * After the user accepts or cancels, the app returns to foreground and
-     * PermissionsScreen re-checks via checkPermissions().
-     *
-     * DEV bypass (ADB — works on debug builds):
-     *   adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
-     */
-    @ReactMethod
-    public void activateDeviceAdmin(Promise promise) {
-        try {
-            if (isDeviceAdminActiveInternal()) {
-                Log.d(TAG, "[DEVICE_ADMIN] already active — skipping activation intent");
-                promise.resolve(true);
-                return;
-            }
-            ComponentName adminComponent =
-                    new ComponentName(reactContext, BreqkDeviceAdminReceiver.class);
-            Intent intent = new Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
-            intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
-            intent.putExtra(
-                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                    "Enabling Device Admin prevents Breqk from being uninstalled while you "
-                            + "are committed to your focus goals. You can deactivate this anytime "
-                            + "in Settings → Security → Device Administrators."
-            );
-            // Launch from the current Activity (same task) so that when the system dialog
-            // finishes, the user is returned to Breqk and AppState fires 'active'.
-            // Do NOT use FLAG_ACTIVITY_NEW_TASK here — that puts the dialog in a separate
-            // task, causing the user to land on the launcher instead of coming back to us.
-            android.app.Activity currentActivity = getCurrentActivity();
-            if (currentActivity != null) {
-                currentActivity.startActivity(intent);
-            } else {
-                // Fallback: no active Activity (e.g. app in background). Use new task flag.
-                Log.w(TAG, "[DEVICE_ADMIN] no current Activity — falling back to FLAG_ACTIVITY_NEW_TASK");
-                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                reactContext.startActivity(intent);
-            }
-            Log.d(TAG, "[DEVICE_ADMIN] activation dialog launched");
-            promise.resolve(false); // user must confirm in system dialog
-        } catch (Exception e) {
-            Log.e(TAG, "[DEVICE_ADMIN] failed to launch activation dialog", e);
-            promise.reject("DEVICE_ADMIN_ERROR", e.getMessage());
-        }
     }
 
     @ReactMethod
     public void setDelayMessage(String message, Promise promise) {
         try {
             Log.d(TAG, "[SET_MESSAGE] Setting delay message: " + message);
+
+            // Persist to SharedPreferences so Customize can reload on next mount
+            BreqkPrefs.get(reactContext).edit()
+                    .putString(BreqkPrefs.KEY_DELAY_MESSAGE, message)
+                    .apply();
 
             // Update VPNModule's appMonitor
             appMonitor.setDelayMessage(message);
@@ -657,6 +598,11 @@ public class VPNModule extends ReactContextBaseJavaModule {
         try {
             Log.d(TAG, "[SET_DELAY_TIME] Setting delay timer to " + seconds + " seconds");
 
+            // Persist to SharedPreferences so Customize can reload on next mount
+            BreqkPrefs.get(reactContext).edit()
+                    .putInt(BreqkPrefs.KEY_DELAY_TIME_SECONDS, seconds)
+                    .apply();
+
             // Update VPNModule's appMonitor
             appMonitor.setDelayTime(seconds);
 
@@ -679,14 +625,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * getDigitalWellbeingStats — Returns comprehensive today stats for the Home screen.
+     * getDigitalWellbeingStats — Returns comprehensive today stats for the Home
+     * screen.
      *
      * Resolves with a map containing:
-     *   totalScreenTimeMin  (double) — total foreground time today in minutes
-     *   unlockCount         (int)    — device unlocks today; -1 if API < 28
-     *   notificationCount   (int)    — notifications seen today; -1 if unavailable
-     *   startTime           (double) — start of today in epoch ms
-     *   endTime             (double) — now in epoch ms
+     * totalScreenTimeMin (double) — total foreground time today in minutes
+     * unlockCount (int) — device unlocks today; -1 if API < 28
+     * notificationCount (int) — notifications seen today; -1 if unavailable
+     * startTime (double) — start of today in epoch ms
+     * endTime (double) — now in epoch ms
      *
      * Logging: [WELLBEING]
      */
@@ -699,19 +646,24 @@ public class VPNModule extends ReactContextBaseJavaModule {
             WritableMap result = Arguments.createMap();
             result.putDouble("totalScreenTimeMin",
                     rawStats.containsKey("totalScreenTimeMin")
-                            ? ((Number) rawStats.get("totalScreenTimeMin")).doubleValue() : 0.0);
+                            ? ((Number) rawStats.get("totalScreenTimeMin")).doubleValue()
+                            : 0.0);
             result.putInt("unlockCount",
                     rawStats.containsKey("unlockCount")
-                            ? ((Number) rawStats.get("unlockCount")).intValue() : -1);
+                            ? ((Number) rawStats.get("unlockCount")).intValue()
+                            : -1);
             result.putInt("notificationCount",
                     rawStats.containsKey("notificationCount")
-                            ? ((Number) rawStats.get("notificationCount")).intValue() : -1);
+                            ? ((Number) rawStats.get("notificationCount")).intValue()
+                            : -1);
             result.putDouble("startTime",
                     rawStats.containsKey("startTime")
-                            ? ((Number) rawStats.get("startTime")).doubleValue() : 0.0);
+                            ? ((Number) rawStats.get("startTime")).doubleValue()
+                            : 0.0);
             result.putDouble("endTime",
                     rawStats.containsKey("endTime")
-                            ? ((Number) rawStats.get("endTime")).doubleValue() : 0.0);
+                            ? ((Number) rawStats.get("endTime")).doubleValue()
+                            : 0.0);
 
             Log.d(TAG, "[WELLBEING] Resolved: totalScreenTimeMin=" +
                     result.getDouble("totalScreenTimeMin") +
@@ -725,16 +677,17 @@ public class VPNModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * getTopAppsToday — Returns top N apps by foreground usage today for the Home screen.
+     * getTopAppsToday — Returns top N apps by foreground usage today for the Home
+     * screen.
      *
      * Resolves with an array where each element is a map containing:
-     *   packageName   (String) — e.g. "com.instagram.android"
-     *   appName       (String) — human-readable label
-     *   usageTimeMin  (double) — foreground minutes today
+     * packageName (String) — e.g. "com.instagram.android"
+     * appName (String) — human-readable label
+     * usageTimeMin (double) — foreground minutes today
      *
      * @param limit Maximum number of apps to return (recommended: 5)
      *
-     * Logging: [TOP_APPS_TODAY]
+     *              Logging: [TOP_APPS_TODAY]
      */
     @ReactMethod
     public void getTopAppsToday(int limit, Promise promise) {
@@ -749,8 +702,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
             cal.set(java.util.Calendar.MILLISECOND, 0);
             long startTime = cal.getTimeInMillis();
 
-            List<Map<String, Object>> perAppStats =
-                    screenTimeTracker.getPerAppStats(startTime, endTime, limit);
+            List<Map<String, Object>> perAppStats = screenTimeTracker.getPerAppStats(startTime, endTime, limit);
 
             WritableArray appArray = Arguments.createArray();
             for (Map<String, Object> appStats : perAppStats) {
@@ -793,6 +745,11 @@ public class VPNModule extends ReactContextBaseJavaModule {
         try {
             Log.d(TAG, "[SET_POPUP_DELAY] Setting popup delay to " + minutes + " minutes");
 
+            // Persist so the value survives service restarts
+            BreqkPrefs.get(reactContext).edit()
+                    .putInt(BreqkPrefs.KEY_POPUP_DELAY_MINUTES, minutes)
+                    .apply();
+
             // Update VPNModule's appMonitor
             appMonitor.setPopupDelayMinutes(minutes);
 
@@ -810,11 +767,53 @@ public class VPNModule extends ReactContextBaseJavaModule {
         }
     }
 
+    @ReactMethod
+    public void getPopupDelayMinutes(Promise promise) {
+        try {
+            int minutes = BreqkPrefs.get(reactContext).getInt(
+                    BreqkPrefs.KEY_POPUP_DELAY_MINUTES, BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+            Log.d(TAG, "[GET_POPUP_DELAY] popup_delay_minutes=" + minutes);
+            promise.resolve(minutes);
+        } catch (Exception e) {
+            Log.e(TAG, "[GET_POPUP_DELAY] Failed", e);
+            promise.reject("GET_POPUP_DELAY_ERROR", e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void getDelayMessage(Promise promise) {
+        try {
+            String message = BreqkPrefs.get(reactContext).getString(
+                    BreqkPrefs.KEY_DELAY_MESSAGE,
+                    "Take a moment to consider if you really need this app right now");
+            Log.d(TAG, "[GET_MESSAGE] delay_message=" + message);
+            promise.resolve(message);
+        } catch (Exception e) {
+            Log.e(TAG, "[GET_MESSAGE] Failed", e);
+            promise.reject("GET_MESSAGE_ERROR", e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void getDelayTimeSeconds(Promise promise) {
+        try {
+            int seconds = BreqkPrefs.get(reactContext).getInt(
+                    BreqkPrefs.KEY_DELAY_TIME_SECONDS, BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS);
+            Log.d(TAG, "[GET_DELAY_TIME] delay_time_seconds=" + seconds);
+            promise.resolve(seconds);
+        } catch (Exception e) {
+            Log.e(TAG, "[GET_DELAY_TIME] Failed", e);
+            promise.reject("GET_DELAY_TIME_ERROR", e.getMessage());
+        }
+    }
+
     /**
-     * setScrollBudget — Called from React Native when user changes scroll budget settings.
+     * setScrollBudget — Called from React Native when user changes scroll budget
+     * settings.
      *
      * Saves to SharedPreferences so the budget survives restarts, then sends
-     * SET_SCROLL_BUDGET intent to BreqkVpnService to update its running monitor instance.
+     * SET_SCROLL_BUDGET intent to BreqkVpnService to update its running monitor
+     * instance.
      *
      * @param allowanceMinutes Minutes of scroll allowed per window (1–30)
      * @param windowMinutes    Window duration in minutes (15–120)
@@ -847,18 +846,23 @@ public class VPNModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * getScrollBudgetStatus — Called from React Native (Home screen) to show live budget status.
+     * getScrollBudgetStatus — Called from React Native (Home screen) to show live
+     * budget status.
      *
-     * Reads state from SharedPreferences, which BreqkVpnService's AppUsageMonitor persists
+     * Reads state from SharedPreferences, which BreqkVpnService's AppUsageMonitor
+     * persists
      * periodically and on state changes. Returns:
-     *   { allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs, remainingMs }
+     * { allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs,
+     * remainingMs }
      */
     @ReactMethod
     public void getScrollBudgetStatus(Promise promise) {
         try {
             SharedPreferences prefs = BreqkPrefs.get(reactContext);
-            int allowanceMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-            int windowMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+            int allowanceMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES,
+                    BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+            int windowMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES,
+                    BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
             long scrollTimeUsedMs = prefs.getLong(BreqkPrefs.KEY_SCROLL_TIME_USED_MS, 0);
             long windowStartTime = prefs.getLong(BreqkPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
             long budgetExhaustedAt = prefs.getLong(BreqkPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
@@ -912,10 +916,11 @@ public class VPNModule extends ReactContextBaseJavaModule {
      * used today (calendar day in device locale, resets at midnight).
      *
      * Side effects:
-     *  - Writes free_break_active=true, free_break_start_time, free_break_last_used_date
-     *    to SharedPreferences (ReelsInterventionService reads these directly).
-     *  - Dispatches FREE_BREAK_START intent to BreqkVpnService (informational).
-     *  - Schedules an auto-end Runnable for 20 minutes from now.
+     * - Writes free_break_active=true, free_break_start_time,
+     * free_break_last_used_date
+     * to SharedPreferences (ReelsInterventionService reads these directly).
+     * - Dispatches FREE_BREAK_START intent to BreqkVpnService (informational).
+     * - Schedules an auto-end Runnable for 20 minutes from now.
      */
     @ReactMethod
     public void startFreeBreak(Promise promise) {
@@ -956,7 +961,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
             ServiceHelper.startForegroundServiceCompat(reactContext, breakStartIntent);
 
             // Schedule auto-end on main thread
-            if (freeBreakEndRunnable != null) freeBreakHandler.removeCallbacks(freeBreakEndRunnable);
+            if (freeBreakEndRunnable != null)
+                freeBreakHandler.removeCallbacks(freeBreakEndRunnable);
             freeBreakEndRunnable = () -> {
                 Log.i(FREE_BREAK_TAG, "[FREE_BREAK] 20-min timer expired — auto-ending break");
                 endFreeBreakInternal();
@@ -976,7 +982,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * Ends the free break early (user-initiated).
-     * Clears free_break_active, cancels the auto-end timer, and notifies BreqkVpnService.
+     * Clears free_break_active, cancels the auto-end timer, and notifies
+     * BreqkVpnService.
      */
     @ReactMethod
     public void endFreeBreak(Promise promise) {
@@ -992,12 +999,12 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * Returns the current free break status as a JS-readable map:
-     *   enabled     — whether the feature toggle is on in settings
-     *   active      — whether a break is currently running
-     *   startTimeMs — epoch ms when the current break started (0 if not active)
-     *   durationMs  — always FREE_BREAK_DURATION_MS (1 200 000 ms)
-     *   remainingMs — ms until the break ends (0 if not active)
-     *   usedToday   — whether the break was already used today (12 am – 11:59 pm)
+     * enabled — whether the feature toggle is on in settings
+     * active — whether a break is currently running
+     * startTimeMs — epoch ms when the current break started (0 if not active)
+     * durationMs — always FREE_BREAK_DURATION_MS (1 200 000 ms)
+     * remainingMs — ms until the break ends (0 if not active)
+     * usedToday — whether the break was already used today (12 am – 11:59 pm)
      *
      * Also performs stale-flag cleanup: if active=true but the 20-min window has
      * elapsed (e.g. process was killed and restarted), auto-clears the flag.
@@ -1048,7 +1055,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * Internal: clears the free break active flag, cancels the auto-end timer,
-     * and notifies BreqkVpnService. Called by both the timer callback and endFreeBreak().
+     * and notifies BreqkVpnService. Called by both the timer callback and
+     * endFreeBreak().
      */
     private void endFreeBreakInternal() {
         if (freeBreakEndRunnable != null) {
@@ -1119,7 +1127,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     private boolean hasUsageAccessPermission() {
         try {
             AppOpsManager appOps = (AppOpsManager) reactContext.getSystemService(Context.APP_OPS_SERVICE);
-            ApplicationInfo appInfo = reactContext.getPackageManager().getApplicationInfo(reactContext.getPackageName(), 0);
+            ApplicationInfo appInfo = reactContext.getPackageManager().getApplicationInfo(reactContext.getPackageName(),
+                    0);
             int mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
                     appInfo.uid, appInfo.packageName);
             return (mode == AppOpsManager.MODE_ALLOWED);

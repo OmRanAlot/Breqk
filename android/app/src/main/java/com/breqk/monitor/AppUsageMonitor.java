@@ -74,8 +74,18 @@ public class AppUsageMonitor {
     private final Map<String, Long> popupCooldown = new ConcurrentHashMap<>();
     private static final long POPUP_COOLDOWN_MS = 1000; // 1s cooldown to avoid rapid re-triggers after Continue
     private static final long OVERLAY_DEBOUNCE_MS = 500; // 0.5s guard to prevent double overlay creation
+    // After the overlay appears, button taps are ignored for this long so accidental
+    // touch-throughs during the recents swipe gesture cannot dismiss it.
+    private static final long OVERLAY_TOUCH_GUARD_MS = 1000;
     private long overlayPendingUntil = 0L;
     private final Object overlayLock = new Object();
+    // Recents overview / brief launcher flashes change the foreground away from the blocked
+    // app even though the user is about to return. Hold the overlay until they've been gone
+    // longer than this threshold before actually dismissing.
+    private static final long TRANSIENT_AWAY_GRACE_MS = 1500;
+    // Timestamp (ms) when foreground first changed away from lastAppPackage while overlay
+    // was active. 0 = currently on the blocked app (or overlay not shown).
+    private long awayFromBlockedAppSince = 0L;
 
     // Custom message for the delay overlay (set from React Native)
     private String customMessage = "Take a moment to consider if you really need this app right now";
@@ -110,6 +120,8 @@ public class AppUsageMonitor {
             "com.samsung.android.incallui",
             "com.android.server.telecom"
     ));
+    // Track which blocked app has an active overlay — keeps it visible through recents
+    private String blockedAppWithActiveOverlay = "";
 
     // ─── SharedPreferences Throttling ───────────────────────────────────────
     // Sync scroll budget & Reels state from SharedPreferences every 500ms
@@ -212,6 +224,7 @@ public class AppUsageMonitor {
 
             loadBlockedAppsFromPrefs();
             loadScrollBudgetFromPrefs();
+            loadInterceptSettingsFromPrefs();
             Log.d(TAG, "Loaded blocked apps count=" + (blockedApps != null ? blockedApps.size() : 0));
             if (blockedApps != null && !blockedApps.isEmpty()) {
                 Log.d(TAG, "Blocked apps list: " + blockedApps.toString());
@@ -258,42 +271,69 @@ public class AppUsageMonitor {
                     String foregroundApp = getCurrentForegroundApp();
                     if (foregroundApp == null) {
                         Log.d(TAG, "Foreground app is null; skipping this tick");
-                        // Continue loop even if foreground app is null
+                        // Null foreground means the user is in recents, the launcher, or
+                        // between apps and UsageEvents has no confirmed foreground activity.
+                        // Reset currentForegroundApp so that when the user returns to a
+                        // blocked app it is treated as a fresh open and the overlay re-arms.
+                        if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
+                            Log.d(TAG, "[RECENTS_DETECT] foreground null — resetting currentForegroundApp="
+                                    + currentForegroundApp + " so return-from-recents re-triggers overlay");
+                            currentForegroundApp = "";
+                        }
                         if (isMonitoring) {
-                            handler.postDelayed(this, 500); // 500ms poll (Phase 1 latency fix; was 1000ms)
+                            handler.postDelayed(this, 500);
                         }
                         return;
                     }
 
                     // ─── Auto-Dismiss: remove overlay when user leaves the blocked app ───
-                    // If the overlay is active and the foreground app has changed away from the
-                    // app the overlay was shown for, dismiss it immediately. This handles:
-                    //   - User pressing Home while overlay is displayed
-                    //   - Incoming phone call switching to dialer
-                    //   - User switching to a different (non-blocked) app
-                    if (isOverlayActive && foregroundApp != null
-                            && !foregroundApp.equals(lastAppPackage)
-                            && !foregroundApp.equals(context.getPackageName())) {
-                        Log.i(TAG, "[AUTO_DISMISS] User left blocked app " + lastAppPackage
-                                + " → now on " + foregroundApp + "; removing overlay");
-                        handler.post(() -> removeOverlay());
-                    }
-                    // Also auto-dismiss if foreground is a system app or home launcher —
-                    // these should never have the overlay blocking them
-                    if (isOverlayActive && isSystemOrLauncher(foregroundApp)) {
-                        Log.i(TAG, "[AUTO_DISMISS] System/launcher app detected: "
-                                + foregroundApp + "; removing overlay");
-                        handler.post(() -> removeOverlay());
-                    }
-                    // Safety timeout: auto-dismiss overlay if it's been visible too long
-                    // without user interaction (failsafe for edge cases)
-                    if (isOverlayActive && overlayShownAt > 0) {
-                        long maxOverlayDurationMs = (customDelayTimeSeconds + 30) * 1000L;
-                        long now = System.currentTimeMillis();
-                        if ((now - overlayShownAt) > maxOverlayDurationMs) {
-                            Log.w(TAG, "[SAFETY_DISMISS] Overlay for " + lastAppPackage
-                                    + " exceeded max duration (" + maxOverlayDurationMs + "ms); auto-dismissing");
-                            handler.post(() -> removeOverlay());
+                    // Keep the overlay visible while the user is in recents (system UI) since they
+                    // may immediately return to the blocked app. Only dismiss when they switch to
+                    // a different app or remain away long enough to confirm intent.
+                    if (isOverlayActive) {
+                        long nowDismiss = System.currentTimeMillis();
+                        boolean isInRecentsOrLauncher = isSystemOrLauncher(foregroundApp);
+                        boolean leftBlockedApp = !foregroundApp.equals(lastAppPackage)
+                                && !foregroundApp.equals(context.getPackageName());
+
+                        if (!leftBlockedApp) {
+                            // Back on the blocked app (or our own UI). Reset grace timer.
+                            awayFromBlockedAppSince = 0L;
+                        } else if (isInRecentsOrLauncher) {
+                            // User is in recents/launcher — keep overlay visible indefinitely.
+                            // They may return to the blocked app immediately.
+                            Log.d(TAG, "[OVERLAY_PERSIST] in recents/launcher; keeping overlay for "
+                                    + blockedAppWithActiveOverlay);
+                            awayFromBlockedAppSince = 0L;
+                        } else {
+                            // User switched to a different (non-system) app. Start dismissal grace.
+                            if (awayFromBlockedAppSince == 0L) {
+                                awayFromBlockedAppSince = nowDismiss;
+                                Log.i(TAG, "[AUTO_DISMISS_GRACE] left " + lastAppPackage
+                                        + " → " + foregroundApp + "; starting "
+                                        + TRANSIENT_AWAY_GRACE_MS + "ms grace");
+                            }
+                            long awayFor = nowDismiss - awayFromBlockedAppSince;
+                            if (awayFor >= TRANSIENT_AWAY_GRACE_MS) {
+                                final String dismissedPkg = lastAppPackage;
+                                Log.i(TAG, "[AUTO_DISMISS] left " + dismissedPkg
+                                        + " → " + foregroundApp + " awayFor=" + awayFor
+                                        + "ms; removing overlay");
+                                handler.post(() -> removeOverlayAutoDismissed(dismissedPkg));
+                                awayFromBlockedAppSince = 0L;
+                            }
+                        }
+
+                        // Safety timeout: auto-dismiss if overlay has been visible too long
+                        if (overlayShownAt > 0) {
+                            long maxOverlayDurationMs = (customDelayTimeSeconds + 30) * 1000L;
+                            if ((nowDismiss - overlayShownAt) > maxOverlayDurationMs) {
+                                final String dismissedPkg = lastAppPackage;
+                                Log.w(TAG, "[SAFETY_DISMISS] Overlay for " + dismissedPkg
+                                        + " exceeded max duration (" + maxOverlayDurationMs
+                                        + "ms); auto-dismissing");
+                                handler.post(() -> removeOverlayAutoDismissed(dismissedPkg));
+                            }
                         }
                     }
 
@@ -344,7 +384,9 @@ public class AppUsageMonitor {
                             // Get when this app was opened
                             Long appOpenTime = appOpenTimestamps.get(foregroundApp);
                             Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);
-                            long popupDelayMs = popupDelayMinutes * 60 * 1000; // Convert minutes to milliseconds
+                            // Per-app popup delay (falls back to global if not set for this app)
+                            int effectiveDelayMin = getPerAppPopupDelayMinutes(foregroundApp);
+                            long popupDelayMs = (long) effectiveDelayMin * 60 * 1000L;
 
                             // Determine if we should show popup:
                             // 1. If no previous popup shown yet AND app not in allowed session → show
@@ -363,7 +405,7 @@ public class AppUsageMonitor {
                             long timeSinceLastPopupMs = lastPopupTime != null ? (now - lastPopupTime) : 0;
                             long timeSinceLastPopupSec = timeSinceLastPopupMs / 1000;
 
-                            Log.d(TAG, "Popup check for " + foregroundApp + ": delayMinutes=" + popupDelayMinutes +
+                            Log.d(TAG, "Popup check for " + foregroundApp + ": delayMinutes=" + effectiveDelayMin +
                                     " appOpenTime=" + appOpenTime + " lastPopupTime=" + lastPopupTime +
                                     " shouldShowFirst=" + shouldShowFirstPopup + " shouldShowNext="
                                     + shouldShowNextPopup +
@@ -384,7 +426,7 @@ public class AppUsageMonitor {
                                         + " - no app open timestamp recorded");
                             } else if (shouldShowPopup) {
                                 Log.i(TAG, "Popup should show NOW for " + foregroundApp + "! delayMinutes="
-                                        + popupDelayMinutes + " timeSinceOpen=" + timeSinceOpenSec + "s");
+                                        + effectiveDelayMin + " timeSinceOpen=" + timeSinceOpenSec + "s");
                             }
 
                             // Small debounce to avoid double overlay creation when two ticks race
@@ -599,6 +641,7 @@ public class AppUsageMonitor {
                 return;
             }
             lastAppPackage = packageName;
+            blockedAppWithActiveOverlay = packageName;
             isOverlayActive = true;
             overlayShownAt = System.currentTimeMillis(); // Track when overlay was displayed for safety timeout
             // Ensure debounce is active when we begin overlay creation
@@ -652,14 +695,19 @@ public class AppUsageMonitor {
                  * Title: use customMessage if the user set one, else the default question.
                  * Continue button: disabled, shows countdown text ("Continue (Wait Xs)").
                  */
-                titleText.setText(customMessage != null && !customMessage.isEmpty()
-                        ? customMessage : "Is this intentional?");
+                // Resolve per-app overrides, falling back to global values
+                org.json.JSONObject perAppSettings = BreqkPrefs.getAppInterceptSettings(context, packageName);
+                String effectiveMessage = perAppSettings.optString("message", "");
+                if (effectiveMessage.isEmpty()) effectiveMessage = (customMessage != null && !customMessage.isEmpty()) ? customMessage : "Is this intentional?";
+                int effectiveDelaySecs = perAppSettings.has("delay_secs") ? perAppSettings.optInt("delay_secs", customDelayTimeSeconds) : customDelayTimeSeconds;
+
+                titleText.setText(effectiveMessage);
                 Log.d(TAG, "Overlay title set to: " + titleText.getText());
 
-                // Continue button starts disabled; countdown text reflects customDelayTimeSeconds
+                // Continue button starts disabled; countdown text reflects effective delay
                 continueButton.setEnabled(false);
-                continueButton.setText("Continue (Wait " + customDelayTimeSeconds + "s)");
-                Log.d(TAG, "Continue button initialised — will enable after " + customDelayTimeSeconds + "s");
+                continueButton.setText("Continue (Wait " + effectiveDelaySecs + "s)");
+                Log.d(TAG, "Continue button initialised — will enable after " + effectiveDelaySecs + "s");
 
                 /*
                  * WINDOW MANAGER PARAMETERS
@@ -696,17 +744,21 @@ public class AppUsageMonitor {
                  * Countdown: enables the Continue button after customDelayTimeSeconds ticks.
                  */
                 startRippleAnimation(breathingCircle);
-                startContinueCountdown(continueButton, customDelayTimeSeconds);
+                startContinueCountdown(continueButton, effectiveDelaySecs);
 
                 /*
                  * CONTINUE BUTTON CLICK HANDLER
                  * -----------------------------
                  */
                 continueButton.setOnClickListener(v -> {
+                    if (System.currentTimeMillis() - overlayShownAt < OVERLAY_TOUCH_GUARD_MS) {
+                        Log.d(TAG, "Continue touch ignored — guard active for " + packageName);
+                        return;
+                    }
                     Log.d(TAG, "Continue clicked for " + packageName);
                     allowedThisSession.add(packageName);
                     popupCooldown.put(packageName, System.currentTimeMillis());
-                    removeOverlay();
+                    removeOverlayUserDismissed();
                 });
 
                 /*
@@ -714,10 +766,14 @@ public class AppUsageMonitor {
                  * --------------------------
                  */
                 backButton.setOnClickListener(v -> {
+                    if (System.currentTimeMillis() - overlayShownAt < OVERLAY_TOUCH_GUARD_MS) {
+                        Log.d(TAG, "Back touch ignored — guard active for " + packageName);
+                        return;
+                    }
                     Log.i(TAG, "Back clicked for " + packageName);
                     allowedThisSession.remove(packageName);
                     Log.i(TAG, "Back pressed: no cooldown; will show immediately on next open for " + packageName);
-                    removeOverlay();
+                    removeOverlayUserDismissed();
                     Intent homeIntent = new Intent(Intent.ACTION_MAIN);
                     homeIntent.addCategory(Intent.CATEGORY_HOME);
                     homeIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -842,12 +898,37 @@ public class AppUsageMonitor {
             overlayView = null;
         }
         isOverlayActive = false;
-        overlayShownAt = 0L; // Reset safety timeout tracker
-        // NOTE: We DON'T clear appOpenTimestamps or lastPopupShownTimestamps here
-        // because we want to track the next popup timing even after a popup is
-        // dismissed. Timestamps are only cleared when user switches away from the app.
+        overlayShownAt = 0L;
+        awayFromBlockedAppSince = 0L;
+        // NOTE: We DON'T clear appOpenTimestamps or lastPopupShownTimestamps here —
+        // that is the responsibility of the caller (see removeOverlayAutoDismissed).
         lastAppPackage = "";
+        blockedAppWithActiveOverlay = "";
         overlayPendingUntil = 0L;
+    }
+
+    /**
+     * Called when the user explicitly dismisses the overlay (Continue or Back button).
+     * Keeps popup timestamps intact so the next-popup delay timer keeps running.
+     */
+    private void removeOverlayUserDismissed() {
+        removeOverlay();
+    }
+
+    /**
+     * Called when the monitor auto-dismisses the overlay (user left the blocked app or
+     * safety timeout fired). Clears per-app popup timestamps so the intercept re-arms
+     * immediately the next time the user opens that app — they never completed the
+     * intercept flow, so the delay should start fresh on return.
+     */
+    private void removeOverlayAutoDismissed(String pkg) {
+        if (pkg != null && !pkg.isEmpty()) {
+            appOpenTimestamps.remove(pkg);
+            lastPopupShownTimestamps.remove(pkg);
+            Log.i(TAG, "[AUTO_DISMISS_CLEAR] cleared popup timestamps for "
+                    + pkg + "; overlay will re-arm on next open");
+        }
+        removeOverlay();
     }
 
     /**
@@ -926,7 +1007,8 @@ public class AppUsageMonitor {
     public void dismissOverlayIfShowing() {
         if (isOverlayActive) {
             Log.i(TAG, "[HOME_DISMISS] dismissOverlayIfShowing: force-dismissing overlay for " + lastAppPackage);
-            handler.post(() -> removeOverlay());
+            final String pkg = lastAppPackage;
+            handler.post(() -> removeOverlayAutoDismissed(pkg));
         } else {
             Log.d(TAG, "[HOME_DISMISS] dismissOverlayIfShowing: no overlay active, nothing to dismiss");
         }
@@ -963,11 +1045,12 @@ public class AppUsageMonitor {
     }
 
     public void setPopupDelayMinutes(int minutes) {
-        // Set how long to wait after FIRST popup before showing the popup again
+        // Set how long to wait after FIRST popup before showing the popup again.
+        // Integer.MAX_VALUE is the sentinel for "show once per open, never re-show".
         if (minutes < 0)
-            minutes = 0; // Minimum 0 minutes (show immediately again)
-        if (minutes > 60)
-            minutes = 60; // Maximum 60 minutes
+            minutes = 0;
+        if (minutes != Integer.MAX_VALUE && minutes > 60)
+            minutes = 60;
 
         this.popupDelayMinutes = minutes;
         Log.d(TAG, "Popup delay set: " + minutes + " minutes (first popup shows immediately, second popup after "
@@ -1087,6 +1170,37 @@ public class AppUsageMonitor {
     }
 
     // ─── Scroll Budget Methods ────────────────────────────────────────────────
+
+    /**
+     * Returns the effective popup delay (minutes) for a specific app.
+     * Checks per-app intercept_settings first; falls back to the global popupDelayMinutes.
+     * Integer.MAX_VALUE means "show once per open".
+     */
+    private int getPerAppPopupDelayMinutes(String packageName) {
+        org.json.JSONObject perApp = BreqkPrefs.getAppInterceptSettings(context, packageName);
+        if (perApp.has("popup_delay_min")) {
+            return perApp.optInt("popup_delay_min", popupDelayMinutes);
+        }
+        return popupDelayMinutes;
+    }
+
+    /**
+     * Load intercept overlay settings from SharedPreferences.
+     * Called on startMonitoring() so user-customized values survive service restarts.
+     */
+    private void loadInterceptSettingsFromPrefs() {
+        String msg = cachedPrefs.getString(BreqkPrefs.KEY_DELAY_MESSAGE, null);
+        if (msg != null && !msg.trim().isEmpty()) {
+            customMessage = msg;
+        }
+        int secs = cachedPrefs.getInt(BreqkPrefs.KEY_DELAY_TIME_SECONDS, BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS);
+        customDelayTimeSeconds = Math.max(5, Math.min(120, secs));
+        int delay = cachedPrefs.getInt(BreqkPrefs.KEY_POPUP_DELAY_MINUTES, BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+        // Allow sentinel (Integer.MAX_VALUE = once per open); otherwise clamp 0–60.
+        popupDelayMinutes = (delay == Integer.MAX_VALUE) ? delay : Math.max(0, Math.min(60, delay));
+        Log.d(TAG, "[LOAD_INTERCEPT] message='" + customMessage + "' delaySecs=" + customDelayTimeSeconds
+                + " popupDelayMin=" + popupDelayMinutes);
+    }
 
     /**
      * Load scroll budget configuration from SharedPreferences.

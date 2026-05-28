@@ -55,6 +55,32 @@ const linking = {
   },
 };
 
+/**
+ * MainNavigator — rendered only after permissions are confirmed.
+ * Calls useUninstallLock unconditionally (satisfies React rules of hooks) and
+ * intercepts the full screen when the 30-second delete delay is active.
+ */
+const MainNavigator = () => {
+
+
+  return (
+    <SafeAreaProvider>
+      <NavigationContainer ref={navigationRef} linking={linking}>
+        <Stack.Navigator
+          screenOptions={{ headerShown: false }}
+          initialRouteName="Home"
+        >
+          <Stack.Screen name="Home" component={Home} />
+          <Stack.Screen name="Customize" component={Customize} />
+          <Stack.Screen name="Modes" component={ModesScreen} />
+          <Stack.Screen name="Browser" component={BrowserScreen} />
+          <Stack.Screen name="AppDetail" component={AppDetail} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
+  );
+};
+
 const App = () => {
   // null = checking, false = missing, true = granted
   const [permissionsGranted, setPermissionsGranted] = useState<boolean | null>(
@@ -116,31 +142,9 @@ const App = () => {
     );
   }
 
-  // All permissions granted — show the main app
+  // All permissions granted — show the main app (lock routing handled inside)
   console.log('[App] permissions granted — rendering main navigator');
-  return (
-    <SafeAreaProvider>
-      <NavigationContainer ref={navigationRef} linking={linking}>
-        {/*
-          Stack navigator — no bottom tabs.
-          Home is the initial route.
-          Customize is pushed by the gear icon on Home.
-          Browser is pushed by safe-mode buttons or widget deep links.
-          All headers are hidden; each screen manages its own header UI.
-        */}
-        <Stack.Navigator
-          screenOptions={{ headerShown: false }}
-          initialRouteName="Home"
-        >
-          <Stack.Screen name="Home" component={Home} />
-          <Stack.Screen name="Customize" component={Customize} />
-          <Stack.Screen name="Modes" component={ModesScreen} />
-          <Stack.Screen name="Browser" component={BrowserScreen} />
-          <Stack.Screen name="AppDetail" component={AppDetail} />
-        </Stack.Navigator>
-      </NavigationContainer>
-    </SafeAreaProvider>
-  );
+  return <MainNavigator />;
 };
 
 const splashStyles = StyleSheet.create({

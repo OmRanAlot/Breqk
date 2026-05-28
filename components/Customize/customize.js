@@ -30,6 +30,7 @@ import {
   Animated,
   Platform,
   AppState,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
@@ -90,6 +91,19 @@ const BackIcon = ({ color, size }) => (
 // ─── Main Component ──────────────────────────────────────────────────────────
 const Customize = ({ navigation }) => {
   const insets = useSafeAreaInsets();
+
+  // ── Browser content filter state ─────────────────────────────────────────
+  const [contentFilterEnabled, setContentFilterEnabled] = useState(false);
+  const [contentFilterServiceActive, setContentFilterServiceActive] =
+    useState(false);
+
+  // ── Deletion-prevention (uninstall lock) state ───────────────────────────
+  // Opt-in. When on, a 30s lock screen appears if the user opens the Breqk
+  // uninstall screen in Android Settings.
+  const [uninstallLockEnabled, setUninstallLockEnabled] = useState(false);
+  // Confirmation modal shown before enabling deletion prevention, so the user
+  // reads what it does, its limitations, and the privacy guarantee first.
+  const [deletionInfoVisible, setDeletionInfoVisible] = useState(false);
 
   // ── Scroll budget state ───────────────────────────────────────────────────
   const [scrollAllowance, setScrollAllowance] = useState(5);
@@ -176,28 +190,72 @@ const Customize = ({ navigation }) => {
 
   // ── Load saved settings ───────────────────────────────────────────────────
 
-  useEffect(() => {
-    const load = async () => {
-      console.log('[Customize] loading saved settings');
-      try {
-        // Load scroll budget
-        await new Promise(resolve => {
-          SettingsModule.getScrollBudget((allowance, window) => {
-            setScrollAllowance(allowance);
-            setScrollWindow(window);
-            VPNModule.setScrollBudget(allowance, window).catch(e =>
-              console.warn('[Customize] setScrollBudget failed:', e),
-            );
-            resolve();
-          });
+  const loadSettings = useCallback(async () => {
+    console.log('[Customize] loading saved settings');
+    try {
+      // Load scroll budget
+      await new Promise(resolve => {
+        SettingsModule.getScrollBudget((allowance, window) => {
+          setScrollAllowance(allowance);
+          setScrollWindow(window);
+          VPNModule.setScrollBudget(allowance, window).catch(e =>
+            console.warn('[Customize] setScrollBudget failed:', e),
+          );
+          resolve();
         });
-        console.log('[Customize] scroll budget loaded');
-      } catch (e) {
-        console.warn('[Customize] load settings error:', e);
-      }
-    };
-    load();
+      });
+      console.log('[Customize] scroll budget loaded');
+
+      // Load intercept message from native
+      SettingsModule.getDelayMessage(message => {
+        setInterceptMessage(message);
+        console.log('[Customize] delay_message=', message);
+      });
+
+      // Load pause duration from native
+      SettingsModule.getDelayTime(seconds => {
+        setPauseDuration(seconds);
+        setSliderValue(seconds);
+        console.log('[Customize] delay_time_seconds=', seconds);
+      });
+
+      // Load content filter state
+      SettingsModule.getContentFilterEnabled(enabled => {
+        setContentFilterEnabled(enabled);
+        console.log('[Customize] content_filter_enabled=', enabled);
+      });
+      SettingsModule.isContentFilterServiceEnabled(active => {
+        setContentFilterServiceActive(active);
+        console.log('[Customize] content_filter_service_active=', active);
+      });
+
+      // Load deletion-prevention state
+      SettingsModule.getUninstallLockEnabled(enabled => {
+        setUninstallLockEnabled(enabled);
+        console.log('[Customize] uninstall_lock_enabled=', enabled);
+      });
+    } catch (e) {
+      console.warn('[Customize] load settings error:', e);
+    }
   }, []);
+
+  // Load on mount
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  // Reload when screen regains focus (e.g. returning from AppDetail / Modes)
+  useEffect(() => {
+    const focusUnsub = navigation?.addListener
+      ? navigation.addListener('focus', () => {
+          console.log('[Customize] focus → reloading settings');
+          loadSettings();
+        })
+      : null;
+    return () => {
+      if (focusUnsub) focusUnsub();
+    };
+  }, [navigation, loadSettings]);
 
   // ── Scroll budget handlers ────────────────────────────────────────────────
 
@@ -269,6 +327,68 @@ const Customize = ({ navigation }) => {
       console.warn('[Customize] setDelayMessage error:', e);
     }
   };
+
+  // ── Content filter handler ────────────────────────────────────────────────
+
+  const handleContentFilterToggle = useCallback(
+    async value => {
+      setContentFilterEnabled(value);
+      console.log('[Customize] content_filter toggled →', value);
+      try {
+        await SettingsModule.saveContentFilterEnabled(value);
+        showSaved();
+        // After enabling, re-check whether the accessibility service is active
+        if (value) {
+          SettingsModule.isContentFilterServiceEnabled(active => {
+            setContentFilterServiceActive(active);
+          });
+        }
+      } catch (e) {
+        console.warn('[Customize] saveContentFilterEnabled error:', e);
+      }
+    },
+    [showSaved],
+  );
+
+  // Persist the deletion-prevention flag. Extracted so both the confirm-modal
+  // "Enable" action and the direct "turn off" path share one write.
+  const saveUninstallLock = useCallback(
+    async value => {
+      setUninstallLockEnabled(value);
+      console.log('[Customize] uninstall_lock toggled →', value);
+      try {
+        await SettingsModule.saveUninstallLockEnabled(value);
+        showSaved();
+      } catch (e) {
+        console.warn('[Customize] saveUninstallLockEnabled error:', e);
+      }
+    },
+    [showSaved],
+  );
+
+  const handleUninstallLockToggle = useCallback(
+    value => {
+      // Turning on requires reading the info modal first; turning off is direct.
+      if (value) {
+        console.log('[Customize] uninstall_lock enable requested — showing info');
+        setDeletionInfoVisible(true);
+        return;
+      }
+      saveUninstallLock(false);
+    },
+    [saveUninstallLock],
+  );
+
+  const handleDeletionInfoConfirm = useCallback(() => {
+    console.log('[Customize] deletion-prevention info confirmed — enabling');
+    setDeletionInfoVisible(false);
+    saveUninstallLock(true);
+  }, [saveUninstallLock]);
+
+  const handleDeletionInfoCancel = useCallback(() => {
+    console.log('[Customize] deletion-prevention info cancelled');
+    setDeletionInfoVisible(false);
+  }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -451,6 +571,76 @@ const Customize = ({ navigation }) => {
           </TouchableOpacity>
         </View>
 
+        {/* ── Browser Content Filter ───────────────────────────────── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Browser Safety</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleLabelGroup}>
+              <Text style={styles.toggleLabel}>Content filter</Text>
+              <Text style={styles.toggleCaption}>
+                Blocks listed domains in browsers. Uses a separate Accessibility
+                entry from Reels/Shorts; turn on both toggles if you want both
+                features.
+              </Text>
+            </View>
+            <Switch
+              value={contentFilterEnabled}
+              onValueChange={handleContentFilterToggle}
+              trackColor={{ false: L.border, true: L.charcoal }}
+              thumbColor="#FFFFFF"
+              accessibilityLabel="Browser content filter"
+            />
+          </View>
+
+          {contentFilterEnabled && !contentFilterServiceActive && (
+            <TouchableOpacity
+              style={styles.permissionHint}
+              activeOpacity={0.75}
+              onPress={() => {
+                console.log(
+                  '[Customize] opening accessibility settings for unified service',
+                );
+                Linking.sendIntent(
+                  'android.settings.ACCESSIBILITY_SETTINGS',
+                ).catch(e =>
+                  console.warn('[Customize] openSettings error:', e),
+                );
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Grant accessibility permission for Breqk"
+            >
+              <Text style={styles.permissionHintText}>
+                ⚠ Enable the Breqk accessibility service — tap to open
+                Accessibility Settings
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* ── Deletion Prevention ──────────────────────────────────── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Deletion Prevention</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleLabelGroup}>
+              <Text style={styles.toggleLabel}>Prevent deletion</Text>
+              <Text style={styles.toggleCaption}>
+                If you open the Breqk uninstall screen, a full-screen pause
+                appears for 30 seconds with reasons to keep going before you can
+                continue. Helps you not quit on impulse.
+              </Text>
+            </View>
+            <Switch
+              value={uninstallLockEnabled}
+              onValueChange={handleUninstallLockToggle}
+              trackColor={{ false: L.border, true: L.charcoal }}
+              thumbColor="#FFFFFF"
+              accessibilityLabel="Prevent deletion"
+            />
+          </View>
+        </View>
+
         <Text style={styles.footer}>v1.0 • Minimal Design</Text>
       </ScrollView>
 
@@ -481,6 +671,83 @@ const Customize = ({ navigation }) => {
             setPreviewVisible(false);
           }}
         />
+      </Modal>
+
+      {/* ── Deletion-prevention info modal ───────────────────────────── */}
+      <Modal
+        visible={deletionInfoVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={handleDeletionInfoCancel}
+      >
+        <View style={styles.infoModalOverlay}>
+          <View style={styles.infoModalCard}>
+            <ScrollView
+              style={styles.infoModalScroll}
+              contentContainerStyle={styles.infoModalContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.infoModalTitle}>Before you turn this on</Text>
+
+              <Text style={styles.infoModalSectionHeading}>What it does</Text>
+              {[
+                'Uses the accessibility service you already granted to notice when you open Breqk’s App Info / uninstall screen in Android Settings.',
+                'Shows a full-screen pause for 30 seconds with reasons to keep going.',
+                'After the 30 seconds you can continue — it never permanently stops you from uninstalling.',
+              ].map((line, i) => (
+                <View key={`does-${i}`} style={styles.infoModalBulletRow}>
+                  <Text style={styles.infoModalBullet}>{'•'}</Text>
+                  <Text style={styles.infoModalBulletText}>{line}</Text>
+                </View>
+              ))}
+
+              <Text style={styles.infoModalSectionHeading}>
+                Risks &amp; limitations
+              </Text>
+              {[
+                'This is friction, not a lock. You can wait out the timer, turn off the accessibility service, or use safe mode to remove Breqk anytime.',
+                'Detection reads only the on-screen text of the Settings uninstall page to know when to show the pause — nothing else.',
+                'Some phone brands label that screen differently, so on rare devices the pause may not appear.',
+                'Like any accessibility feature, it depends on a permission that can read screen content; Breqk uses it solely to detect blocked apps and this screen.',
+              ].map((line, i) => (
+                <View key={`risk-${i}`} style={styles.infoModalBulletRow}>
+                  <Text style={styles.infoModalBullet}>{'•'}</Text>
+                  <Text style={styles.infoModalBulletText}>{line}</Text>
+                </View>
+              ))}
+
+              <Text style={styles.infoModalSectionHeading}>Your privacy</Text>
+              <Text style={styles.infoModalPrivacy}>
+                Breqk collects no data at all. It cannot — the app has no
+                server and makes no network connection whatsoever, so there is no
+                way for any of this to ever leave your phone. Everything stays in
+                local settings on your device. Nothing is collected, nothing is
+                sent.
+              </Text>
+            </ScrollView>
+
+            <View style={styles.infoModalButtonRow}>
+              <TouchableOpacity
+                style={styles.infoModalCancelButton}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                onPress={handleDeletionInfoCancel}
+              >
+                <Text style={styles.infoModalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.infoModalEnableButton}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Enable deletion prevention"
+                onPress={handleDeletionInfoConfirm}
+              >
+                <Text style={styles.infoModalEnableText}>Enable</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -571,10 +838,111 @@ const styles = StyleSheet.create({
     marginTop: 3,
     lineHeight: 17,
   },
+
+  // ── Deletion-prevention info modal ────────────────────────────────────────
+  infoModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  infoModalCard: {
+    backgroundColor: L.cardBg,
+    borderRadius: 16,
+    maxHeight: '82%',
+    overflow: 'hidden',
+  },
+  infoModalScroll: {
+    flexGrow: 0,
+  },
+  infoModalContent: {
+    padding: 24,
+  },
+  infoModalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: L.charcoal,
+    letterSpacing: -0.3,
+    marginBottom: 8,
+  },
+  infoModalSectionHeading: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: L.charcoal,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  infoModalBulletRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  infoModalBullet: {
+    fontSize: 14,
+    color: L.muted,
+    marginRight: 8,
+    lineHeight: 20,
+  },
+  infoModalBulletText: {
+    flex: 1,
+    fontSize: 14,
+    color: L.charcoal,
+    lineHeight: 20,
+  },
+  infoModalPrivacy: {
+    fontSize: 14,
+    color: L.charcoal,
+    lineHeight: 21,
+    fontWeight: '500',
+  },
+  infoModalButtonRow: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: L.border,
+  },
+  infoModalCancelButton: {
+    flex: 1,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRightWidth: 1,
+    borderRightColor: L.border,
+  },
+  infoModalCancelText: {
+    fontSize: 16,
+    color: L.muted,
+    fontWeight: '500',
+  },
+  infoModalEnableButton: {
+    flex: 1,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoModalEnableText: {
+    fontSize: 16,
+    color: L.charcoal,
+    fontWeight: '600',
+  },
   divider: {
     height: 1,
     backgroundColor: L.border,
     marginVertical: 14,
+  },
+  permissionHint: {
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#FFF8E1',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFE082',
+  },
+  permissionHintText: {
+    fontSize: 12,
+    color: '#7B5800',
+    lineHeight: 17,
   },
 
   // ── App cards ─────────────────────────────────────────────────────────────

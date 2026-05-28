@@ -88,3 +88,7 @@ yarn-error.log
 .github/
 .vscode/
 AGENTS.md
+
+# tests/
+
+# claude --resume 77c3730e-1e92-425b-8cd9-cb5d13c4bb64 

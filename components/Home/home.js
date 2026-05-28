@@ -180,44 +180,69 @@ const Home = ({ navigation }) => {
   const [appPolicies, setAppPolicies] = useState({});
   const [activeModeName, setActiveModeName] = useState(null);
 
-  useEffect(() => {
-    const loadPolicies = () => {
-      SettingsModule.getAppPolicies(json => {
+  // ── Centralized settings loader ────────────────────────────────────────────
+  // Loads app policies, active mode name, and triggers free break poll.
+  // Called on mount, AppState→foreground, AND navigation focus (returning
+  // from AppDetail / Customize / Modes).
+  const loadPolicies = useCallback(() => {
+    SettingsModule.getAppPolicies(json => {
+      try {
+        setAppPolicies(json ? JSON.parse(json) : {});
+      } catch (e) {
+        console.warn('[Home] parse appPolicies failed:', e);
+        setAppPolicies({});
+      }
+    });
+  }, []);
+
+  const loadActiveMode = useCallback(() => {
+    SettingsModule.getActiveMode(modeId => {
+      if (!modeId) {
+        setActiveModeName(null);
+        return;
+      }
+      SettingsModule.getModes(json => {
         try {
-          setAppPolicies(json ? JSON.parse(json) : {});
+          const modes = json ? JSON.parse(json) : {};
+          setActiveModeName(modes[modeId]?.name || null);
         } catch (e) {
-          console.warn('[Home] parse appPolicies failed:', e);
-          setAppPolicies({});
-        }
-      });
-    };
-    const loadActiveMode = () => {
-      SettingsModule.getActiveMode(modeId => {
-        if (!modeId) {
+          console.warn('[Home] parse modes failed:', e);
           setActiveModeName(null);
-          return;
         }
-        SettingsModule.getModes(json => {
-          try {
-            const modes = json ? JSON.parse(json) : {};
-            setActiveModeName(modes[modeId]?.name || null);
-          } catch (e) {
-            console.warn('[Home] parse modes failed:', e);
-            setActiveModeName(null);
-          }
-        });
       });
-    };
+    });
+  }, []);
+
+  const reloadAll = useCallback(() => {
+    console.log('[Home] reloadAll triggered');
     loadPolicies();
     loadActiveMode();
+  }, [loadPolicies, loadActiveMode]);
+
+  // Load on mount + refresh on foreground resume
+  useEffect(() => {
+    reloadAll();
     const sub = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
-        loadPolicies();
-        loadActiveMode();
+        reloadAll();
       }
     });
     return () => sub?.remove();
-  }, []);
+  }, [reloadAll]);
+
+  // Reload when screen regains focus (e.g. returning from AppDetail where
+  // the user may have toggled free_break_enabled or changed per-app policies)
+  useEffect(() => {
+    const focusUnsub = navigation?.addListener
+      ? navigation.addListener('focus', () => {
+          console.log('[Home] focus → reloading policies & mode');
+          reloadAll();
+        })
+      : null;
+    return () => {
+      if (focusUnsub) focusUnsub();
+    };
+  }, [navigation, reloadAll]);
 
   // Derived: any app has reels_detection enabled → scroll budget matters.
   const anyReelsOn = Object.values(appPolicies).some(
@@ -243,11 +268,11 @@ const Home = ({ navigation }) => {
         setBudgetStatus(status);
         console.log(
           '[Home] scroll budget polled: canScroll=' +
-          status.canScroll +
-          ' remainingMs=' +
-          status.remainingMs +
-          ' usedMs=' +
-          status.usedMs,
+            status.canScroll +
+            ' remainingMs=' +
+            status.remainingMs +
+            ' usedMs=' +
+            status.usedMs,
         );
       } catch (e) {
         console.warn('[Home] getScrollBudgetStatus failed:', e);
@@ -577,8 +602,8 @@ const Home = ({ navigation }) => {
             const statusLabel = canScroll
               ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
               : `Resets in ${formatBudgetTime(
-                budgetStatus.nextScrollAtMs - Date.now(),
-              )}`;
+                  budgetStatus.nextScrollAtMs - Date.now(),
+                )}`;
             const filledRatio = canScroll
               ? Math.min(1, budgetStatus.usedMs / allowanceMs || 0)
               : 1;
@@ -754,8 +779,6 @@ const Home = ({ navigation }) => {
             navigation.navigate('AppDetail', { packageName: pkg })
           }
         />
-
-
       </ScrollView>
     </View>
   );

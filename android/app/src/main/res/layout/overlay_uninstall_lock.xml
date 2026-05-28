@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    overlay_uninstall_lock.xml
+    ─────────────────────────────────────────────────────────────────────────────
+    Full-screen "don't delete Breqk" lock screen shown by UninstallLockOverlay
+    when the user reaches Settings → Apps → Breqk → Uninstall AND the
+    deletion-prevention setting is enabled.
+
+    Design intent:
+      - FULLY OPAQUE light backdrop (#FAFAFA) matching the React Native app
+        theme (L.bg / L.charcoal). No blur — the opaque surface completely
+        replaces the Settings uninstall screen visually.
+      - No countdown / timer is ever shown. Both action buttons start GONE and
+        are revealed together by UninstallLockOverlay after the 30s wait.
+      - The rotating message TextView is updated in code every few seconds with
+        encouraging, anti-deletion copy.
+
+    View IDs used by UninstallLockOverlay.java:
+      uninstall_lock_headline   — static headline
+      uninstall_lock_message    — rotating motivational message (updated in code)
+      uninstall_lock_keep_btn   — primary "Keep Breqk" (GONE until 30s → HOME)
+      uninstall_lock_delete_btn — discouraged "give up" escape (GONE until 30s →
+                                  dismiss + suppress so the OS uninstall proceeds)
+
+    WindowManager params set in UninstallLockOverlay.show():
+      TYPE_ACCESSIBILITY_OVERLAY, MATCH_PARENT × MATCH_PARENT, Gravity.CENTER
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FAFAFA">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingStart="36dp"
+        android:paddingEnd="36dp">
+
+        <!-- Static headline — frames the moment without a countdown -->
+        <TextView
+            android:id="@+id/uninstall_lock_headline"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Wait a moment."
+            android:textSize="30sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A1A"
+            android:gravity="center"
+            android:layout_marginBottom="28dp" />
+
+        <!-- Rotating motivational message — text is set/cycled in code -->
+        <TextView
+            android:id="@+id/uninstall_lock_message"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="19sp"
+            android:textColor="#1A1A1A"
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.25"
+            android:minHeight="120dp" />
+
+        <!--
+            "Return to home": ALWAYS visible (not gated by the 30s wait). Lets
+            the user leave to the launcher at any time. onClick →
+            GLOBAL_ACTION_HOME + dismiss. Pressing the physical Home button has
+            the same effect — ReelsInterventionService auto-dismisses this
+            overlay on any non-Settings window change (same logic as the
+            app-intercept overlay).
+        -->
+        <Button
+            android:id="@+id/uninstall_lock_home_btn"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="Return to home"
+            android:textSize="16sp"
+            android:textAllCaps="false"
+            android:textColor="#1A1A1A"
+            android:background="@drawable/muted_pill_button_bg"
+            android:layout_marginTop="32dp" />
+
+        <!--
+            Primary "Keep Breqk": visibility=gone here. UninstallLockOverlay
+            flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS so the user
+            must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
+        -->
+        <Button
+            android:id="@+id/uninstall_lock_keep_btn"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Keep Breqk"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/charcoal_pill_button_bg"
+            android:visibility="gone"
+            android:layout_marginTop="40dp" />
+
+        <!--
+            Discouraged escape: deliberately low-emphasis (muted outline, grey
+            text, loaded label). Also visibility=gone until the 30s wait. onClick
+            dismisses the lock and suppresses re-show so the system uninstall
+            can actually proceed.
+        -->
+        <Button
+            android:id="@+id/uninstall_lock_delete_btn"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="Give up and delete Breqk anyway"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#737373"
+            android:background="@drawable/muted_pill_button_bg"
+            android:visibility="gone"
+            android:layout_marginTop="14dp" />
+
+    </LinearLayout>
+
+</FrameLayout>
