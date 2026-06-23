@@ -33,13 +33,33 @@ SettingsModule 602) are intentionally left as-is (cohesive; 600 treated soft).
 - `components/Home/home.js`: 1190 → 655 lines. Extracted `home.styles.js`
   (dead footer/primary/secondary/caption keys removed), `HomeScrollBudgetCard.js`,
   `FreeBreakCard.js`.
+- `components/AppDetail/AppDetail.js`: 1016 → 557. Extracted `AppDetail.styles.js`,
+  `InterceptCustomization.js`, `ApplyAllModal.js`.
+- `components/Permissions/PermissionsScreen.js`: 878 → 600. Extracted
+  `PermissionsScreen.styles.js`, `permissionSteps.js`.
+- `components/Modes/ModeEditorModal.js`: 667 → 387. `components/Modes/ModesScreen.js`:
+  623 → 447. Each extracted a co-located `*.styles.js`.
 - Created shared `components/common/format.js` (formatTime/formatCount/
   formatBudgetTime) — removed duplicate copies across screens.
 - Deleted dead file `components/Home/homeStyle.js` (311 lines, no importers).
+- Committed as `e1a99a0`. App-scoped eslint: 0 new errors (1 pre-existing in
+  BlockerInterstitial.tsx, untouched), 5 fewer warnings than baseline.
 
-## Remaining Phase 1
+## Phase 3 (Java) — investigated, intentionally NOT split
 
-- `components/AppDetail/AppDetail.js` (1016)
-- `components/Permissions/PermissionsScreen.js` (878)
-- `components/Modes/ModeEditorModal.js` (667)
-- `components/Modes/ModesScreen.js` (623)
+All four large Java files fall under the "logic needs to be in one file"
+exception, especially under a no-build constraint:
+
+- `BreakPrefs.java` (903): a comment at the widget section literally reads
+  "consolidated from WidgetPrefs" — the team deliberately merged a separate
+  prefs class INTO this one. It is the single source of truth for all pref
+  keys (its own header states "make key discovery trivial"). Splitting reverses
+  that decision. Left as-is.
+- `AppUsageMonitor.java` (1381) and `ReelsInterventionService.java` (1312):
+  overlay + accessibility hot paths, tightly coupled to instance fields. A blind
+  extraction (no compile/runtime check) risks subtle lifecycle/timing regressions.
+- `VPNModule.java` (1165): a React Native `@ReactModule`; its `@ReactMethod`
+  bridge methods must remain in the module class.
+
+Recommendation: if these should still be split, do it in a session with the
+Android build enabled so each extraction is compile-verified.
