@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.youtube;
+package com.Break.shortform.platform.youtube;
 
 /**
  * View-ID constants for YouTube Shorts detection.

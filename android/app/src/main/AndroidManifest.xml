@@ -47,7 +47,7 @@
         <!-- Foreground monitoring service — keeps AppUsageMonitor alive in the background.
              NOT a VPN. Uses foregroundServiceType=specialUse to avoid OS kill. -->
         <service
-            android:name=".service.BreqkVpnService"
+            android:name=".service.BreakVpnService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
@@ -76,13 +76,13 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="com.breqk.ACTION_MODE_START" />
-                <action android:name="com.breqk.ACTION_MODE_END" />
+                <action android:name="com.Break.ACTION_MODE_START" />
+                <action android:name="com.Break.ACTION_MODE_END" />
             </intent-filter>
         </receiver>
 
         <receiver
-            android:name=".widget.BreqkWidgetProvider"
+            android:name=".widget.BreakWidgetProvider"
             android:exported="true"
             android:label="@string/widget_description">
             <intent-filter>
@@ -90,7 +90,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_breqk_info" />
+                android:resource="@xml/widget_break_info" />
         </receiver>
 
         <!--
@@ -108,24 +108,20 @@
         </receiver>
 
         <!--
-            Entry point — shown on every cold launch until ReelsInterventionService is enabled.
-            Forwards to MainActivity automatically once permission is granted.
+            Legacy native accessibility gate. No longer the launcher: the React
+            Native onboarding (PermissionsScreen) now requests the accessibility
+            permission with proper UI, so this all-black pre-RN gate is bypassed.
+            Kept declared (non-launcher) in case it is opened explicitly.
             Logcat tag: ACC_PERM_GATE
         -->
         <activity
             android:name=".accessibility.AccessibilityPermissionActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
 
         <!--
-            Main React Native app screen.
-            Only reached after AccessibilityPermissionActivity confirms the service is enabled.
-            Launcher intent filter removed — now lives on AccessibilityPermissionActivity.
+            Main React Native app screen — now the cold-launch entry point.
+            Onboarding (including the accessibility permission step) runs inside RN.
         -->
         <activity
             android:name=".MainActivity"
@@ -136,11 +132,16 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- Deep link for widget browser quick-launch buttons (breqk://browser/instagram, breqk://browser/youtube) -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link for widget browser quick-launch buttons (Break://browser/instagram, Break://browser/youtube) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="breqk" android:host="browser" />
+                <data android:scheme="Break" android:host="browser" />
             </intent-filter>
         </activity>
     </application>

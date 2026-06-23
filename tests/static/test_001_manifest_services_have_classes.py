@@ -21,7 +21,7 @@ ERRORS:
     -> The Java file is missing. Create the class or remove the <service> entry.
        The app will crash when Android tries to bind the accessibility service.
 
-  "Service com.breqk.foo.Bar declared but class not found"
+  "Service com.Break.foo.Bar declared but class not found"
     -> Spelling mismatch between manifest name and actual package/filename.
 """
 

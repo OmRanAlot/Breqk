@@ -1,4 +1,4 @@
-package com.breqk.shortform;
+package com.Break.shortform;
 
 import android.content.Context;
 import android.content.Intent;
@@ -54,9 +54,9 @@ public final class FrameworkClassFilter {
             "com.swiftkey.swiftkeyapp",              // SwiftKey
             "com.android.inputmethod.latin",         // AOSP keyboard
             "com.android.systemui",                  // Status bar / notification shade
-            // [STICKY-FIX] Breqk itself fires TYPE_WINDOW_STATE_CHANGED when its own
+            // [STICKY-FIX] Break itself fires TYPE_WINDOW_STATE_CHANGED when its own
             // WindowManager overlay attaches â€” must not be treated as an app switch.
-            "com.breqk",
+            "com.Break",
             // [STICKY-FIX] Launcher packages: the home screen sits behind the Reels
             // intervention overlay and can fire state-change events at any time.
             // Add common OEM variants here; launchers are also caught dynamically in

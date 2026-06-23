@@ -3,9 +3,9 @@ test_042_single_prefs_file_name.py
 ===================================
 
 WHAT:
-  The literal string "breqk_prefs" only appears in BreqkPrefs.java. All other
-  files must call BreqkPrefs.get(context) instead of
-  context.getSharedPreferences("breqk_prefs", ...) directly.
+  The literal string "Break_prefs" only appears in BreakPrefs.java. All other
+  files must call BreakPrefs.get(context) instead of
+  context.getSharedPreferences("Break_prefs", ...) directly.
 
 WHY:
   If the prefs file name is duplicated, a rename would miss one site and
@@ -13,12 +13,12 @@ WHY:
   the user.
 
 HOW:
-  1. Grep all Java files for the literal string "breqk_prefs".
-  2. Exclude BreqkPrefs.java itself.
+  1. Grep all Java files for the literal string "Break_prefs".
+  2. Exclude BreakPrefs.java itself.
   3. Report any other files containing the literal.
 
 OUTPUTS:
-  PASS — "breqk_prefs" only appears in BreqkPrefs.java.
+  PASS — "Break_prefs" only appears in BreakPrefs.java.
   FAIL — other Java files contain the raw prefs file name.
   WARN — (not used).
   SKIP — (not used).
@@ -34,13 +34,13 @@ from _harness import PASS, FAIL, result, grep_java
 from _paths import JAVA_SRC
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
-FILE_ALLOWLIST = {"BreqkPrefs.java"}
+FILE_ALLOWLIST = {"BreakPrefs.java"}
 TEST_ID = Path(__file__).stem
-PREFS_FILE_NAME = "breqk_prefs"
+PREFS_FILE_NAME = "Break_prefs"
 
 
 def main() -> None:
-    print(f"[{TEST_ID}] verifying '{PREFS_FILE_NAME}' only appears in BreqkPrefs.java")
+    print(f"[{TEST_ID}] verifying '{PREFS_FILE_NAME}' only appears in BreakPrefs.java")
 
     hits = grep_java(JAVA_SRC, rf'"{PREFS_FILE_NAME}"')
     violations = []
@@ -55,9 +55,9 @@ def main() -> None:
     print(f"  summary: {len(violations)} violation(s) of {len(hits)} occurrences")
 
     if violations:
-        result(FAIL, f"{len(violations)} file(s) use raw prefs name '{PREFS_FILE_NAME}' — use BreqkPrefs.get()")
+        result(FAIL, f"{len(violations)} file(s) use raw prefs name '{PREFS_FILE_NAME}' — use BreakPrefs.get()")
     else:
-        result(PASS, f"'{PREFS_FILE_NAME}' only appears in BreqkPrefs.java")
+        result(PASS, f"'{PREFS_FILE_NAME}' only appears in BreakPrefs.java")
 
 
 if __name__ == "__main__":

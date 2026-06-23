@@ -4,7 +4,7 @@
     Deliberately weak, low-emphasis pill for the discouraged "delete anyway"
     escape on the uninstall lock screen. Transparent fill + faint light-theme
     border (L.border #E5E5E5) so it reads as the lesser, regrettable choice
-    next to the solid charcoal "Keep Breqk" button.
+    next to the solid charcoal "Keep Break" button.
 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">

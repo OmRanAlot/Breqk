@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    widget_breqk.xml — Home screen widget layout
+    widget_break.xml — Home screen widget layout
     ===================================================
     PURPOSE: Displays the app name and two tappable icons (Instagram, YouTube).
     Tapping an icon opens the distraction-free in-app browser for that platform.
-    Tapping the app title opens the main Breqk app.
+    Tapping the app title opens the main Break app.
 
     DESIGN SYSTEM:
       - Background: #1D201F (dark bg from design/tokens.ts)
@@ -14,11 +14,11 @@
     REMOTEVIEWS CONSTRAINTS (Android widgets):
       - Only basic views allowed: LinearLayout, FrameLayout, TextView, ImageView, etc.
       - NO custom views, NO ?android:attr/selectableItemBackground, NO RecyclerView
-      - Click handlers are set via PendingIntent in BreqkWidgetProvider.java
+      - Click handlers are set via PendingIntent in BreakWidgetProvider.java
 
     REFERENCED BY:
-      - widget_breqk_info.xml  (android:initialLayout points here)
-      - BreqkWidgetProvider.java (inflates this layout via RemoteViews)
+      - widget_break_info.xml  (android:initialLayout points here)
+      - BreakWidgetProvider.java (inflates this layout via RemoteViews)
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
@@ -30,8 +30,8 @@
     android:gravity="center">
 
     <!--
-        App title — tapping this opens the main Breqk app.
-        Click handler set in BreqkWidgetProvider.java via PendingIntent.
+        App title — tapping this opens the main Break app.
+        Click handler set in BreakWidgetProvider.java via PendingIntent.
     -->
     <TextView
         android:id="@+id/widget_title"
@@ -57,9 +57,9 @@
 
         <!--
             Instagram icon button.
-            Deep links to: breqk://browser/instagram
+            Deep links to: Break://browser/instagram
             Which React Navigation routes to: BrowserScreen with platform='instagram'
-            Click handler: PendingIntent set in BreqkWidgetProvider.java (request code 1)
+            Click handler: PendingIntent set in BreakWidgetProvider.java (request code 1)
             Icon source: res/drawable/ic_instagram.xml (teal camera outline)
         -->
         <ImageView
@@ -73,9 +73,9 @@
 
         <!--
             YouTube icon button.
-            Deep links to: breqk://browser/youtube
+            Deep links to: Break://browser/youtube
             Which React Navigation routes to: BrowserScreen with platform='youtube'
-            Click handler: PendingIntent set in BreqkWidgetProvider.java (request code 2)
+            Click handler: PendingIntent set in BreakWidgetProvider.java (request code 2)
             Icon source: res/drawable/ic_youtube.xml (teal play button)
         -->
         <ImageView

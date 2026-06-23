@@ -1,19 +1,15 @@
-package com.breqk;
+package com.Break;
 
 /**
- * Browser bar monitoring and redirects away from blocked domains (matches legacy
- * pre-reorg {@code ContentFilterService} semantics, with stronger extraction).
+ * Browser bar monitoring and redirects away from blocked domains.
  *
- * <p><b>Flow:</b> {@link ContentFilterService} → {@link #onAccessibilityEvent} → omnibar probes
+ * <p><b>Flow:</b> {@link ReelsInterventionService} → {@link #onAccessibilityEvent} → omnibar probes
  * (view IDs → multi-root DFS) → deferred rescan → {@link #findBlockedDomain} →
  * {@link #redirect} (random benign URL, 2&nbsp;s cooldown).
  *
- * <p>Log tag {@code BROWSER_WATCH}. Separate from {@link ReelsInterventionService}.
- *
- * @see ContentFilterService
+ * <p>Log tag {@code BROWSER_WATCH}. Runs inside the unified {@link ReelsInterventionService}.
  */
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -26,7 +22,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
-import com.breqk.prefs.BreqkPrefs;
+import com.Break.prefs.BreakPrefs;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -47,7 +43,7 @@ public final class BrowserBarContentFilter {
     private static final long DIAG_THROTTLE_PKG_MS = 20_000L;
     private static final int DIAG_THROTTLE_MAP_CAP = 64;
 
-    /** Throttle map shared if multiple hosts ever existed; ContentFilterService is the only caller. */
+    /** Throttle map for diagnostic log lines. */
     private static final Map<String, Long> DIAG_ELIGIBLE_AFTER_MS = new HashMap<>();
 
     private static boolean diagAllow(String throttleKey, long intervalMs) {
@@ -140,42 +136,11 @@ public final class BrowserBarContentFilter {
         return BROWSER_URL_IDS.containsKey(packageName);
     }
 
-    /**
-     * Applies the standalone ContentFilter accessibility profile (subscriptions + timeouts).
-     * No longer called after ContentFilterService was merged into ReelsInterventionService;
-     * kept here in case a programmatic service-info override is ever needed again.
-     */
-    static void configureStandaloneAccessibilityService(AccessibilityService service) {
-        AccessibilityServiceInfo info = service.getServiceInfo();
-        if (info == null)
-            info = new AccessibilityServiceInfo();
-
-        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                | AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
-                | AccessibilityEvent.TYPE_VIEW_FOCUSED;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            info.eventTypes |= AccessibilityEvent.TYPE_WINDOWS_CHANGED;
-        }
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-        info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
-
-        info.notificationTimeout = 200;
-        service.setServiceInfo(info);
-    }
-
-    static void logStandaloneServiceConnected(AccessibilityService service) {
+    /** Logs browser-filter readiness when {@link ReelsInterventionService} connects. */
+    static void logBrowserFilterReady(AccessibilityService service) {
         Log.i(TAG,
-                "[SERVICE_CONNECTED] ContentFilterService — browser domain blocking; separate "
-                        + "Accessibility entry from ReelsInterventionService");
-        Log.d(TAG,
-                "  eventTypes CONTENT|STATE|TEXT|FOCUSED"
-                        + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? "|WINDOWS" : ""));
-        Log.d(TAG, "  flags REPORT_VIEW_IDS|RETRIEVE_INTERACTIVE_WINDOWS|INCLUDE_NOT_IMPORTANT_VIEWS");
-        Log.d(TAG, "  notificationTimeout=200ms");
-        Log.d(TAG, "  content_filter_enabled=" + BreqkPrefs.isContentFilterEnabled(service));
+                "[BROWSER_FILTER_READY] unified ReelsInterventionService — browser domain blocking active");
+        Log.d(TAG, "  content_filter_enabled=" + BreakPrefs.isContentFilterEnabled(service));
         Log.d(TAG, "  monitoring " + BROWSER_URL_IDS.size() + " browser packages:");
         for (String pkg : BROWSER_URL_IDS.keySet()) {
             String[] ids = BROWSER_URL_IDS.get(pkg);
@@ -184,7 +149,7 @@ public final class BrowserBarContentFilter {
         }
     }
 
-    /** Called only from {@link ContentFilterService} — tag remains BROWSER_WATCH. */
+    /** Called from {@link ReelsInterventionService#onAccessibilityEvent} for browser packages. */
     public static void onAccessibilityEvent(AccessibilityService host, AccessibilityEvent event) {
         if (event == null)
             return;
@@ -194,12 +159,12 @@ public final class BrowserBarContentFilter {
 
         String packageName = pkg.toString();
 
-        boolean filterOn = BreqkPrefs.isContentFilterEnabled(host);
+        boolean filterOn = BreakPrefs.isContentFilterEnabled(host);
         if (!filterOn) {
             if (diagAllow("prefs_off", DIAG_THROTTLE_PREFS_MS))
                 Log.w(TAG,
                         "[SKIP_PREFS_OFF] content_filter_enabled=false — turn ON in Customize → "
-                                + "Browser Safety (Accessibility ContentFilterService can stay enabled)");
+                                + "Browser Safety (Break accessibility service must be enabled)");
             return;
         }
         if (!BROWSER_URL_IDS.containsKey(packageName)) {
@@ -275,7 +240,7 @@ public final class BrowserBarContentFilter {
             Log.w(TAG, "[DEFERRED] skipped — host service was garbage-collected");
             return;
         }
-        if (!BreqkPrefs.isContentFilterEnabled(host)) {
+        if (!BreakPrefs.isContentFilterEnabled(host)) {
             Log.d(TAG, "[DEFERRED] skipped prefs off pkg=" + pkg);
             return;
         }

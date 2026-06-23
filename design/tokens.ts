@@ -1,4 +1,4 @@
-// Design tokens for Breqk (dark mode only)
+// Design tokens for Break (dark mode only)
 // Auto-generated from the PRD (`input.md`).
 // Exported as plain JS/TS objects for easy consumption in React Native.
 
@@ -136,7 +136,7 @@ export const dark = {
   overlay: 'rgba(0,0,0,0.6)',
 };
 
-// Tether light-mode palette (Tether design system — stitch screens)
+// Break light-mode palette (Break design system — stitch screens)
 // Use for all main app screens (Home, Customize, Onboarding).
 export const light = {
   background: '#F8F8F6',     // off-white page background

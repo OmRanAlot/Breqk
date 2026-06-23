@@ -1,13 +1,13 @@
-package com.breqk.shortform;
+package com.Break.shortform;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
-import com.breqk.monitor.LaunchInterceptor;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.shortform.platform.PlatformRegistry;
+import com.Break.monitor.LaunchInterceptor;
+import com.Break.prefs.BreakPrefs;
+import com.Break.shortform.platform.PlatformRegistry;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -23,7 +23,7 @@ import java.util.Map;
  * Monitored packages are determined by PlatformRegistry.isMonitored() — no hardcoded set.
  *
  * Config cache:
- *   Reads AppConfig (blockShortForm, launchPopup) from BreqkPrefs on first access or
+ *   Reads AppConfig (blockShortForm, launchPopup) from BreakPrefs on first access or
  *   after CONFIG_CACHE_TTL_MS, avoiding SharedPreferences reads on every accessibility
  *   event (which can fire hundreds of times per second during scroll).
  *
@@ -99,10 +99,10 @@ public class AppEventRouter {
             return cached.config;
         }
 
-        boolean blockShortForm = BreqkPrefs.isFeatureEnabled(
-                context, packageName, BreqkPrefs.FEATURE_BLOCK_SHORT_FORM);
-        boolean launchPopup = BreqkPrefs.isFeatureEnabled(
-                context, packageName, BreqkPrefs.FEATURE_LAUNCH_POPUP);
+        boolean blockShortForm = BreakPrefs.isFeatureEnabled(
+                context, packageName, BreakPrefs.FEATURE_BLOCK_SHORT_FORM);
+        boolean launchPopup = BreakPrefs.isFeatureEnabled(
+                context, packageName, BreakPrefs.FEATURE_LAUNCH_POPUP);
 
         AppConfig config = new AppConfig(packageName, blockShortForm, launchPopup);
         configCache.put(packageName, new CachedConfig(config, now));

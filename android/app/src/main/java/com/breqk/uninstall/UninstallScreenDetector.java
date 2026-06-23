@@ -1,4 +1,4 @@
-package com.breqk.uninstall;
+package com.Break.uninstall;
 
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -7,13 +7,13 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 
 /**
- * Detects when the user is on the Android Settings App Info / uninstall screen for Breqk.
+ * Detects when the user is on the Android Settings App Info / uninstall screen for Break.
  *
  * Detection requires ALL three conditions:
- *   1. "breqk" appears in the node tree (case-insensitive)
+ *   1. "Break" appears in the node tree (case-insensitive)
  *   2. "uninstall" appears in the node tree (case-insensitive)
  *   3. At least one App Info marker is present ("force stop", "storage", "notifications",
- *      "app info", "open by default") — rules out Settings search results where "Breqk"
+ *      "app info", "open by default") — rules out Settings search results where "Break"
  *      appears as a list item but the Uninstall button isn't actually on screen.
  *
  * BFS is bounded to MAX_NODES to avoid OOM on dense OEM Settings trees.
@@ -42,14 +42,14 @@ public class UninstallScreenDetector {
 
     /**
      * Returns true if the accessibility tree rooted at {@code root} looks like the
-     * Breqk App Info / uninstall screen in Android Settings.
+     * Break App Info / uninstall screen in Android Settings.
      *
      * Safe to call with a null or recycled root (returns false).
      */
-    public static boolean isOnBreqkUninstallScreen(AccessibilityNodeInfo root) {
+    public static boolean isOnBreakUninstallScreen(AccessibilityNodeInfo root) {
         if (root == null) return false;
 
-        boolean hasBreqk = false;
+        boolean hasBreak = false;
         boolean hasUninstall = false;
         boolean hasAppInfoMarker = false;
 
@@ -63,9 +63,9 @@ public class UninstallScreenDetector {
 
             String text = collectText(node);
             if (!text.isEmpty()) {
-                if (!hasBreqk && text.contains("breqk")) {
-                    hasBreqk = true;
-                    Log.d(TAG, "[UNINSTALL_WATCH] Found 'breqk' in node text='" + text + "'");
+                if (!hasBreak && text.contains("Break")) {
+                    hasBreak = true;
+                    Log.d(TAG, "[UNINSTALL_WATCH] Found 'Break' in node text='" + text + "'");
                 }
                 if (!hasUninstall && text.contains("uninstall")) {
                     hasUninstall = true;
@@ -83,7 +83,7 @@ public class UninstallScreenDetector {
             }
 
             // Short-circuit once all three signals are found
-            if (hasBreqk && hasUninstall && hasAppInfoMarker) break;
+            if (hasBreak && hasUninstall && hasAppInfoMarker) break;
 
             int childCount = node.getChildCount();
             for (int i = 0; i < childCount; i++) {
@@ -92,9 +92,9 @@ public class UninstallScreenDetector {
             }
         }
 
-        boolean detected = hasBreqk && hasUninstall && hasAppInfoMarker;
+        boolean detected = hasBreak && hasUninstall && hasAppInfoMarker;
         Log.d(TAG, "[UNINSTALL_WATCH] scan complete visited=" + visited
-                + " hasBreqk=" + hasBreqk
+                + " hasBreak=" + hasBreak
                 + " hasUninstall=" + hasUninstall
                 + " hasAppInfoMarker=" + hasAppInfoMarker
                 + " -> detected=" + detected);

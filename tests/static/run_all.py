@@ -1,5 +1,5 @@
 """
-run_all.py — Master runner for the Breqk static test harness.
+run_all.py — Master runner for the Break static test harness.
 
 Usage:
   python tests/static/run_all.py              # fast tier (default)
@@ -47,7 +47,7 @@ def test_number(path: Path) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Breqk static test harness")
+    parser = argparse.ArgumentParser(description="Break static test harness")
     parser.add_argument("--slow",    action="store_true", help="Include slow tests (090+)")
     parser.add_argument("--strict",  action="store_true", help="Treat WARN as FAIL")
     parser.add_argument("--filter",  default="",          help="Only run tests matching this string")
@@ -73,7 +73,7 @@ def main():
         sys.exit(0)
 
     tier = "fast+slow" if args.slow else "fast"
-    print(f"\nBreqk Static Test Harness")
+    print(f"\nBreak Static Test Harness")
     print("=" * 40)
     print(f"Running {len(tests)} tests ({tier} tier)\n")
 

@@ -1,4 +1,4 @@
-# Breqk Static Test Harness
+# Break Static Test Harness
 
 ## What this is
 The harness is a zero-dependency Python 3.8+ stack of small self-contained
@@ -87,7 +87,7 @@ Update whenever a P0 bug is fixed — the test should keep guarding it.
 
 | Bug ID | Description | Guard test |
 |--------|-------------|------------|
-| B2     | BreqkVpnService extending VpnService | `test_011_no_vpn_service_regression.py` |
+| B2     | BreakVpnService extending VpnService | `test_011_no_vpn_service_regression.py` |
 | B5     | versionCode = 1 (launch blocker) | `test_084_versioncode_launch_ready.py` |
 | B8     | Release build uses debug keystore | `test_083_release_signing_not_debug.py` |
 | B9     | Verbose logging in production | `test_062_no_println_in_production.py` |

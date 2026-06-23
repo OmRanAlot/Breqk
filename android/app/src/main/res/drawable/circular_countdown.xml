@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    circular_countdown.xml
+    ─────────────────────────────────────────────────────────────────────────────
+    Determinate circular progress drawable for the delay overlay's center loader.
+    Used by delay_overlay.xml's ProgressBar (@id/countdownRing).
+
+    AppUsageMonitor.startCountdownRing() animates the ProgressBar's `progress`
+    (0 → max) over the wait duration, so the white ring FILLS UP clockwise from the
+    12 o'clock position as the user waits — reading as "progress toward unlock".
+
+    Two layers:
+      background — faint full ring (always visible, white @ 20%)
+      progress   — white sweep arc; clipped by the ProgressBar level (useLevel=true),
+                   rotated so it starts at the top (270°) and grows clockwise.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Faint full background ring -->
+    <item android:id="@android:id/background">
+        <shape
+            android:shape="ring"
+            android:innerRadiusRatio="3.4"
+            android:thicknessRatio="22"
+            android:useLevel="false">
+            <solid android:color="#33FFFFFF" />
+        </shape>
+    </item>
+
+    <!-- White sweep that fills as progress increases, starting at 12 o'clock -->
+    <item android:id="@android:id/progress">
+        <rotate
+            android:fromDegrees="270"
+            android:toDegrees="270"
+            android:pivotX="50%"
+            android:pivotY="50%">
+            <shape
+                android:shape="ring"
+                android:innerRadiusRatio="3.4"
+                android:thicknessRatio="22"
+                android:useLevel="true">
+                <solid android:color="#FFFFFFFF" />
+            </shape>
+        </rotate>
+    </item>
+
+</layer-list>

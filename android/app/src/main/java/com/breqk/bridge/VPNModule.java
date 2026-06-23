@@ -1,18 +1,19 @@
-package com.breqk.bridge;
+package com.Break.bridge;
 
-import com.breqk.monitor.AppUsageMonitor;
-import com.breqk.monitor.ServiceHelper;
-import com.breqk.monitor.ScreenTimeTracker;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.mode.ModeManager;
-import com.breqk.service.BreqkVpnService;
+import com.Break.monitor.AppUsageMonitor;
+import com.Break.monitor.ServiceHelper;
+import com.Break.monitor.ScreenTimeTracker;
+import com.Break.prefs.BreakPrefs;
+import com.Break.mode.ModeManager;
+import com.Break.service.BreakVpnService;
+import com.Break.shortform.budget.ScrollBudgetLogic;
 /*
  * VPNModule
  * ---------
  * React Native native module acting as the bridge between JS and Android OS services.
  * Responsibilities:
  *  - Manage permissions (Usage Stats, Overlay, optional VPN)
- *  - Start/stop foreground monitoring service (BreqkVpnService)
+ *  - Start/stop foreground monitoring service (BreakVpnService)
  *  - Expose screen time and per-app usage statistics via AppUsageMonitor & ScreenTimeTracker
  *  - Emit real-time events to JS when apps are detected/opened
  *
@@ -23,10 +24,10 @@ import com.breqk.service.BreqkVpnService;
  *  - Monitoring can run without actual VPN tunneling; service is used to keep the app alive.
  *
  * CRITICAL ARCHITECTURE NOTE:
- * This module has its OWN AppUsageMonitor instance that is SEPARATE from BreqkVpnService's instance.
+ * This module has its OWN AppUsageMonitor instance that is SEPARATE from BreakVpnService's instance.
  * Both monitors must have synchronized blocked apps lists for the overlay to work correctly.
  * VPNModule's monitor is NOT started for monitoring — only used for getAppName(), getBlockedApps(),
- * and usage stats queries. BreqkVpnService's monitor handles the actual polling loop.
+ * and usage stats queries. BreakVpnService's monitor handles the actual polling loop.
  */
 
 import android.content.Intent;
@@ -72,7 +73,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     // Strong reference to the prefs listener so Android doesn't GC it via
     // WeakReference.
     // Picks up KEY_BLOCKED_APPS changes written by
-    // BreqkPrefs.syncBlockedAppsFromPolicies
+    // BreakPrefs.syncBlockedAppsFromPolicies
     // and re-syncs VPNModule's private appMonitor instance. This is the mechanism
     // that
     // makes Customize toggles take effect on the live monitor without a restart.
@@ -113,13 +114,13 @@ public class VPNModule extends ReactContextBaseJavaModule {
         // (Customize toggle, mode activation, scheduled mode change, future code)
         // automatically propagates to VPNModule's monitor instance.
         blockedAppsListener = (prefs, key) -> {
-            if (BreqkPrefs.KEY_BLOCKED_APPS.equals(key)) {
-                Set<String> fresh = BreqkPrefs.getBlockedApps(reactContext);
+            if (BreakPrefs.KEY_BLOCKED_APPS.equals(key)) {
+                Set<String> fresh = BreakPrefs.getBlockedApps(reactContext);
                 appMonitor.setBlockedApps(fresh);
                 Log.d(TAG, "[POLICY_RELOAD] VPNModule.appMonitor re-synced size=" + fresh.size());
             }
         };
-        BreqkPrefs.get(reactContext).registerOnSharedPreferenceChangeListener(blockedAppsListener);
+        BreakPrefs.get(reactContext).registerOnSharedPreferenceChangeListener(blockedAppsListener);
     }
 
     /**
@@ -131,7 +132,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
         super.onCatalystInstanceDestroy();
         try {
             if (blockedAppsListener != null) {
-                BreqkPrefs.get(reactContext)
+                BreakPrefs.get(reactContext)
                         .unregisterOnSharedPreferenceChangeListener(blockedAppsListener);
                 blockedAppsListener = null;
                 Log.d(TAG, "[INIT] VPNModule prefs listener unregistered");
@@ -144,7 +145,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     /**
      * Helper method to load blocked apps from SharedPreferences into VPNModule's
      * appMonitor.
-     * Uses BreqkPrefs.getBlockedApps() which returns a defensive copy (safe from
+     * Uses BreakPrefs.getBlockedApps() which returns a defensive copy (safe from
      * mutation).
      *
      * CALLED FROM:
@@ -154,7 +155,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
      */
     private void loadBlockedAppsIntoMonitor() {
         try {
-            Set<String> blockedAppsCopy = BreqkPrefs.getBlockedApps(reactContext);
+            Set<String> blockedAppsCopy = BreakPrefs.getBlockedApps(reactContext);
 
             if (!blockedAppsCopy.isEmpty()) {
                 appMonitor.setBlockedApps(blockedAppsCopy);
@@ -213,8 +214,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
         try {
             // STEP 1: Start the foreground service (keeps monitoring alive even when app is
             // backgrounded)
-            Log.d(TAG, "[START] Step 1: Starting BreqkVpnService foreground service...");
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            Log.d(TAG, "[START] Step 1: Starting BreakVpnService foreground service...");
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("START_MONITORING");
             ServiceHelper.startForegroundServiceCompat(reactContext, serviceIntent);
 
@@ -232,10 +233,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
                 Log.w(TAG, "[START] WARNING: No blocked apps! Overlay will NOT show for any app!");
             }
 
-            // STEP 4: BreqkVpnService handles the monitoring loop
+            // STEP 4: BreakVpnService handles the monitoring loop
             // VPNModule's appMonitor should NOT start monitoring to prevent double overlays
-            // Only BreqkVpnService's monitor instance should be active
-            Log.d(TAG, "[START] Step 4: BreqkVpnService will handle monitoring (VPNModule monitor stays idle)");
+            // Only BreakVpnService's monitor instance should be active
+            Log.d(TAG, "[START] Step 4: BreakVpnService will handle monitoring (VPNModule monitor stays idle)");
 
             Log.d(TAG, "[START] ========== startMonitoring complete ==========");
             promise.resolve(true);
@@ -270,7 +271,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[STOP] stopMonitoring called");
             appMonitor.stopMonitoring();
 
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("STOP_MONITORING");
             reactContext.stopService(serviceIntent);
 
@@ -389,7 +390,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
      *
      * CRITICAL: This method must update TWO places:
      * 1. VPNModule's own appMonitor instance (for overlay detection)
-     * 2. BreqkVpnService's appMonitor instance (via Intent)
+     * 2. BreakVpnService's appMonitor instance (via Intent)
      */
     @ReactMethod
     public void setBlockedApps(ReadableArray apps, Promise promise) {
@@ -424,12 +425,12 @@ public class VPNModule extends ReactContextBaseJavaModule {
             appMonitor.setBlockedApps(blockedApps);
             Log.d(TAG, "[SET_BLOCKED] Updated VPNModule's appMonitor with " + blockedApps.size() + " apps");
 
-            // Also send intent to BreqkVpnService to update ITS monitor
-            Intent intent = new Intent(reactContext, BreqkVpnService.class);
+            // Also send intent to BreakVpnService to update ITS monitor
+            Intent intent = new Intent(reactContext, BreakVpnService.class);
             intent.setAction("UPDATE_BLOCKED_APPS");
             intent.putStringArrayListExtra("blockedApps", new ArrayList<>(blockedApps));
             ServiceHelper.startForegroundServiceCompat(reactContext, intent);
-            Log.d(TAG, "[SET_BLOCKED] Sent UPDATE_BLOCKED_APPS intent to BreqkVpnService");
+            Log.d(TAG, "[SET_BLOCKED] Sent UPDATE_BLOCKED_APPS intent to BreakVpnService");
 
             Log.d(TAG, "[SET_BLOCKED] ========== setBlockedApps complete ==========");
             promise.resolve(true);
@@ -499,7 +500,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
         }
     }
 
-    // requestVpnPermission — stubbed out. BreqkVpnService no longer extends
+    // requestVpnPermission — stubbed out. BreakVpnService no longer extends
     // VpnService,
     // so no VPN permission is needed. Kept for JS backward compatibility.
     @ReactMethod
@@ -516,7 +517,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void startVpnService(Promise promise) {
         try {
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("START_MONITORING");
             ServiceHelper.startForegroundServiceCompat(reactContext, serviceIntent);
 
@@ -531,7 +532,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void stopVpnService(Promise promise) {
         try {
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("STOP_MONITORING");
             reactContext.startService(serviceIntent);
             Log.d(TAG, "stopVpnService success, resolving promise");
@@ -563,7 +564,44 @@ public class VPNModule extends ReactContextBaseJavaModule {
         WritableMap result = Arguments.createMap();
         result.putBoolean("overlay", Settings.canDrawOverlays(reactContext));
         result.putBoolean("usage", hasUsageAccessPermission());
+        result.putBoolean("accessibility", isAccessibilityServiceEnabled());
         promise.resolve(result);
+    }
+
+    /**
+     * Returns true if the app's accessibility service is enabled in system
+     * settings. Matches on the package name so it stays correct regardless of
+     * the concrete service class name.
+     */
+    private boolean isAccessibilityServiceEnabled() {
+        try {
+            String enabled = Settings.Secure.getString(
+                    reactContext.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            return enabled != null && enabled.contains(reactContext.getPackageName());
+        } catch (Exception e) {
+            Log.w(TAG, "isAccessibilityServiceEnabled failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Opens the system Accessibility settings so the user can enable Break's
+     * service. Resolves true once the screen has been launched (the actual grant
+     * is verified on foreground return by the onboarding flow).
+     */
+    @ReactMethod
+    public void requestAccessibilityPermission(Promise promise) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            reactContext.startActivity(intent);
+            Log.d(TAG, "requestAccessibilityPermission — opened accessibility settings");
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.d(TAG, "requestAccessibilityPermission failed, rejecting promise");
+            promise.reject("ACCESSIBILITY_PERMISSION_ERROR", e.getMessage());
+        }
     }
 
     @ReactMethod
@@ -572,15 +610,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[SET_MESSAGE] Setting delay message: " + message);
 
             // Persist to SharedPreferences so Customize can reload on next mount
-            BreqkPrefs.get(reactContext).edit()
-                    .putString(BreqkPrefs.KEY_DELAY_MESSAGE, message)
+            BreakPrefs.get(reactContext).edit()
+                    .putString(BreakPrefs.KEY_DELAY_MESSAGE, message)
                     .apply();
 
             // Update VPNModule's appMonitor
             appMonitor.setDelayMessage(message);
 
-            // Also send to BreqkVpnService via Intent
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            // Also send to BreakVpnService via Intent
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("SET_DELAY_MESSAGE");
             serviceIntent.putExtra("message", message);
             reactContext.startService(serviceIntent);
@@ -599,15 +637,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[SET_DELAY_TIME] Setting delay timer to " + seconds + " seconds");
 
             // Persist to SharedPreferences so Customize can reload on next mount
-            BreqkPrefs.get(reactContext).edit()
-                    .putInt(BreqkPrefs.KEY_DELAY_TIME_SECONDS, seconds)
+            BreakPrefs.get(reactContext).edit()
+                    .putInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, seconds)
                     .apply();
 
             // Update VPNModule's appMonitor
             appMonitor.setDelayTime(seconds);
 
-            // Also send to BreqkVpnService via Intent
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            // Also send to BreakVpnService via Intent
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("SET_DELAY_TIME");
             serviceIntent.putExtra("seconds", seconds);
             reactContext.startService(serviceIntent);
@@ -728,9 +766,9 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[SET_SCROLL_THRESHOLD] Setting scroll threshold to " + threshold);
             // Clamp to valid range: 1–20
             int clamped = Math.max(1, Math.min(20, threshold));
-            BreqkPrefs.get(reactContext)
+            BreakPrefs.get(reactContext)
                     .edit()
-                    .putInt(BreqkPrefs.KEY_SCROLL_THRESHOLD, clamped)
+                    .putInt(BreakPrefs.KEY_SCROLL_THRESHOLD, clamped)
                     .apply();
             Log.d(TAG, "[SET_SCROLL_THRESHOLD] Saved scroll_threshold=" + clamped);
             promise.resolve(true);
@@ -746,15 +784,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[SET_POPUP_DELAY] Setting popup delay to " + minutes + " minutes");
 
             // Persist so the value survives service restarts
-            BreqkPrefs.get(reactContext).edit()
-                    .putInt(BreqkPrefs.KEY_POPUP_DELAY_MINUTES, minutes)
+            BreakPrefs.get(reactContext).edit()
+                    .putInt(BreakPrefs.KEY_POPUP_DELAY_MINUTES, minutes)
                     .apply();
 
             // Update VPNModule's appMonitor
             appMonitor.setPopupDelayMinutes(minutes);
 
-            // Also send to BreqkVpnService via Intent
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            // Also send to BreakVpnService via Intent
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("SET_POPUP_DELAY");
             serviceIntent.putExtra("minutes", minutes);
             reactContext.startService(serviceIntent);
@@ -770,8 +808,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getPopupDelayMinutes(Promise promise) {
         try {
-            int minutes = BreqkPrefs.get(reactContext).getInt(
-                    BreqkPrefs.KEY_POPUP_DELAY_MINUTES, BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+            int minutes = BreakPrefs.get(reactContext).getInt(
+                    BreakPrefs.KEY_POPUP_DELAY_MINUTES, BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES);
             Log.d(TAG, "[GET_POPUP_DELAY] popup_delay_minutes=" + minutes);
             promise.resolve(minutes);
         } catch (Exception e) {
@@ -783,8 +821,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getDelayMessage(Promise promise) {
         try {
-            String message = BreqkPrefs.get(reactContext).getString(
-                    BreqkPrefs.KEY_DELAY_MESSAGE,
+            String message = BreakPrefs.get(reactContext).getString(
+                    BreakPrefs.KEY_DELAY_MESSAGE,
                     "Take a moment to consider if you really need this app right now");
             Log.d(TAG, "[GET_MESSAGE] delay_message=" + message);
             promise.resolve(message);
@@ -797,8 +835,8 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getDelayTimeSeconds(Promise promise) {
         try {
-            int seconds = BreqkPrefs.get(reactContext).getInt(
-                    BreqkPrefs.KEY_DELAY_TIME_SECONDS, BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS);
+            int seconds = BreakPrefs.get(reactContext).getInt(
+                    BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
             Log.d(TAG, "[GET_DELAY_TIME] delay_time_seconds=" + seconds);
             promise.resolve(seconds);
         } catch (Exception e) {
@@ -812,7 +850,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
      * settings.
      *
      * Saves to SharedPreferences so the budget survives restarts, then sends
-     * SET_SCROLL_BUDGET intent to BreqkVpnService to update its running monitor
+     * SET_SCROLL_BUDGET intent to BreakVpnService to update its running monitor
      * instance.
      *
      * @param allowanceMinutes Minutes of scroll allowed per window (1–30)
@@ -824,14 +862,18 @@ public class VPNModule extends ReactContextBaseJavaModule {
             Log.d(TAG, "[setScrollBudget] allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
 
             // Persist so AppUsageMonitor.loadScrollBudgetFromPrefs() picks up on restart
-            BreqkPrefs.get(reactContext)
-                    .edit()
-                    .putInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, Math.max(1, allowanceMinutes))
-                    .putInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, Math.max(15, windowMinutes))
+            SharedPreferences prefs = BreakPrefs.get(reactContext);
+            prefs.edit()
+                    .putInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, Math.max(1, allowanceMinutes))
+                    .putInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, Math.max(15, windowMinutes))
                     .apply();
 
-            // Notify BreqkVpnService's running monitor instance via intent
-            Intent serviceIntent = new Intent(reactContext, BreqkVpnService.class);
+            // Immediately reconcile exhaustion state so the UI reflects the new cap
+            // without waiting for the next heartbeat tick.
+            ScrollBudgetLogic.reconcileAfterConfigChange(prefs, allowanceMinutes, System.currentTimeMillis());
+
+            // Notify BreakVpnService's running monitor instance via intent
+            Intent serviceIntent = new Intent(reactContext, BreakVpnService.class);
             serviceIntent.setAction("SET_SCROLL_BUDGET");
             serviceIntent.putExtra("allowanceMinutes", allowanceMinutes);
             serviceIntent.putExtra("windowMinutes", windowMinutes);
@@ -849,7 +891,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
      * getScrollBudgetStatus — Called from React Native (Home screen) to show live
      * budget status.
      *
-     * Reads state from SharedPreferences, which BreqkVpnService's AppUsageMonitor
+     * Reads state from SharedPreferences, which BreakVpnService's AppUsageMonitor
      * persists
      * periodically and on state changes. Returns:
      * { allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs,
@@ -858,46 +900,30 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getScrollBudgetStatus(Promise promise) {
         try {
-            SharedPreferences prefs = BreqkPrefs.get(reactContext);
-            int allowanceMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES,
-                    BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-            int windowMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES,
-                    BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
-            long scrollTimeUsedMs = prefs.getLong(BreqkPrefs.KEY_SCROLL_TIME_USED_MS, 0);
-            long windowStartTime = prefs.getLong(BreqkPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
-            long budgetExhaustedAt = prefs.getLong(BreqkPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
+            SharedPreferences prefs = BreakPrefs.get(reactContext);
+            int allowanceMinutes = prefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES,
+                    BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+            int windowMinutes = prefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES,
+                    BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+            long scrollTimeUsedMs = prefs.getLong(BreakPrefs.KEY_SCROLL_TIME_USED_MS, 0);
+            long windowStartTime = prefs.getLong(BreakPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
+            long budgetExhaustedAt = prefs.getLong(BreakPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
 
-            long allowanceMs = allowanceMinutes * 60 * 1000L;
-            long now = System.currentTimeMillis();
-            boolean canScroll = (budgetExhaustedAt == 0);
-            long nextScrollAtMs = 0;
-            long remainingMs = 0;
-
-            if (!canScroll && windowStartTime > 0) {
-                long windowMs = windowMinutes * 60 * 1000L;
-                nextScrollAtMs = windowStartTime + windowMs;
-                // Check if the window has already expired (service may not have reset yet)
-                if (now >= nextScrollAtMs) {
-                    canScroll = true;
-                    remainingMs = allowanceMs;
-                    nextScrollAtMs = 0;
-                }
-            }
-
-            if (canScroll) {
-                remainingMs = Math.max(0, allowanceMs - scrollTimeUsedMs);
-            }
+            ScrollBudgetLogic.Status s = ScrollBudgetLogic.derive(
+                    allowanceMinutes, windowMinutes,
+                    scrollTimeUsedMs, windowStartTime, budgetExhaustedAt,
+                    System.currentTimeMillis());
 
             WritableMap status = Arguments.createMap();
             status.putInt("allowanceMinutes", allowanceMinutes);
             status.putInt("windowMinutes", windowMinutes);
-            status.putDouble("usedMs", scrollTimeUsedMs);
-            status.putBoolean("canScroll", canScroll);
-            status.putDouble("nextScrollAtMs", nextScrollAtMs);
-            status.putDouble("remainingMs", remainingMs);
+            status.putDouble("usedMs", s.usedMs);
+            status.putBoolean("canScroll", s.canScroll);
+            status.putDouble("nextScrollAtMs", s.nextScrollAtMs);
+            status.putDouble("remainingMs", s.remainingMs);
 
-            Log.d(TAG, "[getScrollBudgetStatus] canScroll=" + canScroll +
-                    " remainingMs=" + remainingMs + " usedMs=" + scrollTimeUsedMs);
+            Log.d(TAG, "[getScrollBudgetStatus] canScroll=" + s.canScroll +
+                    " remainingMs=" + s.remainingMs + " usedMs=" + s.usedMs);
             promise.resolve(status);
         } catch (Exception e) {
             Log.e(TAG, "[getScrollBudgetStatus] Failed", e);
@@ -919,16 +945,16 @@ public class VPNModule extends ReactContextBaseJavaModule {
      * - Writes free_break_active=true, free_break_start_time,
      * free_break_last_used_date
      * to SharedPreferences (ReelsInterventionService reads these directly).
-     * - Dispatches FREE_BREAK_START intent to BreqkVpnService (informational).
+     * - Dispatches FREE_BREAK_START intent to BreakVpnService (informational).
      * - Schedules an auto-end Runnable for 20 minutes from now.
      */
     @ReactMethod
     public void startFreeBreak(Promise promise) {
         try {
-            SharedPreferences prefs = BreqkPrefs.get(reactContext);
+            SharedPreferences prefs = BreakPrefs.get(reactContext);
 
             // Guard: already active
-            if (prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false)) {
+            if (prefs.getBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false)) {
                 Log.w(FREE_BREAK_TAG, "[FREE_BREAK] startFreeBreak rejected — break already active");
                 promise.reject("ALREADY_ACTIVE", "Free break is already running");
                 return;
@@ -937,7 +963,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
             // Guard: already used today
             String todayDate = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                     .format(new java.util.Date());
-            String lastUsedDate = prefs.getString(BreqkPrefs.KEY_FREE_BREAK_LAST_USED_DATE, "");
+            String lastUsedDate = prefs.getString(BreakPrefs.KEY_FREE_BREAK_LAST_USED_DATE, "");
             if (todayDate.equals(lastUsedDate)) {
                 Log.w(FREE_BREAK_TAG, "[FREE_BREAK] startFreeBreak rejected — already used today (" + todayDate + ")");
                 promise.reject("ALREADY_USED_TODAY", "Free break already used today");
@@ -946,18 +972,18 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
             long now = System.currentTimeMillis();
             prefs.edit()
-                    .putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, true)
-                    .putLong(BreqkPrefs.KEY_FREE_BREAK_START_TIME, now)
-                    .putString(BreqkPrefs.KEY_FREE_BREAK_LAST_USED_DATE, todayDate)
+                    .putBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, true)
+                    .putLong(BreakPrefs.KEY_FREE_BREAK_START_TIME, now)
+                    .putString(BreakPrefs.KEY_FREE_BREAK_LAST_USED_DATE, todayDate)
                     .apply();
 
             Log.i(FREE_BREAK_TAG, "[FREE_BREAK] Break started at " + now + " date=" + todayDate
                     + " — auto-ends in 20 min");
 
-            // Notify BreqkVpnService (informational — service doesn't need its own timer
+            // Notify BreakVpnService (informational — service doesn't need its own timer
             // since ReelsInterventionService reads SharedPreferences directly)
-            Intent breakStartIntent = new Intent(reactContext, BreqkVpnService.class);
-            breakStartIntent.setAction("com.breqk.FREE_BREAK_START");
+            Intent breakStartIntent = new Intent(reactContext, BreakVpnService.class);
+            breakStartIntent.setAction("com.Break.FREE_BREAK_START");
             ServiceHelper.startForegroundServiceCompat(reactContext, breakStartIntent);
 
             // Schedule auto-end on main thread
@@ -967,12 +993,12 @@ public class VPNModule extends ReactContextBaseJavaModule {
                 Log.i(FREE_BREAK_TAG, "[FREE_BREAK] 20-min timer expired — auto-ending break");
                 endFreeBreakInternal();
             };
-            freeBreakHandler.postDelayed(freeBreakEndRunnable, BreqkPrefs.FREE_BREAK_DURATION_MS);
+            freeBreakHandler.postDelayed(freeBreakEndRunnable, BreakPrefs.FREE_BREAK_DURATION_MS);
 
             WritableMap result = Arguments.createMap();
             result.putBoolean("success", true);
             result.putDouble("startTimeMs", (double) now);
-            result.putDouble("durationMs", (double) BreqkPrefs.FREE_BREAK_DURATION_MS);
+            result.putDouble("durationMs", (double) BreakPrefs.FREE_BREAK_DURATION_MS);
             promise.resolve(result);
         } catch (Exception e) {
             Log.e(FREE_BREAK_TAG, "[FREE_BREAK] startFreeBreak error: " + e.getMessage(), e);
@@ -983,7 +1009,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
     /**
      * Ends the free break early (user-initiated).
      * Clears free_break_active, cancels the auto-end timer, and notifies
-     * BreqkVpnService.
+     * BreakVpnService.
      */
     @ReactMethod
     public void endFreeBreak(Promise promise) {
@@ -1012,24 +1038,24 @@ public class VPNModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getFreeBreakStatus(Promise promise) {
         try {
-            SharedPreferences prefs = BreqkPrefs.get(reactContext);
-            boolean enabled = prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ENABLED, false);
-            boolean active = prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false);
-            long startTime = prefs.getLong(BreqkPrefs.KEY_FREE_BREAK_START_TIME, 0);
-            String lastUsedDate = prefs.getString(BreqkPrefs.KEY_FREE_BREAK_LAST_USED_DATE, "");
+            SharedPreferences prefs = BreakPrefs.get(reactContext);
+            boolean enabled = prefs.getBoolean(BreakPrefs.KEY_FREE_BREAK_ENABLED, false);
+            boolean active = prefs.getBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false);
+            long startTime = prefs.getLong(BreakPrefs.KEY_FREE_BREAK_START_TIME, 0);
+            String lastUsedDate = prefs.getString(BreakPrefs.KEY_FREE_BREAK_LAST_USED_DATE, "");
 
             long now = System.currentTimeMillis();
 
             // Stale-flag cleanup: clear if the 20-min window has passed without a clean end
-            if (active && startTime > 0 && (now - startTime) >= BreqkPrefs.FREE_BREAK_DURATION_MS) {
+            if (active && startTime > 0 && (now - startTime) >= BreakPrefs.FREE_BREAK_DURATION_MS) {
                 Log.i(FREE_BREAK_TAG, "[FREE_BREAK] getFreeBreakStatus: stale active flag — auto-clearing");
-                prefs.edit().putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
+                prefs.edit().putBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
                 active = false;
             }
 
             long remainingMs = 0;
             if (active && startTime > 0) {
-                remainingMs = Math.max(0, (startTime + BreqkPrefs.FREE_BREAK_DURATION_MS) - now);
+                remainingMs = Math.max(0, (startTime + BreakPrefs.FREE_BREAK_DURATION_MS) - now);
             }
 
             String todayDate = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
@@ -1040,7 +1066,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
             map.putBoolean("enabled", enabled);
             map.putBoolean("active", active);
             map.putDouble("startTimeMs", (double) startTime);
-            map.putDouble("durationMs", (double) BreqkPrefs.FREE_BREAK_DURATION_MS);
+            map.putDouble("durationMs", (double) BreakPrefs.FREE_BREAK_DURATION_MS);
             map.putDouble("remainingMs", (double) remainingMs);
             map.putBoolean("usedToday", usedToday);
 
@@ -1055,7 +1081,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     /**
      * Internal: clears the free break active flag, cancels the auto-end timer,
-     * and notifies BreqkVpnService. Called by both the timer callback and
+     * and notifies BreakVpnService. Called by both the timer callback and
      * endFreeBreak().
      */
     private void endFreeBreakInternal() {
@@ -1063,13 +1089,13 @@ public class VPNModule extends ReactContextBaseJavaModule {
             freeBreakHandler.removeCallbacks(freeBreakEndRunnable);
             freeBreakEndRunnable = null;
         }
-        BreqkPrefs.get(reactContext).edit()
-                .putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false)
+        BreakPrefs.get(reactContext).edit()
+                .putBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false)
                 .apply();
         Log.i(FREE_BREAK_TAG, "[FREE_BREAK] Break ended — free_break_active=false");
 
-        Intent breakEndIntent = new Intent(reactContext, BreqkVpnService.class);
-        breakEndIntent.setAction("com.breqk.FREE_BREAK_END");
+        Intent breakEndIntent = new Intent(reactContext, BreakVpnService.class);
+        breakEndIntent.setAction("com.Break.FREE_BREAK_END");
         ServiceHelper.startForegroundServiceCompat(reactContext, breakEndIntent);
     }
 
@@ -1119,7 +1145,7 @@ public class VPNModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void getActiveMode(Promise promise) {
-        String modeId = BreqkPrefs.getActiveMode(reactContext);
+        String modeId = BreakPrefs.getActiveMode(reactContext);
         Log.d(TAG, "[MODE] getActiveMode → " + modeId);
         promise.resolve(modeId);
     }

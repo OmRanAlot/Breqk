@@ -1,7 +1,7 @@
-package com.breqk.monitor;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.shortform.AppConfig;
-import com.breqk.R;
+package com.Break.monitor;
+import com.Break.prefs.BreakPrefs;
+import com.Break.shortform.AppConfig;
+import com.Break.R;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
@@ -157,8 +157,8 @@ public class LaunchInterceptor {
      * @return true if the elapsed time exceeds FRESH_LAUNCH_THRESHOLD_MS
      */
     private boolean isFreshLaunch(String packageName) {
-        String key = BreqkPrefs.KEY_LAUNCH_LAST_FOREGROUND + packageName;
-        long lastFg = BreqkPrefs.get(context).getLong(key, 0L);
+        String key = BreakPrefs.KEY_LAUNCH_LAST_FOREGROUND + packageName;
+        long lastFg = BreakPrefs.get(context).getLong(key, 0L);
         long elapsed = System.currentTimeMillis() - lastFg;
         boolean fresh = elapsed > FRESH_LAUNCH_THRESHOLD_MS;
         Log.d(TAG, "[FRESH_CHECK] pkg=" + packageName
@@ -177,9 +177,9 @@ public class LaunchInterceptor {
      * @param packageName Package to stamp
      */
     private void recordForeground(String packageName) {
-        String key = BreqkPrefs.KEY_LAUNCH_LAST_FOREGROUND + packageName;
+        String key = BreakPrefs.KEY_LAUNCH_LAST_FOREGROUND + packageName;
         long now = System.currentTimeMillis();
-        BreqkPrefs.get(context).edit().putLong(key, now).apply();
+        BreakPrefs.get(context).edit().putLong(key, now).apply();
         Log.d(TAG, "[RECORD_FG] pkg=" + packageName + " timestampMs=" + now);
     }
 

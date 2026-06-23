@@ -1,9 +1,9 @@
-package com.breqk.shortform.budget;
+package com.Break.shortform.budget;
 
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.breqk.prefs.BreqkPrefs;
+import com.Break.prefs.BreakPrefs;
 
 /**
  * HomeFeedCounter
@@ -46,6 +46,6 @@ public class HomeFeedCounter {
     }
 
     public int getLimit(SharedPreferences prefs) {
-        return prefs.getInt(BreqkPrefs.KEY_HOME_FEED_POST_LIMIT, BreqkPrefs.DEFAULT_HOME_FEED_POST_LIMIT);
+        return prefs.getInt(BreakPrefs.KEY_HOME_FEED_POST_LIMIT, BreakPrefs.DEFAULT_HOME_FEED_POST_LIMIT);
     }
 }

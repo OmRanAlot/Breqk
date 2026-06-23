@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.instagram;
+package com.Break.shortform.platform.instagram;
 
 /**
  * View-ID constants for Instagram short-form UI detection.
@@ -21,8 +21,18 @@ public final class InstagramViewIds {
      * Used by HomeFeedCounter to detect post swipes — distinct from the full-screen
      * Reels viewer (REELS_IDS below).
      */
+    /**
+     * The home-feed RecyclerView ID. This is the STRICT, unambiguous home-feed
+     * signal — it identifies the main feed list and nothing else (Reels, Explore,
+     * DMs and Stories use different view IDs). Used by HomeFeedScrollMeter so
+     * measurement is confined to the home page only.
+     */
+    public static final String HOME_FEED_RECYCLER_ID =
+            "com.instagram.android:id/feed_main_recycler_view";
+
     public static final String[] HOME_FEED_IDS = {
-            "com.instagram.android:id/feed_main_recycler_view",   // primary home feed RecyclerView
+            HOME_FEED_RECYCLER_ID,                                  // primary home feed RecyclerView
+            "android:id/list",                                      // current Instagram (framework namespace)
             "com.instagram.android:id/list",                       // fallback (older Instagram versions)
     };
 

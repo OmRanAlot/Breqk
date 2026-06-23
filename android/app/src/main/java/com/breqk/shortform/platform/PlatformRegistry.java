@@ -1,10 +1,10 @@
-package com.breqk.shortform.platform;
+package com.Break.shortform.platform;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 
-import com.breqk.shortform.platform.instagram.InstagramFilterHandler;
-import com.breqk.shortform.platform.youtube.YouTubeFilterHandler;
+import com.Break.shortform.platform.instagram.InstagramFilterHandler;
+import com.Break.shortform.platform.youtube.YouTubeFilterHandler;
 // TikTok / Facebook / Snapchat handlers intentionally NOT imported — boilerplate only.
 
 import java.util.EnumMap;

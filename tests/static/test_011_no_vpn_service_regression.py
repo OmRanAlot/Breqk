@@ -8,7 +8,7 @@ WHAT:
   VPN intent-filter android.net.VpnService.
 
 WHY:
-  The original BreqkVpnService was migrated from VpnService to a standard
+  The original BreakVpnService was migrated from VpnService to a standard
   foreground Service (B2 fix) to avoid Google Play Store rejection and
   improve user trust. If any VPN artifact regresses back into the code,
   the app will be rejected.

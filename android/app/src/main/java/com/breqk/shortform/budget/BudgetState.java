@@ -1,10 +1,10 @@
-package com.breqk.shortform.budget;
+package com.Break.shortform.budget;
 
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.breqk.prefs.BreqkPrefs;
+import com.Break.prefs.BreakPrefs;
 
 public class BudgetState {
     private static final String TAG = "REELS_WATCH";
@@ -33,6 +33,17 @@ public class BudgetState {
         windowStartTime = prefs.getLong(PREF_SCROLL_WINDOW_START, 0);
         scrollTimeUsedMs = prefs.getLong(PREF_SCROLL_TIME_USED_MS, 0);
         exhaustedAt = prefs.getLong(PREF_SCROLL_EXHAUSTED_AT, 0);
+    }
+
+    /**
+     * Reloads all mutable config + runtime state from SharedPreferences.
+     * Called when the user changes allowance/window in the UI so enforcement
+     * uses the new cap without a service restart.
+     */
+    public void reloadFromPrefs(SharedPreferences prefs) {
+        load(prefs);
+        Log.d(TAG, "[BUDGET] reloadFromPrefs: allowance=" + allowanceMinutes
+                + "min used=" + scrollTimeUsedMs + "ms exhaustedAt=" + exhaustedAt);
     }
 
     public void tick(long intervalMs) {
@@ -95,19 +106,19 @@ public class BudgetState {
     }
 
     public boolean isFreeBreakActive(long now) {
-        SharedPreferences prefs = BreqkPrefs.get(context);
-        boolean active = prefs.getBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false);
+        SharedPreferences prefs = BreakPrefs.get(context);
+        boolean active = prefs.getBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false);
         if (!active) return false;
 
-        long startTime = prefs.getLong(BreqkPrefs.KEY_FREE_BREAK_START_TIME, 0);
-        if (startTime > 0 && (now - startTime) >= BreqkPrefs.FREE_BREAK_DURATION_MS) {
-            prefs.edit().putBoolean(BreqkPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
+        long startTime = prefs.getLong(BreakPrefs.KEY_FREE_BREAK_START_TIME, 0);
+        if (startTime > 0 && (now - startTime) >= BreakPrefs.FREE_BREAK_DURATION_MS) {
+            prefs.edit().putBoolean(BreakPrefs.KEY_FREE_BREAK_ACTIVE, false).apply();
             Log.i(TAG, "[FREE_BREAK] isFreeBreakActive: break expired (startTime=" + startTime
                     + ") â€” auto-cleared, elapsed=" + (now - startTime) + "ms");
             return false;
         }
 
-        long remainingMs = (startTime + BreqkPrefs.FREE_BREAK_DURATION_MS) - now;
+        long remainingMs = (startTime + BreakPrefs.FREE_BREAK_DURATION_MS) - now;
         Log.d(TAG, "[FREE_BREAK] isFreeBreakActive: true â€” remainingMs=" + remainingMs);
         return true;
     }

@@ -1,4 +1,4 @@
-package com.breqk.shortform.intervention;
+package com.Break.shortform.intervention;
 
 import android.content.Context;
 import android.graphics.PixelFormat;
@@ -8,11 +8,14 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.breqk.R;
+import com.Break.R;
 
 public class InterventionOverlay {
     private static final String TAG = "REELS_WATCH";
@@ -64,21 +67,59 @@ public class InterventionOverlay {
             btnLockIn.setVisibility(View.VISIBLE);
             btnLockIn.setOnClickListener(v -> {
                 Log.i(TAG, "lock_in tapped for " + pkg + " â€” going to Android home screen");
-                dismiss();
-                if (onLockInCallback != null) {
-                    onLockInCallback.run();
-                }
+                btnLockIn.setEnabled(false);
+                slideOut(interventionView, () -> {
+                    dismiss();
+                    if (onLockInCallback != null) {
+                        onLockInCallback.run();
+                    }
+                });
             });
 
             try {
                 windowManager.addView(interventionView, params);
                 Log.i(TAG, "[BUDGET] Overlay shown (Time is up!) for " + pkg);
+                slideIn(interventionView);
             } catch (Exception e) {
                 Log.e(TAG, "Failed to add intervention view", e);
                 isShowing = false;
                 interventionView = null;
             }
         });
+    }
+
+    private void slideIn(View root) {
+        View sheet = root.findViewById(R.id.bottom_sheet_container);
+        if (sheet == null) return;
+        root.setAlpha(0f);
+        sheet.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                sheet.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                sheet.setTranslationY(sheet.getHeight());
+                root.animate().alpha(1f).setDuration(300).setInterpolator(new DecelerateInterpolator()).start();
+                sheet.animate()
+                        .translationY(0f)
+                        .setDuration(400)
+                        .setInterpolator(new DecelerateInterpolator(2.5f))
+                        .start();
+            }
+        });
+    }
+
+    private void slideOut(View root, Runnable onDone) {
+        View sheet = root.findViewById(R.id.bottom_sheet_container);
+        if (sheet == null) {
+            onDone.run();
+            return;
+        }
+        root.animate().alpha(0f).setDuration(280).setInterpolator(new AccelerateInterpolator()).start();
+        sheet.animate()
+                .translationY(sheet.getHeight())
+                .setDuration(300)
+                .setInterpolator(new AccelerateInterpolator(2f))
+                .withEndAction(onDone)
+                .start();
     }
 
     public void dismiss() {
@@ -91,7 +132,7 @@ public class InterventionOverlay {
                 ? Thread.currentThread().getStackTrace()[3]
                 : null;
         Log.i(TAG, "[DISMISS_CALL] dismissIntervention: removing overlay"
-                + (caller != null ? " â€” caller=" + caller.getMethodName()
+                + (caller != null ? " ” caller=" + caller.getMethodName()
                         + ":" + caller.getLineNumber() : ""));
         
         isShowing = false;

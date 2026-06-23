@@ -65,13 +65,13 @@ def android_attr(element: ET.Element, attr: str) -> str:
 def class_name_to_path(name: str, java_src: Path) -> Path:
     """
     Convert manifest class name to expected Java file path.
-    Handles both full names ("com.breqk.Foo") and short names (".Foo", ".bar.Foo").
-    java_src should be the .../java/com/breqk directory.
+    Handles both full names ("com.Break.Foo") and short names (".Foo", ".bar.Foo").
+    java_src should be the .../java/com/Break directory.
     """
     if name.startswith("."):
-        name = "com.breqk" + name
+        name = "com.Break" + name
     relative = name.replace(".", "/") + ".java"
-    # java_src = project/.../java/com/breqk  ->  java base = .../java
+    # java_src = project/.../java/com/Break  ->  java base = .../java
     java_base = java_src.parent.parent
     return java_base / relative
 

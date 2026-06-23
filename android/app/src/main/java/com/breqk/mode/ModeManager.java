@@ -1,7 +1,7 @@
-package com.breqk.mode;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.service.BreqkVpnService;
-import com.breqk.monitor.ServiceHelper;
+package com.Break.mode;
+import com.Break.prefs.BreakPrefs;
+import com.Break.service.BreakVpnService;
+import com.Break.monitor.ServiceHelper;
 
 /*
  * ModeManager
@@ -43,8 +43,8 @@ public final class ModeManager {
     private static final String TAG = "MODE_MGR";
 
     // Intent actions for AlarmManager-triggered schedule events
-    public static final String ACTION_MODE_START = "com.breqk.ACTION_MODE_START";
-    public static final String ACTION_MODE_END   = "com.breqk.ACTION_MODE_END";
+    public static final String ACTION_MODE_START = "com.Break.ACTION_MODE_START";
+    public static final String ACTION_MODE_END   = "com.Break.ACTION_MODE_END";
     // Intent extra key for the mode ID
     public static final String EXTRA_MODE_ID = "mode_id";
 
@@ -66,17 +66,33 @@ public final class ModeManager {
      */
     public static void activate(Context context, String modeId, String source) {
         Log.i(TAG, "[ACTIVATE] Activating mode '" + modeId + "' source=" + source);
-        SharedPreferences prefs = BreqkPrefs.get(context);
+        SharedPreferences prefs = BreakPrefs.get(context);
+
+        // If we're switching away from a different non-default mode, emit its
+        // "ended" notification first. This is the single source of truth for
+        // end events — manual switches, schedule end (via deactivate→default),
+        // and direct mode-to-mode swaps all funnel through here.
+        String previousMode = BreakPrefs.getActiveMode(context);
+        if (!modeId.equals(previousMode) && !"default".equals(previousMode)) {
+            ModeNotifier.notifyModeEnded(context, previousMode);
+        }
+
         prefs.edit()
-                .putString(BreqkPrefs.KEY_ACTIVE_MODE, modeId)
-                .putString(BreqkPrefs.KEY_ACTIVE_MODE_SOURCE, source)
+                .putString(BreakPrefs.KEY_ACTIVE_MODE, modeId)
+                .putString(BreakPrefs.KEY_ACTIVE_MODE_SOURCE, source)
                 .apply();
 
         // Sync legacy blocked_apps from effective policies (base + mode overrides)
-        BreqkPrefs.syncBlockedAppsFromPolicies(context);
+        BreakPrefs.syncBlockedAppsFromPolicies(context);
 
         // Notify MyVpnService so its AppUsageMonitor picks up the new blocked_apps set
         notifyServiceBlockedAppsChanged(context);
+
+        // User-visible "mode started" notification. Skip "default" — it's the
+        // always-on fallback, not a mode the user deliberately enters.
+        if (!"default".equals(modeId)) {
+            ModeNotifier.notifyModeStarted(context, modeId);
+        }
 
         Log.i(TAG, "[ACTIVATE] Mode '" + modeId + "' is now active");
     }
@@ -87,10 +103,11 @@ public final class ModeManager {
      * explicitly overridden by another mode.
      */
     public static void deactivate(Context context) {
-        String previousMode = BreqkPrefs.getActiveMode(context);
+        String previousMode = BreakPrefs.getActiveMode(context);
         Log.i(TAG, "[DEACTIVATE] Deactivating mode '" + previousMode + "' → falling back to 'default'");
 
-        // Fall back to Default mode instead of no mode
+        // Fall back to Default mode instead of no mode. activate() emits the
+        // "ended" notification for previousMode as part of the transition.
         activate(context, "default", "manual");
 
         Log.i(TAG, "[DEACTIVATE] Fell back to 'default' mode");
@@ -109,7 +126,7 @@ public final class ModeManager {
      */
     public static void registerScheduleAlarms(Context context, String modeId) {
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             if (!modes.has(modeId)) {
                 Log.w(TAG, "[SCHEDULE] Cannot register alarms: mode '" + modeId + "' not found");
                 return;
@@ -175,7 +192,7 @@ public final class ModeManager {
     public static void reregisterAllAlarms(Context context) {
         Log.d(TAG, "[SCHEDULE] Re-registering all mode schedule alarms");
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             Iterator<String> keys = modes.keys();
             while (keys.hasNext()) {
                 String modeId = keys.next();
@@ -212,7 +229,7 @@ public final class ModeManager {
      */
     public static void handleScheduleEnd(Context context, String modeId) {
         Log.i(TAG, "[SCHEDULE] END alarm fired for mode '" + modeId + "'");
-        String activeMode = BreqkPrefs.getActiveMode(context);
+        String activeMode = BreakPrefs.getActiveMode(context);
         if (modeId.equals(activeMode)) {
             deactivate(context);
         } else {
@@ -231,8 +248,8 @@ public final class ModeManager {
      * This ensures both monitor instances are in sync after policy changes.
      */
     private static void notifyServiceBlockedAppsChanged(Context context) {
-        Set<String> blockedApps = BreqkPrefs.getBlockedApps(context);
-        Intent intent = new Intent(context, BreqkVpnService.class);
+        Set<String> blockedApps = BreakPrefs.getBlockedApps(context);
+        Intent intent = new Intent(context, BreakVpnService.class);
         intent.setAction("UPDATE_BLOCKED_APPS");
         intent.putStringArrayListExtra("blockedApps", new ArrayList<>(blockedApps));
         try {
@@ -319,7 +336,7 @@ public final class ModeManager {
      */
     private static boolean isTodayInSchedule(Context context, String modeId) {
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             if (!modes.has(modeId)) return false;
             JSONObject mode = modes.getJSONObject(modeId);
             if (!mode.has("schedule") || mode.isNull("schedule")) return true; // no schedule = always

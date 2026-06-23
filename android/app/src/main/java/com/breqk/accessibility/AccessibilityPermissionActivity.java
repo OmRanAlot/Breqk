@@ -1,7 +1,7 @@
-package com.breqk.accessibility;
-import com.breqk.ReelsInterventionService;
-import com.breqk.MainActivity;
-import com.breqk.R;
+package com.Break.accessibility;
+import com.Break.ReelsInterventionService;
+import com.Break.MainActivity;
+import com.Break.R;
 
 import android.content.ComponentName;
 import android.content.Intent;

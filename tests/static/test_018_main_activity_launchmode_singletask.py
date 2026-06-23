@@ -7,7 +7,7 @@ WHAT:
   depends on this to avoid creating duplicate activity instances.
 
 WHY:
-  Without singleTask, each breqk:// deep link from the widget creates a
+  Without singleTask, each Break:// deep link from the widget creates a
   new MainActivity instance, leading to multiple React Native roots and
   undefined behavior (stale state, JS bridge confusion, OOM).
 

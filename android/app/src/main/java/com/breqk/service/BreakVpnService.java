@@ -1,7 +1,7 @@
-package com.breqk.service;
+package com.Break.service;
 
 /*
- * BreqkVpnService
+ * BreakVpnService
  * ---------------
  * Plain foreground service (NOT a VPN) used to keep AppUsageMonitor alive
  * in the background. Does not tunnel any traffic.
@@ -11,12 +11,12 @@ package com.breqk.service;
  *  - Owns lifecycle of AppUsageMonitor and blocked apps persistence.
  *  - Listener hooks are available for future event routing.
  *
- * Logging tag: BreqkVpnService
- * Filter: adb logcat -s BreqkVpnService
+ * Logging tag: BreakVpnService
+ * Filter: adb logcat -s BreakVpnService
  */
 
-import com.breqk.monitor.AppUsageMonitor;
-import com.breqk.prefs.BreqkPrefs;
+import com.Break.monitor.AppUsageMonitor;
+import com.Break.prefs.BreakPrefs;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -30,15 +30,15 @@ import android.util.Log;
 import android.os.IBinder;
 import androidx.core.app.NotificationCompat;
 
-import com.breqk.MainActivity;
-import com.breqk.R;
+import com.Break.MainActivity;
+import com.Break.R;
 
 import java.util.Set;
 import java.util.HashSet;
 
-public class BreqkVpnService extends Service {
-    private static final String TAG = "BreqkVpnService";
-    private static final String NOTIFICATION_CHANNEL_ID = "BreqkMonitoring";
+public class BreakVpnService extends Service {
+    private static final String TAG = "BreakVpnService";
+    private static final String NOTIFICATION_CHANNEL_ID = "BreakMonitoring";
     private static final int NOTIFICATION_ID = 1;
 
     private AppUsageMonitor monitor;
@@ -48,9 +48,9 @@ public class BreqkVpnService extends Service {
         super.onCreate();
         createNotificationChannel();
 
-        Log.d(TAG, "[CREATE] BreqkVpnService onCreate");
+        Log.d(TAG, "[CREATE] BreakVpnService onCreate");
 
-        Notification notification = createNotification("Breqk Active");
+        Notification notification = createNotification("Break Active");
         startForeground(NOTIFICATION_ID, notification);
 
         Log.d(TAG, "[CREATE] Initializing AppUsageMonitor");
@@ -58,7 +58,7 @@ public class BreqkVpnService extends Service {
         monitor = new AppUsageMonitor(this);
 
         // Restore blocked apps — defensive copy to avoid SharedPreferences mutation issues
-        Set<String> savedBlockedApps = BreqkPrefs.getBlockedApps(this);
+        Set<String> savedBlockedApps = BreakPrefs.getBlockedApps(this);
         Log.d(TAG, "[CREATE] Loaded savedBlockedApps size=" + savedBlockedApps.size());
         if (!savedBlockedApps.isEmpty()) {
             monitor.setBlockedApps(savedBlockedApps);
@@ -101,7 +101,7 @@ public class BreqkVpnService extends Service {
 
         switch (action) {
                 case "START_MONITORING":
-                    Notification notification = createNotification("Breqk Active");
+                    Notification notification = createNotification("Break Active");
                     startForeground(NOTIFICATION_ID, notification);
                     startMonitoring();
                     break;
@@ -124,33 +124,33 @@ public class BreqkVpnService extends Service {
                     }
                     break;
                 case "SET_DELAY_TIME":
-                    int seconds = intent.getIntExtra("seconds", BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS);
+                    int seconds = intent.getIntExtra("seconds", BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
                     Log.d(TAG, "[CMD] SET_DELAY_TIME seconds=" + seconds);
                     if (monitor != null) {
                         monitor.setDelayTime(seconds);
                     }
                     break;
                 case "SET_POPUP_DELAY":
-                    int minutes = intent.getIntExtra("minutes", BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+                    int minutes = intent.getIntExtra("minutes", BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES);
                     Log.d(TAG, "[CMD] SET_POPUP_DELAY minutes=" + minutes);
                     if (monitor != null) {
                         monitor.setPopupDelayMinutes(minutes);
                     }
                     break;
                 case "SET_SCROLL_BUDGET":
-                    int allowanceMinutes = intent.getIntExtra("allowanceMinutes", BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-                    int windowMinutes = intent.getIntExtra("windowMinutes", BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+                    int allowanceMinutes = intent.getIntExtra("allowanceMinutes", BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+                    int windowMinutes = intent.getIntExtra("windowMinutes", BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
                     Log.d(TAG, "[CMD] SET_SCROLL_BUDGET received: allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
                     if (monitor != null) {
                         monitor.setScrollBudget(allowanceMinutes, windowMinutes);
                     }
                     break;
-                case "com.breqk.FREE_BREAK_START":
+                case "com.Break.FREE_BREAK_START":
                     // SharedPreferences already updated by VPNModule.startFreeBreak().
                     // ReelsInterventionService reads prefs directly — no extra state needed here.
                     Log.i(TAG, "[FREE_BREAK] FREE_BREAK_START received — Reels budget accumulation suspended");
                     break;
-                case "com.breqk.FREE_BREAK_END":
+                case "com.Break.FREE_BREAK_END":
                     // SharedPreferences already updated by VPNModule.endFreeBreakInternal().
                     Log.i(TAG, "[FREE_BREAK] FREE_BREAK_END received — Reels budget accumulation resumed");
                     break;
@@ -176,7 +176,7 @@ public class BreqkVpnService extends Service {
         if (monitor == null) {
             monitor = new AppUsageMonitor(this);
             // Load and set blocked apps — defensive copy
-            Set<String> savedBlockedApps = BreqkPrefs.getBlockedApps(this);
+            Set<String> savedBlockedApps = BreakPrefs.getBlockedApps(this);
             if (!savedBlockedApps.isEmpty()) {
                 monitor.setBlockedApps(savedBlockedApps);
             }
@@ -200,7 +200,7 @@ public class BreqkVpnService extends Service {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Breqk")
+            .setContentTitle("Break")
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_vpn)
             .setContentIntent(pendingIntent)
@@ -213,7 +213,7 @@ public class BreqkVpnService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "Breqk Monitoring",
+                "Break Monitoring",
                 NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("Monitors app usage to show delay screens");
@@ -243,21 +243,21 @@ public class BreqkVpnService extends Service {
      * Loads scroll budget configuration from SharedPreferences and applies it to the given monitor.
      * Called on onCreate() and inside startMonitoring() to ensure the budget is always in sync.
      *
-     * Log tag: [BreqkVpnService] [BUDGET]
+     * Log tag: [BreakVpnService] [BUDGET]
      */
     private void loadScrollBudgetIntoMonitor(AppUsageMonitor targetMonitor) {
         if (targetMonitor == null) return;
-        SharedPreferences prefs = BreqkPrefs.get(this);
-        int allowanceMin = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-        int windowMin = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+        SharedPreferences prefs = BreakPrefs.get(this);
+        int allowanceMin = prefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+        int windowMin = prefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
         targetMonitor.setScrollBudget(allowanceMin, windowMin);
         Log.d(TAG, "[BUDGET] loadScrollBudgetIntoMonitor: allowance=" + allowanceMin + "min window=" + windowMin + "min");
     }
 
     private void saveBlockedApps(Set<String> blockedApps) {
-        BreqkPrefs.get(this)
+        BreakPrefs.get(this)
             .edit()
-            .putStringSet(BreqkPrefs.KEY_BLOCKED_APPS, blockedApps)
+            .putStringSet(BreakPrefs.KEY_BLOCKED_APPS, blockedApps)
             .apply();
         Log.d(TAG, "[PREF] saveBlockedApps size=" + (blockedApps != null ? blockedApps.size() : 0) + " data=" + blockedApps);
     }

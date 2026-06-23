@@ -1,4 +1,4 @@
-package com.breqk.uninstall;
+package com.Break.uninstall;
 
 import android.content.Context;
 import android.graphics.PixelFormat;
@@ -15,15 +15,15 @@ import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.breqk.R;
-import com.breqk.prefs.BreqkPrefs;
+import com.Break.R;
+import com.Break.prefs.BreakPrefs;
 
 /**
- * Full-screen "don't delete Breqk" lock screen.
+ * Full-screen "don't delete Break" lock screen.
  *
- * Shown by {@link com.breqk.ReelsInterventionService} when the user reaches the
- * Breqk uninstall screen in Settings AND the deletion-prevention setting is on
- * (the service gates on {@link BreqkPrefs#isUninstallLockEnabled}).
+ * Shown by {@link com.Break.ReelsInterventionService} when the user reaches the
+ * Break uninstall screen in Settings AND the deletion-prevention setting is on
+ * (the service gates on {@link BreakPrefs#isUninstallLockEnabled}).
  *
  * Behaviour:
  * - Inflates {@code overlay_uninstall_lock} — a FULLY OPAQUE light surface
@@ -32,10 +32,10 @@ import com.breqk.prefs.BreqkPrefs;
  * - A motivational, anti-deletion message rotates every
  * {@link #MESSAGE_ROTATE_MS}.
  * - Both action buttons are hidden for
- * {@link BreqkPrefs#UNINSTALL_LOCK_DURATION_MS}
+ * {@link BreakPrefs#UNINSTALL_LOCK_DURATION_MS}
  * (30s) then revealed together. NO countdown or timer is ever displayed.
- * - "Keep Breqk" fires the caller's callback (GLOBAL_ACTION_HOME).
- * - "Give up and delete Breqk anyway" is the deliberately discouraged escape:
+ * - "Keep Break" fires the caller's callback (GLOBAL_ACTION_HOME).
+ * - "Give up and delete Break anyway" is the deliberately discouraged escape:
  * it dismisses the lock and suppresses re-show for {@link #PROCEED_SUPPRESS_MS}
  * so the OS uninstall flow can actually proceed without the overlay snapping
  * back on the next Settings content-change event.
@@ -61,27 +61,26 @@ public class UninstallLockOverlay {
 
     // Prevents re-showing the overlay too quickly after a normal dismiss
     // (e.g. user taps back / navigates away briefly).
-    private static final long RESHOW_COOLDOWN_MS = 3000;
-
+    private static final long RESHOW_COOLDOWN_MS = 500;
     // After the user explicitly chooses "delete anyway", suppress re-show for
     // this long so they can complete the system uninstall confirmation without
     // the overlay reappearing on the next Settings CONTENT_CHANGED event.
-    private static final long PROCEED_SUPPRESS_MS = 20_000;
+    private static final long PROCEED_SUPPRESS_MS = 10_000;
 
     /**
      * Rotating copy. Tone: discourage deleting, encourage keeping the app, and
      * reframe the urge to uninstall as the moment the tool is actually working.
      */
     private static final String[] MESSAGES = {
-            "The urge to delete Breqk is the exact moment it's working. Sit with it.",
-            "You installed Breqk for a reason. That reason hasn't gone anywhere.",
+            "The urge to delete Break is the exact moment it's working. Sit with it.",
+            "You installed Break for a reason. That reason hasn't gone anywhere.",
             "Future you is begging you not to do this. Listen to them.",
             "Deleting this won't fix the urge — it just removes the thing protecting you from it.",
             "Thirty seconds of discomfort now beats hours lost scrolling later.",
-            "This feeling passes. The habit you're fighting doesn't — unless you let Breqk help.",
+            "This feeling passes. The habit you're fighting doesn't — unless you let Break help.",
             "You're not trapped. You're protected. There's a difference.",
             "\"Bro cmon. LOCK IN TWIN. you got this.\" \n- past you",
-            "Keep Breqk. Tomorrow you'll be glad you stayed.",
+            "Keep Break. Tomorrow you'll be glad you stayed.",
     };
 
     private final Context context;
@@ -114,7 +113,7 @@ public class UninstallLockOverlay {
      * Shows the lock screen. No-op if already showing, within the reshow
      * cooldown, or within the post-"delete anyway" suppression window.
      *
-     * @param onKeepCallback fired when the user taps "Keep Breqk" after the wait
+     * @param onKeepCallback fired when the user taps "Keep Break" after the wait
      *                       (typically GLOBAL_ACTION_HOME)
      */
     public void show(Runnable onKeepCallback) {
@@ -177,7 +176,7 @@ public class UninstallLockOverlay {
             });
 
             keepBtn.setOnClickListener(v -> {
-                Log.i(TAG, "[UNINSTALL_WATCH] 'Keep Breqk' tapped — dismissing and going home");
+                Log.i(TAG, "[UNINSTALL_WATCH] 'Keep Break' tapped — dismissing and going home");
                 dismiss();
                 if (onKeepCallback != null)
                     onKeepCallback.run();
@@ -223,7 +222,7 @@ public class UninstallLockOverlay {
                 deleteBtn.setVisibility(View.VISIBLE);
                 Log.d(TAG, "[UNINSTALL_WATCH] Wait elapsed — buttons revealed");
             };
-            mainHandler.postDelayed(revealRunnable, BreqkPrefs.UNINSTALL_LOCK_DURATION_MS);
+            mainHandler.postDelayed(revealRunnable, BreakPrefs.UNINSTALL_LOCK_DURATION_MS);
         });
     }
 

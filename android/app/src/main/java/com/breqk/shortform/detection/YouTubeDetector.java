@@ -1,13 +1,13 @@
-package com.breqk.shortform.detection;
+package com.Break.shortform.detection;
 
 import android.content.Context;
 import android.graphics.Rect;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import com.breqk.shortform.FullScreenCheck;
-import com.breqk.shortform.FrameworkClassFilter;
-import com.breqk.shortform.platform.youtube.YouTubeViewIds;
+import com.Break.shortform.FullScreenCheck;
+import com.Break.shortform.FrameworkClassFilter;
+import com.Break.shortform.platform.youtube.YouTubeViewIds;
 
 import java.util.List;
 
@@ -23,7 +23,7 @@ import java.util.List;
  * (L1852-L1902).
  * All detection logic is unchanged -- the same tier ladder applies.
  *
- * Detection strategy (4 tiers):
+ * Detection strategy (5 tiers):
  *
  * Tier 0 -- Class name match (O(1)):
  * Called by the service on TYPE_WINDOW_STATE_CHANGED. Not part of detect() --
@@ -36,11 +36,20 @@ import java.util.List;
  * YouTubeViewIds.SHORTS_SECONDARY_IDS + absence of YOUTUBE_SEEKBAR_ID.
  * Only confirms if the secondary signal node itself is full-screen.
  *
- * Tier 3 -- Visible text scan (depth 3):
+ * Tier 3 -- Visible “Shorts” text scan (depth 3):
  * Walks the tree looking for “Shorts” in getText()/getContentDescription().
  * Resilient to view ID renames. NOT used in detectStrict() to avoid
  * bottom-nav “Shorts” tab false positives on home page / long-form videos.
  * Guards: seekbar presence aborts scan; bounds check rejects nav-tab nodes.
+ *
+ * Tier 3B -- Action button scan (depth 5):
+ * Walks the tree looking for Shorts-specific action button labels in the
+ * RIGHT column of the screen (centerX > 60% of screen width):
+ *   - “remix”             alone is sufficient (absent from regular video pages)
+ *   - “dislike” + “share” together in right column also confirm Shorts
+ * Guard: seekbar presence aborts scan (regular videos always have a seekbar).
+ * This tier is resilient to ALL view ID changes since it reads visible text.
+ * Filter: adb logcat -s REELS_WATCH | findstr “ACTION_BTN”
  *
  * Tier 4 -- Diagnostic tree dump (rate-limited to once per 10s):
  * When all detection tiers fail, dumps all YouTube view IDs to logcat so
@@ -53,6 +62,7 @@ import java.util.List;
  * Shorts active: adb logcat -s REELS_WATCH | findstr “SHORTS_ACTIVE”
  * Shorts class: adb logcat -s REELS_WATCH | findstr “SHORTS_CLASS”
  * Text signal: adb logcat -s REELS_WATCH | findstr “SHORTS_TEXT”
+ * Action buttons: adb logcat -s REELS_WATCH | findstr “ACTION_BTN”
  * Tree dump: adb logcat -s REELS_WATCH | findstr “YT_TREE_DUMP”
  */
 public class YouTubeDetector implements ShortFormDetector {
@@ -176,7 +186,7 @@ public class YouTubeDetector implements ShortFormDetector {
         if (tier12.inShortForm)
             return tier12;
 
-        // --- TIER 3: Visible text scan ---
+        // --- TIER 3: Visible “Shorts” text scan ---
         // Walks the tree (max depth 3) for any visible node whose getText() or
         // getContentDescription() contains “shorts” (case-insensitive).
         // Resilient to view ID renames. Not used in detectStrict() -- the bottom-nav
@@ -185,6 +195,17 @@ public class YouTubeDetector implements ShortFormDetector {
         if (hasShortsTextSignal(root)) {
             Log.d(tag, "[TIER] TIER3 text scan matched -> true");
             return new DetectResult(true, "TIER3");
+        }
+
+        // --- TIER 3B: Action button scan ---
+        // Walks the tree (max depth 5) for Shorts-specific action button labels
+        // (“remix”, “dislike”, “share”) in the right column of the screen.
+        // Does not rely on any view IDs -- purely text/contentDescription based.
+        // “remix” alone is sufficient; “dislike”+”share” together also confirm.
+        // Guard: seekbar presence aborts (regular videos always have a seekbar).
+        if (hasShortsActionButtonSignal(root)) {
+            Log.d(tag, "[TIER] TIER3B action buttons matched -> true");
+            return new DetectResult(true, "TIER3B");
         }
 
         // --- TIER 4: Diagnostic tree dump (rate-limited) ---
@@ -402,6 +423,132 @@ public class YouTubeDetector implements ShortFormDetector {
     }
 
     // =========================================================================
+    // Tier 3B: Action button scan
+    // =========================================================================
+
+    /**
+     * Scans the accessibility tree for Shorts-specific action button labels
+     * ("remix", "dislike", "share") positioned in the right column of the screen.
+     *
+     * Why these signals:
+     *   "remix"   — the Remix button only exists in the Shorts UI. Its presence
+     *               alone (with no seekbar) is definitive.
+     *   "dislike" + "share" — in Shorts these appear as stacked buttons in the
+     *               right edge column. In regular video the same labels sit in a
+     *               horizontal action bar roughly centered under the player, so
+     *               the right-column position constraint filters them out.
+     *
+     * Position constraint: centerX > 60% of screen width.
+     * Shorts action buttons hug the far-right edge (~85–90% of screen width).
+     * Regular-video action bars are centered or left-of-center.
+     *
+     * Guard: if a seekbar is found the screen is a regular video, not Shorts.
+     *
+     * Filter: adb logcat -s REELS_WATCH | findstr "ACTION_BTN"
+     *
+     * @param root Root of the YouTube accessibility tree
+     * @return true if Shorts action button pattern is found in the right column
+     */
+    private boolean hasShortsActionButtonSignal(AccessibilityNodeInfo root) {
+        List<AccessibilityNodeInfo> seekbar = root.findAccessibilityNodeInfosByViewId(
+                YouTubeViewIds.SEEKBAR_ID);
+        boolean hasSeekbar = seekbar != null && !seekbar.isEmpty();
+        if (seekbar != null) recycleAll(seekbar);
+        if (hasSeekbar) {
+            Log.d(tag, "[ACTION_BTN] seekbar present -> regular video, skipping");
+            return false;
+        }
+
+        int screenWidth  = context.getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = context.getResources().getDisplayMetrics().heightPixels;
+
+        // found[0]=remix  found[1]=dislike  found[2]=share
+        boolean[] found = {false, false, false};
+        collectShortsButtonSignals(root, 0, 5, screenWidth, screenHeight, found);
+
+        if (found[0]) {
+            Log.d(tag, "[ACTION_BTN] TIER3B: 'remix' in right column -> Shorts confirmed");
+            return true;
+        }
+        if (found[1] && found[2]) {
+            Log.d(tag, "[ACTION_BTN] TIER3B: 'dislike'+'share' in right column -> Shorts confirmed");
+            return true;
+        }
+
+        Log.d(tag, "[ACTION_BTN] TIER3B: remix=" + found[0]
+                + " dislike=" + found[1] + " share=" + found[2] + " -> not detected");
+        return false;
+    }
+
+    /**
+     * Recursive helper for hasShortsActionButtonSignal().
+     *
+     * For each visible node checks getText() and getContentDescription()
+     * (case-insensitive) for the target labels, then applies:
+     *   - right-column guard: centerX > screenWidth * 0.60
+     *   - nav-bar guard: centerY between 5% and 92% of screen height
+     *
+     * Exits early once "remix" is found or both "dislike"+"share" are found.
+     *
+     * @param node         Current node
+     * @param depth        Current recursion depth
+     * @param maxDepth     Maximum depth to recurse
+     * @param screenWidth  Screen width in pixels
+     * @param screenHeight Screen height in pixels
+     * @param found        Output array: [remix, dislike, share]
+     */
+    private void collectShortsButtonSignals(
+            AccessibilityNodeInfo node, int depth, int maxDepth,
+            int screenWidth, int screenHeight, boolean[] found) {
+        if (node == null || depth > maxDepth) return;
+        // Early exit once we have enough evidence
+        if (found[0] || (found[1] && found[2])) return;
+
+        if (node.isVisibleToUser()) {
+            CharSequence text = node.getText();
+            CharSequence desc = node.getContentDescription();
+            String lower = "";
+            if (text != null) lower += text.toString().toLowerCase();
+            if (desc  != null) lower += " " + desc.toString().toLowerCase();
+
+            if (!lower.isEmpty()
+                    && (lower.contains("remix") || lower.contains("dislike") || lower.contains("share"))) {
+                Rect bounds = new Rect();
+                node.getBoundsInScreen(bounds);
+                int cx = bounds.centerX();
+                int cy = bounds.centerY();
+                boolean inRightColumn = cx > screenWidth  * 0.60f;
+                boolean notNavBar     = cy > screenHeight * 0.05f && cy < screenHeight * 0.92f;
+
+                if (inRightColumn && notNavBar) {
+                    if (!found[0] && lower.contains("remix")) {
+                        found[0] = true;
+                        Log.d(tag, "[ACTION_BTN] 'remix' at " + bounds.toShortString());
+                    }
+                    if (!found[1] && lower.contains("dislike")) {
+                        found[1] = true;
+                        Log.d(tag, "[ACTION_BTN] 'dislike' at " + bounds.toShortString());
+                    }
+                    if (!found[2] && lower.contains("share")) {
+                        found[2] = true;
+                        Log.d(tag, "[ACTION_BTN] 'share' at " + bounds.toShortString());
+                    }
+                }
+            }
+        }
+
+        int childCount = node.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            if (found[0] || (found[1] && found[2])) break;
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                collectShortsButtonSignals(child, depth + 1, maxDepth, screenWidth, screenHeight, found);
+                child.recycle();
+            }
+        }
+    }
+
+    // =========================================================================
     // Tier 4: Diagnostic tree dump
     // =========================================================================
 
@@ -427,7 +574,7 @@ public class YouTubeDetector implements ShortFormDetector {
 
         Log.w(tag, "YT_TREE_DUMP === YouTube Shorts detection FAILED â€” dumping tree view IDs ===");
         Log.w(tag, "YT_TREE_DUMP To fix: find the Shorts container ID below and add it to "
-                + "YouTubeViewIds.SHORTS_VIEW_IDS in com.breqk.shortform.platform.youtube.YouTubeViewIds");
+                + "YouTubeViewIds.SHORTS_VIEW_IDS in com.Break.shortform.platform.youtube.YouTubeViewIds");
         dumpNodeChildren(root, 0, 5);
         Log.w(tag, "YT_TREE_DUMP === End dump ===");
     }

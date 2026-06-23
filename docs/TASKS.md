@@ -1,5 +1,5 @@
-# TASKS.md — Breqk Launch Playbook
-> **Last updated:** 2026-05-01  
+# TASKS.md — Break Launch Playbook
+> **Last updated:** 2026-06-18  
 > **Purpose:** Single source of truth for all tasks, architecture, and known issues. Read this first before making any changes.
 
 ---
@@ -25,18 +25,18 @@
 ### 🔴 P0 — Launch Blockers (Must fix before any public release)
 
 - [ ] **B15 (PRIORITY 1): YouTube "Lock In" overlay persists on home / long-form after leaving Shorts**
-  - Files: `android/app/src/main/java/com/breqk/shortform/detection/YouTubeDetector.java`, `ReelsInterventionService.java`, `shortform/budget/BudgetHeartbeat.java`
+  - Files: `android/app/src/main/java/com/Break/shortform/detection/YouTubeDetector.java`, `ReelsInterventionService.java`, `shortform/budget/BudgetHeartbeat.java`
   - Symptom: With scroll budget exhausted on YouTube only, opening a Short and then leaving it (tap Home tab, open a long-form video, etc.) leaves the "Time is up! Lock In" overlay attached on the YouTube home feed and long-form video player. It never dismisses on its own.
   - Root cause: `YouTubeDetector` Tier 3 (`scanNodeForShortsText`, lines 256-287) walks the accessibility tree for any "shorts" text — and matches YouTube's persistent **bottom-nav "Shorts" tab** even when the user has clearly left the Shorts player. `ReelsInterventionService.handleReelsScrollEvent()` and `isStillInReels()` therefore think the user is still in Shorts → no `resetReelsState()` → no `dismissIntervention()`. Compounded by empty `SHORTS_CLASS_NAMES` (Tier 0 never fires), `STICKY-FIX-HEARTBEAT` (heartbeat refuses to dismiss while overlay is up), and the framework-class STATE_CHANGED early-return that swallows real exit transitions.
   - Fix: see plan `.claude/plan/youtube-shorts-overlay-persistence-fix.md`. Three layers: (1) add `YouTubeDetector.detectStrict()` (Tier 1+2 only, no text walk) and use it for "still-in" / exit checks; (2) tighten Tier 3 with bounds check (reject nodes < 30% screen height or in bottom 15%) + seekbar-absence sanity; (3) replace `BudgetHeartbeat` `STICKY-FIX-HEARTBEAT` unconditional-true with a 2-tick failure counter using the strict detector.
   - Effort: 2-3 hours including manual QA on a real device.
 
-- [x] **B2: Migrate BreqkVpnService away from VpnService** ✅ 2026-04-30
-  - File: `android/app/src/main/java/com/breqk/service/BreqkVpnService.java`
-  - Fix applied: Changed `extends VpnService` → `extends Service`. Removed `BIND_VPN_SERVICE` permission from AndroidManifest. Replaced VPN service declaration with a plain foreground service (`foregroundServiceType=specialUse`). Removed VPN intent-filter. Updated notification channel to `"BreqkMonitoring"`, notification text to `"Breqk Active"`. Renamed actions to `START_MONITORING`/`STOP_MONITORING`. Stubbed `requestVpnPermission()` as a no-op in `VPNModule.java`.
+- [x] **B2: Migrate BreakVpnService away from VpnService** ✅ 2026-04-30
+  - File: `android/app/src/main/java/com/Break/service/BreakVpnService.java`
+  - Fix applied: Changed `extends VpnService` → `extends Service`. Removed `BIND_VPN_SERVICE` permission from AndroidManifest. Replaced VPN service declaration with a plain foreground service (`foregroundServiceType=specialUse`). Removed VPN intent-filter. Updated notification channel to `"BreakMonitoring"`, notification text to `"Break Active"`. Renamed actions to `START_MONITORING`/`STOP_MONITORING`. Stubbed `requestVpnPermission()` as a no-op in `VPNModule.java`.
 
-- [x] **B4: Null-check `action` in BreqkVpnService.onStartCommand()** ✅ 2026-04-30
-  - File: `android/app/src/main/java/com/breqk/service/BreqkVpnService.java`
+- [x] **B4: Null-check `action` in BreakVpnService.onStartCommand()** ✅ 2026-04-30
+  - File: `android/app/src/main/java/com/Break/service/BreakVpnService.java`
   - Fix applied: Added null guards for both `intent` and `action` before the switch statement. Service now returns `START_STICKY` cleanly on OS-initiated restarts.
 
 - [ ] **B5: Set real versionCode/versionName**
@@ -48,7 +48,7 @@
 - [ ] **B8: Generate release signing keystore**
   - File: `android/app/build.gradle` (line 106)
   - Problem: Release builds use the debug keystore. Once uploaded to Play Store, you can never change the key pair.
-  - Fix: Generate a production keystore with `keytool -genkeypair -v -keystore breqk-release.keystore -alias breqk -keyalg RSA -keysize 2048 -validity 10000`. Create a `keystore.properties` file (gitignored) and reference it in `build.gradle`. Use Play App Signing if possible.
+  - Fix: Generate a production keystore with `keytool -genkeypair -v -keystore Break-release.keystore -alias Break -keyalg RSA -keysize 2048 -validity 10000`. Create a `keystore.properties` file (gitignored) and reference it in `build.gradle`. Use Play App Signing if possible.
   - Effort: 30 minutes
 
 - [ ] **B6: Remove empty TouchableOpacity in Home screen**
@@ -58,13 +58,13 @@
   - Effort: 5 minutes
 
 - [x] **B9: Disable VERBOSE_LOGGING for production** ✅ 2026-04-15
-  - File: `android/app/src/main/java/com/breqk/ReelsInterventionService.java`
+  - File: `android/app/src/main/java/com/Break/ReelsInterventionService.java`
   - Fix applied: `logVerbose()` helper gates all chatty scroll/tree-traversal `Log.d` calls behind `BuildConfig.DEBUG`. Release builds emit zero SCROLL_DECISION noise.
 
 ### 🟡 P1 — High Priority (Fix before v1.1)
 
 - [x] **B1: Extract shared YouTube Shorts view IDs into a single constant file** ✅ 2026-04-15
-  - Fix applied: Moved to `com.breqk.reels.ShortFormIds`. Both `ContentFilter` and `ReelsInterventionService` now reference `ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS`. A single file to update when YouTube changes IDs.
+  - Fix applied: Moved to `com.Break.reels.ShortFormIds`. Both `ContentFilter` and `ReelsInterventionService` now reference `ShortFormIds.YOUTUBE_SHORTS_VIEW_IDS`. A single file to update when YouTube changes IDs.
 
 - [ ] **Integrate Firebase Crashlytics**
   - Files: `android/app/build.gradle`, `android/build.gradle`, new `google-services.json`
@@ -84,7 +84,7 @@
   - Effort: 1 hour
 
 - [ ] **B10: Make adult content domain list configurable**
-  - File: `android/app/src/main/java/com/breqk/ContentFilterService.java` (lines 55-68)
+  - File: `android/app/src/main/java/com/Break/ContentFilterService.java` (lines 55-68)
   - Problem: Hardcoded list, no user customization, `lower.contains(domain)` can false-positive.
   - Fix: Move to SharedPreferences or a remote config. Use proper URL parsing instead of `contains()`.
   - Effort: 3 hours
@@ -102,15 +102,15 @@
   - Effort: 2-4 hours
 
 - [x] **Rename "VPN" terminology throughout the codebase** ✅ 2026-04-30
-  - Fix applied (as part of B2): Notification text → "Breqk Active". Channel ID → "BreqkMonitoring". Actions → START_MONITORING/STOP_MONITORING. `BreqkVpnService` → `service/BreqkVpnService`. `VPNModule.requestVpnPermission()` stubbed as no-op. AndroidManifest cleaned of all VPN references. Class name `VPNModule` retained for JS bridge backward compatibility.
+  - Fix applied (as part of B2): Notification text → "Break Active". Channel ID → "BreakMonitoring". Actions → START_MONITORING/STOP_MONITORING. `BreakVpnService` → `service/BreakVpnService`. `VPNModule.requestVpnPermission()` stubbed as no-op. AndroidManifest cleaned of all VPN references. Class name `VPNModule` retained for JS bridge backward compatibility.
 
 ### 🟢 P2 — Growth Features (Weeks 2-4)
 
 - [ ] **Implement paywall with Google Play Billing**
-  - New files: `BreqkBilling.java`, `PaywallScreen.js`
+  - New files: `BreakBilling.java`, `PaywallScreen.js`
   - Free tier: 1 app + app-open intercept only + default mode
   - Premium ($3.99/mo or $29.99/yr): Unlimited apps, Reels/Shorts blocking, custom modes, scroll budget, free break, full dashboard
-  - Gate: `BreqkPrefs.isPremium()` checked by ContentFilter, ModeManager, scroll budget logic
+  - Gate: `BreakPrefs.isPremium()` checked by ContentFilter, ModeManager, scroll budget logic
   - Effort: 3 days
 
 - [ ] **Build dark mode**
@@ -119,7 +119,7 @@
   - Effort: 1 day
 
 - [ ] **Build usage streak tracker**
-  - Files: New `BreqkPrefs` keys, `home.js` (new card), new `StreakCard.js` component
+  - Files: New `BreakPrefs` keys, `home.js` (new card), new `StreakCard.js` component
   - Track consecutive days where total screen time < user-defined goal. Show streak count + emoji on Home. "🔥 7-day streak!"
   - Effort: 1 day
 
@@ -127,6 +127,11 @@
   - New component: `ShareCard.js`
   - Generate a branded image with streak count, screen time, days tracked. Share via Android share intent.
   - Effort: 2 days
+
+- [x] **Add mode start/end notifications** ✅ 2026-06-18
+  - File: `android/app/src/main/java/com/breqk/mode/ModeNotifier.java`
+  - Fix applied: Created `ModeNotifier` utility class with `notifyModeStarted()` and `notifyModeEnded()`. Posts dismissible notifications on a dedicated `BreakModeAlerts` channel so users can mute mode alerts independently of the monitoring notification. Stable per-mode notification ID replaces the start alert with the end alert instead of stacking. `ModeManager` calls notifier on both scheduled (AlarmManager) and manual mode transitions.
+  - Log tag: `MODE_NOTIFY` — filter: `adb logcat -s MODE_NOTIFY`
 
 - [ ] **Build daily/weekly summary notification**
   - New file: `NotificationHelper.java`
@@ -152,6 +157,7 @@
 - [ ] Show a reminder of today's to-do list or goals before opening a blocked app
 - [ ] Display a specific motivational image before opening a blocked app
 - [ ] Add a simple browser-version launcher for blocked apps with injected JS/CSS to remove scrolling
+- [ ] **Redirect on block** — instead of just showing a delay overlay, let the user configure a redirect destination (an app package name OR a URL) that launches immediately when a blocked app is intercepted. Example: blocking Instagram redirects to Kindle, blocking TikTok redirects to Duolingo. UI: per-app "Redirect to" picker in Customize. Native: `LaunchInterceptor` fires an Intent to open the redirect target after a short pause rather than just waiting. Unlocks a powerful habit-replacement pattern ("when I reach for Instagram, open my book instead").
 
 ---
 
@@ -179,7 +185,7 @@ DoomScrollStopper/
 │
 └── android/app/src/main/
     ├── AndroidManifest.xml           # Service declarations, permissions, receivers
-    ├── java/com/breqk/
+    ├── java/com/Break/
     │   ├── ReelsInterventionService.java      # 🔴 CORE — AccessibilityService: Reels/Shorts detection, scroll budget, overlay
     │   ├── MainApplication.kt                 # RN application class, module registration
     │   ├── MainActivity.java                  # RN host activity
@@ -189,9 +195,10 @@ DoomScrollStopper/
     │   ├── bridge/
     │   │   ├── VPNModule.java                 # RN bridge: monitoring, permissions, free break, modes, stats
     │   │   ├── SettingsModule.java             # RN bridge: settings read/write, blocked apps, modes
-    │   │   └── BreqkReactPackage.java          # Registers VPNModule + SettingsModule with RN
+    │   │   └── BreakReactPackage.java          # Registers VPNModule + SettingsModule with RN
     │   ├── mode/
     │   │   ├── ModeManager.java                # Mode lifecycle, AlarmManager scheduling
+    │   │   ├── ModeNotifier.java               # Posts start/end notifications for mode transitions
     │   │   └── ModeSchedulerReceiver.java      # BroadcastReceiver for AlarmManager mode triggers
     │   ├── monitor/
     │   │   ├── AppUsageMonitor.java            # Foreground polling (1s) + delay overlay injection
@@ -200,46 +207,67 @@ DoomScrollStopper/
     │   │   ├── ScreenTimeTracker.java          # Digital wellbeing: screen time, unlocks, notifications
     │   │   └── ServiceHelper.java              # startForegroundServiceCompat() wrapper
     │   ├── prefs/
-    │   │   └── BreqkPrefs.java                 # SharedPreferences hub, policy resolution, migrations
+    │   │   └── BreakPrefs.java                 # SharedPreferences hub, policy resolution, migrations
     │   ├── service/
-    │   │   └── BreqkVpnService.java            # Foreground service — keeps AppUsageMonitor alive (plain Service, not VPN)
+    │   │   └── BreakVpnService.java            # Foreground service — keeps AppUsageMonitor alive (plain Service, not VPN)
     │   ├── shortform/
-    │   │   ├── AppConfig.java                  # Per-app configuration (top-level, ex-inner class)
+    │   │   ├── AppConfig.java                  # Per-app configuration
     │   │   ├── AppEventRouter.java             # Event dispatcher with 5s config cache
     │   │   ├── ContentFilter.java              # Surgical Reels/Shorts EJECTION via GLOBAL_ACTION_BACK
-    │   │   ├── FilterHandler.java              # Interface for per-platform filter handlers
+    │   │   ├── FrameworkClassFilter.java       # Filters out Android framework accessibility events
     │   │   ├── FullScreenCheck.java            # Geometry constants for full-screen detection
-    │   │   ├── Platform.java                   # Enum of supported platforms
-    │   │   ├── PlatformRegistry.java           # Maps package names → FilterHandler instances
-    │   │   ├── ShortFormStateMachine.java      # State machine for scroll intervention flow
-    │   │   ├── instagram/
-    │   │   │   ├── InstagramFilterHandler.java
-    │   │   │   └── InstagramViewIds.java
-    │   │   ├── youtube/
-    │   │   │   ├── YouTubeFilterHandler.java
-    │   │   │   └── YouTubeViewIds.java
-    │   │   ├── tiktok/
-    │   │   │   ├── TikTokFilterHandler.java (stub)
-    │   │   │   └── TikTokViewIds.java (stub)
-    │   │   ├── facebook/
-    │   │   │   ├── FacebookFilterHandler.java (stub)
-    │   │   │   └── FacebookViewIds.java (stub)
-    │   │   └── snapchat/
-    │   │       ├── SnapchatFilterHandler.java (stub)
-    │   │       └── SnapchatViewIds.java (stub)
+    │   │   ├── budget/
+    │   │   │   ├── BudgetHeartbeat.java        # Periodic check: still in reels? still over budget?
+    │   │   │   ├── BudgetState.java            # Immutable scroll-budget snapshot
+    │   │   │   ├── HomeFeedCounter.java        # Counts home-feed post scrolls (non-Reels)
+    │   │   │   └── ScrollBudgetLogic.java      # Core budget arithmetic
+    │   │   ├── detection/
+    │   │   │   ├── InstagramDetector.java      # Instagram Reels view-ID detection
+    │   │   │   ├── ShortFormDetector.java      # Interface for all platform detectors
+    │   │   │   └── YouTubeDetector.java        # YouTube Shorts detection (Tier 1/2/3)
+    │   │   ├── intervention/
+    │   │   │   ├── InterventionOverlay.java    # Shows/dismisses the budget-exhausted popup
+    │   │   │   └── ShortFormStateMachine.java  # State machine for scroll intervention flow
+    │   │   ├── metrics/
+    │   │   │   └── HomeFeedScrollMeter.java    # Meters non-Reels home feed scrolls
+    │   │   └── platform/
+    │   │       ├── FilterHandler.java          # Interface for per-platform filter handlers
+    │   │       ├── Platform.java               # Enum of supported platforms
+    │   │       ├── PlatformRegistry.java       # Maps package names → FilterHandler instances
+    │   │       ├── facebook/
+    │   │       │   ├── FacebookDetector.java
+    │   │       │   ├── FacebookFilterHandler.java
+    │   │       │   └── FacebookViewIds.java
+    │   │       ├── instagram/
+    │   │       │   ├── InstagramFilterHandler.java
+    │   │       │   └── InstagramViewIds.java
+    │   │       ├── snapchat/
+    │   │       │   ├── SnapchatDetector.java
+    │   │       │   ├── SnapchatFilterHandler.java
+    │   │       │   └── SnapchatViewIds.java
+    │   │       ├── tiktok/
+    │   │       │   ├── TikTokDetector.java
+    │   │       │   ├── TikTokFilterHandler.java
+    │   │       │   └── TikTokViewIds.java
+    │   │       └── youtube/
+    │   │           ├── YouTubeFilterHandler.java
+    │   │           └── YouTubeViewIds.java
+    │   ├── uninstall/
+    │   │   ├── UninstallLockOverlay.java       # Shows overlay blocking uninstall attempt
+    │   │   └── UninstallScreenDetector.java    # Detects when user navigates to uninstall screen
     │   └── widget/
-    │       └── BreqkWidgetProvider.java        # Home screen widget provider
+    │       └── BreakWidgetProvider.java        # Home screen widget provider
     │
     └── res/
         ├── layout/
         │   ├── activity_accessibility_permission.xml  # Permission gate UI
         │   ├── delay_overlay.xml                      # App-open delay overlay
         │   ├── overlay_reels_intervention.xml          # Reels/Shorts budget exhausted overlay
-        │   └── widget_breqk.xml                       # Home screen widget layout
+        │   └── widget_Break.xml                       # Home screen widget layout
         └── xml/
             ├── reels_intervention_service_config.xml   # AccessibilityService config for ReelsInterventionService
             ├── content_filter_accessibility_config.xml  # AccessibilityService config for ContentFilterService
-            └── widget_breqk_info.xml                   # Widget metadata
+            └── widget_Break_info.xml                   # Widget metadata
 ```
 
 ---
@@ -250,12 +278,12 @@ DoomScrollStopper/
 
 ```
 User toggles setting in Customize
-  → SettingsModule.setAppFeature() writes to SharedPreferences (breqk_prefs)
-  → BreqkPrefs.syncBlockedAppsFromPolicies() updates legacy blocked_apps set
+  → SettingsModule.setAppFeature() writes to SharedPreferences (Break_prefs)
+  → BreakPrefs.syncBlockedAppsFromPolicies() updates legacy blocked_apps set
   → SharedPreferences listener in VPNModule re-syncs its AppUsageMonitor
-  → UPDATE_BLOCKED_APPS intent sent to BreqkVpnService
-  → BreqkVpnService's AppUsageMonitor updates its blocked apps set
-  → ReelsInterventionService reads BreqkPrefs.isFeatureEnabled() on next event (5s cache)
+  → UPDATE_BLOCKED_APPS intent sent to BreakVpnService
+  → BreakVpnService's AppUsageMonitor updates its blocked apps set
+  → ReelsInterventionService reads BreakPrefs.isFeatureEnabled() on next event (5s cache)
 ```
 
 ### Event Processing Pipeline
@@ -281,7 +309,7 @@ These are **independent features**. Both can be active for the same app at the s
 ### Policy Resolution Chain
 
 ```
-BreqkPrefs.isFeatureEnabled(context, packageName, featureKey):
+BreakPrefs.isFeatureEnabled(context, packageName, featureKey):
   1. Check active mode's policy_overrides for this package+feature
   2. If found → return the override value
   3. If not → check base per-app policy (app_policies JSON)
@@ -295,7 +323,7 @@ VPNModule (React Native bridge)
   └── AppUsageMonitor instance #1   ← used ONLY for getAppName(), usage stats queries
                                        NOT started for monitoring
 
-BreqkVpnService (foreground service)
+BreakVpnService (foreground service)
   └── AppUsageMonitor instance #2   ← runs the actual 1s polling loop
                                        manages delay overlay
                                        
@@ -315,16 +343,17 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | TikTok full-app block | ✅ Working | ContentFilter.java | ❌ No UI toggle (B11) | Same as above |
 | Scroll budget | ✅ Working | ReelsInterventionService.java, AppUsageMonitor.java | customize.js, home.js | `scroll_allowance_minutes`, `scroll_window_minutes` |
 | Free break (20-min daily) | ✅ Working | VPNModule.java | home.js, customize.js | `free_break_enabled`, `free_break_active` |
-| Custom modes (Study, Bedtime) | ✅ Working | ModeManager.java, BreqkPrefs.java | customize.js | `modes` JSON, `active_mode` |
+| Custom modes (Study, Bedtime) | ✅ Working | ModeManager.java, BreakPrefs.java | customize.js | `modes` JSON, `active_mode` |
 | Scheduled modes (AlarmManager) | ✅ Working | ModeManager.java, ModeSchedulerReceiver.java | customize.js | Mode schedule JSON |
 | Browser adult content blocker | ✅ Working | ContentFilterService.java | — (no UI) | Hardcoded domain list |
 | Deletion prevention (uninstall pause overlay) | ✅ Working | UninstallScreenDetector.java, UninstallLockOverlay.java | customize.js (Prevent deletion toggle) | `uninstall_lock_enabled` |
 | 24-hour Uninstall Lock | ✅ Implemented 2026-05-05 | UninstallLockManager.java, UninstallExpiryReceiver.java | DangerZone.js, useUninstallLock.js | `uninstall_lock_enabled`, `delete_request_at_wall`, `delete_request_expires_at` |
+| Settings Change Lock (opt-in per-scope edit lock) | ✅ Implemented 2026-06-22 (not built/run) — replaced Commitment Cooldown | lock/SettingsLockManager.java, bridge/SettingsModule.java | Customize/useSettingsLock.js, SettingsLockGate.js, SettingsLockSection.js, customize.js, AppDetail/AppDetail.js | `settings_lock_enabled`, `settings_lock_duration_ms`, `settings_lock_until` |
 | Screen time dashboard | ✅ Working | ScreenTimeTracker.java | home.js, useDigitalWellbeing.js | UsageStatsManager |
 | Top apps by usage | ✅ Working | ScreenTimeTracker.java | home.js | UsageEvents |
 | Unlock count | ✅ Working (API 28+) | ScreenTimeTracker.java | home.js | KEYGUARD_HIDDEN events |
 | Notification count | ⚠️ OEM-dependent | ScreenTimeTracker.java | home.js | NOTIFICATION_SEEN events |
-| Home screen widget | 🟡 Partial | widget_breqk.xml, widget_breqk_info.xml | — | Layout exists, minimal logic |
+| Home screen widget | 🟡 Partial | widget_Break.xml, widget_Break_info.xml | — | Layout exists, minimal logic |
 
 ---
 
@@ -335,9 +364,9 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
 | B15 | YouTube "Lock In" overlay persists on home / long-form after leaving Shorts (Tier 3 matches bottom-nav Shorts tab) | shortform/detection/YouTubeDetector.java + ReelsInterventionService.java | 256-287, 510-521, 991-998 | [ ] TODO (P0 #1) |
-| B2 | BreqkVpnService extends VpnService but never tunnels — Play Store rejection risk | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |
-| B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | bridge/VPNModule.java + service/BreqkVpnService.java | 81, 55 | [ ] TODO |
-| B4 | Null action in onStartCommand crashes on OS service restart | service/BreqkVpnService.java | — | [x] FIXED 2026-04-30 |
+| B2 | BreakVpnService extends VpnService but never tunnels — Play Store rejection risk | service/BreakVpnService.java | — | [x] FIXED 2026-04-30 |
+| B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | bridge/VPNModule.java + service/BreakVpnService.java | 81, 55 | [ ] TODO |
+| B4 | Null action in onStartCommand crashes on OS service restart | service/BreakVpnService.java | — | [x] FIXED 2026-04-30 |
 | B5 | versionCode=1 blocks future Play Store updates | build.gradle | 86-87 | [ ] TODO |
 | B8 | Release builds use debug keystore — permanent key lock-in | build.gradle | 106 | [ ] TODO |
 
@@ -356,7 +385,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | ID | Bug | File | Line(s) | Status |
 |----|-----|------|---------|--------|
 | B11 | TikTok missing from per-app policies UI | customize.js | 270-273 | [ ] TODO |
-| B14 | Scroll-budget overlay disappears ~2s after showing — heartbeat's isStillInReels() sees overlay as active window (pkg=com.breqk), not Instagram | ReelsInterventionService.java | ~1560 | [x] FIXED 2026-04-13 |
+| B14 | Scroll-budget overlay disappears ~2s after showing — heartbeat's isStillInReels() sees overlay as active window (pkg=com.Break), not Instagram | ReelsInterventionService.java | ~1560 | [x] FIXED 2026-04-13 |
 | B12 | customize.js is 1,723 lines — needs splitting | customize.js | all | [ ] TODO |
 | B13 | No React Native error boundary | App.tsx | — | [ ] TODO |
 
@@ -373,7 +402,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | **TikTok detection** | 🟢 **LOW** | The entire app is short-form video — no view ID detection needed. ContentFilter ejects on any scroll event when blockShortForm=true. | Basically unbreakable unless TikTok fundamentally changes their app architecture. |
 | **Browser content filter** | 🟡 **MEDIUM** | Depends on browser URL bar view IDs (16 browsers mapped). Browser updates can change these. Chrome is stable; smaller browsers are less predictable. | The fallback path uses event.getText() for URL extraction. Consider using AccessibilityNodeInfo text traversal. |
 | **AccessibilityService itself** | 🟡 **MEDIUM** | Android OS updates can change AccessibilityService behavior. Android 14 tightened background service restrictions. Android 15+ may add further restrictions. | Test on latest Android beta before each OS release. |
-| **SharedPreferences as IPC** | 🟢 **LOW** | Multiple processes/threads write to `breqk_prefs`. SharedPreferences uses apply() (async) which is safe for single-process. Multi-process access would be unsafe but we're single-process. | Stay single-process. If ever going multi-process, migrate to DataStore or ContentProvider. |
+| **SharedPreferences as IPC** | 🟢 **LOW** | Multiple processes/threads write to `Break_prefs`. SharedPreferences uses apply() (async) which is safe for single-process. Multi-process access would be unsafe but we're single-process. | Stay single-process. If ever going multi-process, migrate to DataStore or ContentProvider. |
 | **AlarmManager scheduling** | 🟢 **LOW** | ModeManager correctly handles Android 12+ exact alarm permission checks and falls back to inexact alarms. | Already handles SecurityException gracefully. |
 | **React Native bridge** | 🟢 **LOW** | Standard ReactMethod pattern. RN 0.80.2 is stable. | Keep bridge methods simple. Avoid complex data types across the bridge. |
 | **Full-screen bounds check** | 🟢 **LOW** | Four-signal validation (visibility + width + height + top offset) is robust. Thresholds (90% width, 70% height, 200px top) account for status/nav bars. | Only breaks if an app renders Reels in a non-standard container. Hasn't happened yet. |
@@ -409,8 +438,8 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 ### Implementation Checklist
 
 - [ ] Add Google Play Billing Library dependency
-- [ ] Create `BreqkBilling.java` — product fetch, purchase flow, entitlement cache
-- [ ] Add `BreqkPrefs.isPremium()` — checks cached entitlement
+- [ ] Create `BreakBilling.java` — product fetch, purchase flow, entitlement cache
+- [ ] Add `BreakPrefs.isPremium()` — checks cached entitlement
 - [ ] Gate ContentFilter (Reels ejection) behind premium check
 - [ ] Gate ModeManager (custom modes) behind premium check
 - [ ] Gate scroll budget UI and logic behind premium check
@@ -462,7 +491,7 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 
 | Day | Task | Bug IDs |
 |-----|------|---------|
-| 1 | Migrate BreqkVpnService → regular Service | B2 |
+| 1 | Migrate BreakVpnService → regular Service | B2 |
 | 2 | Fix null-check, versionCode, empty view, verbose logging | B4, B5, B6, B9 |
 | 3 | Extract shared view ID constants. Generate release keystore. | B1, B8 |
 | 4 | Integrate Firebase Crashlytics + Analytics | — |
@@ -511,9 +540,10 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 | `APP_ROUTER` | AppEventRouter | `adb logcat -s APP_ROUTER` |
 | `CONTENT_FILTER` | ContentFilter | `adb logcat -s CONTENT_FILTER` |
 | `BROWSER_WATCH` | ContentFilterService | `adb logcat -s BROWSER_WATCH` |
-| `BreqkVpnService` | BreqkVpnService | `adb logcat -s BreqkVpnService` |
+| `BreakVpnService` | BreakVpnService | `adb logcat -s BreakVpnService` |
 | `VPNModule` | VPNModule | `adb logcat -s VPNModule` |
 | `MODE_MGR` | ModeManager | `adb logcat -s MODE_MGR` |
+| `MODE_NOTIFY` | ModeNotifier | `adb logcat -s MODE_NOTIFY` |
 | `ScreenTimeTracker` | ScreenTimeTracker | `adb logcat -s ScreenTimeTracker` |
 | `ACC_PERM_GATE` | AccessibilityPermissionActivity | `adb logcat -s ACC_PERM_GATE` |
 | `SettingsModule` | SettingsModule | `adb logcat -s SettingsModule` |
@@ -521,8 +551,8 @@ FREE TIER                          PREMIUM ($3.99/mo or $29.99/yr)
 ### Useful Compound Filters
 
 ```bash
-# All Breqk logs
-adb logcat -s REELS_WATCH APP_ROUTER CONTENT_FILTER BreqkVpnService VPNModule MODE_MGR
+# All Break logs
+adb logcat -s REELS_WATCH APP_ROUTER CONTENT_FILTER BreakVpnService VPNModule MODE_MGR MODE_NOTIFY
 
 # Just detection events (for debugging "it didn't block")
 adb logcat -s REELS_WATCH CONTENT_FILTER | findstr "EJECT\|confirmed\|DETECTED"
@@ -540,8 +570,8 @@ adb logcat -s SettingsModule MODE_MGR | findstr "POLICY\|SYNC\|ACTIVATE"
 ### Nuclear Reset
 
 ```bash
-# Clear all Breqk preferences (full reset to factory defaults)
-adb shell pm clear com.breqk
+# Clear all Break preferences (full reset to factory defaults)
+adb shell pm clear com.Break
 ```
 
 ---
@@ -561,8 +591,8 @@ adb shell pm clear com.breqk
 - Migration path: If we ever need structured queries or multi-process access, move to Room + ContentProvider.
 
 ### Why two AppUsageMonitor instances?
-- **Historical accident**, not a design choice. VPNModule created one for usage stats queries. BreqkVpnService created another for the polling loop.
-- The correct fix is to make VPNModule's instance query-only (no polling) and have BreqkVpnService own the only running monitor. This is already the case in practice — VPNModule's monitor is never started for monitoring.
+- **Historical accident**, not a design choice. VPNModule created one for usage stats queries. BreakVpnService created another for the polling loop.
+- The correct fix is to make VPNModule's instance query-only (no polling) and have BreakVpnService own the only running monitor. This is already the case in practice — VPNModule's monitor is never started for monitoring.
 - The risk is blocked-apps desync. Mitigated by SharedPreferences listener + UPDATE_BLOCKED_APPS intent.
 
 ### Why the 5-second config cache in AppEventRouter?

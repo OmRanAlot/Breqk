@@ -70,7 +70,15 @@
       "Bash(powershell *)",
       "Bash(findstr /I \"youtube recents recent\" \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\logYOOOO.txt\")",
       "Bash(Get-Content \"C:\\\\Users\\\\omran\\\\code\\\\DoomScrollStopper\\\\logYOOOO.txt\")",
-      "Bash(Select-String \"youtube|recents|overlay.*dismiss\" -AllMatches)"
+      "Bash(Select-String \"youtube|recents|overlay.*dismiss\" -AllMatches)",
+      "Bash(./gradlew :app:compileDebugJavaWithJavac -q)",
+      "PowerShell(Get-Content *)",
+      "WebFetch(domain:api.anthropic.com)",
+      "Read(//c/Users/omran/.claude/projects/C--Users-omran-code-DoomScrollStopper/c1307d60-7975-42b5-aa3a-b1a72b2001a7/tool-results/**)",
+      "Bash(tar -xzf webfetch-1781632197457-o5r785.bin -C design_extract)",
+      "Bash(npx eslint *)",
+      "Bash(npx jest *)",
+      "PowerShell(.\\\\android\\\\gradlew.bat -p android compileDebugJavaWithJavac -q 2>&1 | Select-Object -Last 40)"
     ]
   },
   "enableAllProjectMcpServers": true,

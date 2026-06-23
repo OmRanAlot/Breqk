@@ -1,12 +1,12 @@
-package com.breqk.prefs;
+package com.Break.prefs;
 
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.breqk.service.BreqkVpnService;
-import com.breqk.monitor.ServiceHelper;
+import com.Break.service.BreakVpnService;
+import com.Break.monitor.ServiceHelper;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -19,23 +19,23 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * BreqkPrefs
+ * BreakPrefs
  * -----------
- * Centralized SharedPreferences constants and accessor for the breqk_prefs
+ * Centralized SharedPreferences constants and accessor for the Break_prefs
  * file.
  * All preference keys used across the app are defined here as constants to
  * prevent typo-induced bugs and make key discovery trivial.
  *
  * Usage:
- * SharedPreferences prefs = BreqkPrefs.get(context);
- * Set<String> blocked = BreqkPrefs.getBlockedApps(context);
+ * SharedPreferences prefs = BreakPrefs.get(context);
+ * Set<String> blocked = BreakPrefs.getBlockedApps(context);
  *
  * Logging: No logging — this is a constants/utility-only class.
  */
-public final class BreqkPrefs {
+public final class BreakPrefs {
 
     // ── Preferences file name ────────────────────────────────────────────────
-    public static final String PREFS_NAME = "breqk_prefs";
+    public static final String PREFS_NAME = "Break_prefs";
 
     // ── Key constants ────────────────────────────────────────────────────────
     // Blocked apps & monitoring
@@ -90,7 +90,7 @@ public final class BreqkPrefs {
 
     // ── Modes ────────────────────────────────────────────────────────────────
     // JSON map of mode definitions: { "study": { "name": "Study Mode", ... }, ... }
-    public static final String KEY_MODES = "breqk_modes";
+    public static final String KEY_MODES = "Break_modes";
     // Currently active mode ID (null/empty = no mode active)
     public static final String KEY_ACTIVE_MODE = "active_mode";
     // How the mode was activated: "manual" or "schedule"
@@ -124,7 +124,7 @@ public final class BreqkPrefs {
      */
     public static final String KEY_LAUNCH_LAST_FOREGROUND = "launch_last_foreground_";
 
-    private static final String TAG = "BreqkPrefs";
+    private static final String TAG = "BreakPrefs";
 
     // Widget cache keys (also defined in WidgetPrefs; aligned here for
     // discoverability)
@@ -137,12 +137,11 @@ public final class BreqkPrefs {
     // Home feed post limit (Instagram home feed scroll counter)
     public static final String KEY_HOME_FEED_POST_LIMIT = "home_feed_post_limit";
 
-    // Browser content filter — whether ContentFilterService redirects blocked
-    // domains
+    // Browser content filter — whether ReelsInterventionService redirects blocked domains
     public static final String KEY_CONTENT_FILTER_ENABLED = "content_filter_enabled";
 
     // ── Uninstall Lock ────────────────────────────────────────────────────────
-    // Opt-in 24-hour cooldown before Breqk can be uninstalled. Plan:
+    // Opt-in 24-hour cooldown before Break can be uninstalled. Plan:
     // .claude/plan/24h-delete-lock.md
     // CRITICAL: NEVER include any of these keys in a "reset to defaults" routine —
     // wiping them while a delete request is active would let the user bypass the
@@ -164,6 +163,48 @@ public final class BreqkPrefs {
     public static final long UNINSTALL_LOCK_DURATION_MS = 60_000L; // 30-second delay
     public static final String UNINSTALL_LOCK_CONSENT_VERSION_CURRENT = "2026-05-12-v1";
 
+    // ── Configuration Cooldown ("Commitment Lock") ─────────────────────────────
+    // A user-chosen delay that gates ANY loosening of scroll-budget / per-app /
+    // monitoring / delay settings. Tightening changes apply instantly; loosening
+    // changes are queued and only take effect after the cooldown elapses. This is
+    // a deliberate friction device so an impulsive user cannot instantly disable
+    // their own protections. See com.Break.cooldown.CooldownManager.
+    // CRITICAL: never wipe KEY_PENDING_CHANGES / KEY_CONFIG_COOLDOWN_MS in a
+    // "reset to defaults" routine — doing so would discard queued loosenings and
+    // shortcut the wait.
+    public static final String KEY_CONFIG_COOLDOWN_MS = "config_cooldown_ms";
+    public static final String KEY_PENDING_CHANGES = "pending_config_changes";
+    public static final String KEY_COOLDOWN_ONBOARDED = "config_cooldown_onboarded";
+
+    /** Default cooldown: 48 hours. */
+    public static final long DEFAULT_CONFIG_COOLDOWN_MS = 48L * 60 * 60 * 1000;
+    /** Minimum cooldown the onboarding adjuster allows: 24 hours. */
+    public static final long MIN_CONFIG_COOLDOWN_MS = 24L * 60 * 60 * 1000;
+    /** Maximum cooldown the onboarding adjuster allows: 7 days (1 week). */
+    public static final long MAX_CONFIG_COOLDOWN_MS = 7L * 24 * 60 * 60 * 1000;
+
+    // ── Settings Change Lock ───────────────────────────────────────────────────
+    // Opt-in (default OFF, like the uninstall lock). When enabled, each settings
+    // SCOPE — "global" (the Customize screen) or a per-app package name — locks for
+    // a user-chosen duration after the user edits it and leaves the screen. While a
+    // scope is locked, that screen is read-only and shows a countdown. Scopes are
+    // INDEPENDENT: editing the global settings never starts a per-app scope's timer.
+    //
+    // Model: ONE timestamp per scope (no pending queue, no promotion alarm). A scope
+    // is locked iff (enabled && now < lockUntil[scope]). See com.Break.lock.SettingsLockManager.
+    // CRITICAL: never wipe KEY_SETTINGS_LOCK_UNTIL in a "reset to defaults" routine —
+    // doing so would shortcut an active wait.
+    public static final String KEY_SETTINGS_LOCK_ENABLED = "settings_lock_enabled";
+    public static final String KEY_SETTINGS_LOCK_DURATION_MS = "settings_lock_duration_ms";
+    public static final String KEY_SETTINGS_LOCK_UNTIL = "settings_lock_until"; // JSON {scope: epochMs}
+
+    /** Default lock length when the user first enables the feature: 24 hours. */
+    public static final long DEFAULT_SETTINGS_LOCK_MS = 24L * 60 * 60 * 1000;
+    /** Minimum lock length the duration picker allows: 24 hours. */
+    public static final long MIN_SETTINGS_LOCK_MS = 24L * 60 * 60 * 1000;
+    /** Maximum lock length the duration picker allows: 7 days (1 week). */
+    public static final long MAX_SETTINGS_LOCK_MS = 7L * 24 * 60 * 60 * 1000;
+
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;
     public static final int DEFAULT_POPUP_DELAY_MINUTES = 10;
@@ -171,13 +212,13 @@ public final class BreqkPrefs {
     public static final int POPUP_DELAY_ONCE_SENTINEL = Integer.MAX_VALUE;
     public static final int DEFAULT_SCROLL_THRESHOLD = 4;
     public static final int DEFAULT_SCROLL_ALLOWANCE_MINUTES = 5;
-    public static final int DEFAULT_HOME_FEED_POST_LIMIT = 20;
+    public static final int DEFAULT_HOME_FEED_POST_LIMIT = 30;
     public static final int DEFAULT_SCROLL_WINDOW_MINUTES = 60;
 
     // ── Accessor ─────────────────────────────────────────────────────────────
 
     /**
-     * Returns the SharedPreferences instance for breqk_prefs.
+     * Returns the SharedPreferences instance for Break_prefs.
      * Android caches SharedPreferences internally so calling this repeatedly is
      * cheap.
      */
@@ -300,15 +341,53 @@ public final class BreqkPrefs {
             JSONObject all = getInterceptSettingsJson(context);
             JSONObject entry = new JSONObject();
             entry.put("message", message != null ? message : "");
-            entry.put("delay_secs", delaySecs);
+            entry.put("delay_secs", clampDelaySecs(delaySecs));
             entry.put("popup_delay_min", popupDelayMin);
             all.put(packageName, entry);
             get(context).edit().putString(KEY_INTERCEPT_SETTINGS, all.toString()).apply();
             Log.d(TAG, "[INTERCEPT_SETTINGS] Saved pkg=" + packageName
-                    + " delaySecs=" + delaySecs + " popupDelayMin=" + popupDelayMin);
+                    + " delaySecs=" + clampDelaySecs(delaySecs) + " popupDelayMin=" + popupDelayMin);
         } catch (JSONException e) {
             Log.e(TAG, "[INTERCEPT_SETTINGS] Save error pkg=" + packageName + ": " + e.getMessage());
         }
+    }
+
+    /** Clamps overlay countdown to the same range Customize / AppDetail sliders use. */
+    public static int clampDelaySecs(int seconds) {
+        return Math.max(5, Math.min(120, seconds));
+    }
+
+    /** Global default countdown from Customize → Forced Pause Duration. */
+    public static int getGlobalDelaySecs(Context context) {
+        return clampDelaySecs(
+                get(context).getInt(KEY_DELAY_TIME_SECONDS, DEFAULT_DELAY_TIME_SECONDS));
+    }
+
+    /**
+     * True when this app has its own row in intercept_settings (per-app overlay config).
+     */
+    public static boolean hasPerAppInterceptSettings(Context context, String packageName) {
+        return getInterceptSettingsJson(context).has(packageName);
+    }
+
+    /**
+     * Per-app delay_secs when configured; otherwise {@link #getGlobalDelaySecs}.
+     * Used by the delay overlay countdown ring and Continue button timer.
+     */
+    public static int getEffectiveDelaySecs(Context context, String packageName) {
+        try {
+            JSONObject all = getInterceptSettingsJson(context);
+            if (all.has(packageName)) {
+                JSONObject entry = all.getJSONObject(packageName);
+                if (entry.has("delay_secs")) {
+                    return clampDelaySecs(entry.optInt("delay_secs", getGlobalDelaySecs(context)));
+                }
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] getEffectiveDelaySecs pkg=" + packageName
+                    + ": " + e.getMessage());
+        }
+        return getGlobalDelaySecs(context);
     }
 
     /**
@@ -323,7 +402,7 @@ public final class BreqkPrefs {
             for (String pkg : policies.keySet()) {
                 JSONObject entry = new JSONObject();
                 entry.put("message", message != null ? message : "");
-                entry.put("delay_secs", delaySecs);
+                entry.put("delay_secs", clampDelaySecs(delaySecs));
                 entry.put("popup_delay_min", popupDelayMin);
                 all.put(pkg, entry);
             }
@@ -744,7 +823,7 @@ public final class BreqkPrefs {
     public static void dispatchBlockedAppsReload(Context context) {
         try {
             Set<String> blocked = getBlockedApps(context);
-            Intent intent = new Intent(context, BreqkVpnService.class);
+            Intent intent = new Intent(context, BreakVpnService.class);
             intent.setAction("UPDATE_BLOCKED_APPS");
             intent.putStringArrayListExtra("blockedApps", new ArrayList<>(blocked));
             ServiceHelper.startForegroundServiceCompat(context, intent);
@@ -790,11 +869,8 @@ public final class BreqkPrefs {
     // ── Content filter helpers ────────────────────────────────────────────────
 
     /**
-     * Browser bar / blocked-domain redirects
-     * ({@link com.breqk.ContentFilterService}).
-     * Default true so enabling the Accessibility entry alone matches pre-reorg
-     * behavior
-     * (Customize switch can still turn it off explicitly).
+     * Browser bar / blocked-domain redirects (via {@link ReelsInterventionService}).
+     * Default true; Customize switch can turn it off without revoking accessibility permission.
      */
     public static boolean isContentFilterEnabled(Context context) {
         return get(context).getBoolean(KEY_CONTENT_FILTER_ENABLED, true);
@@ -822,6 +898,6 @@ public final class BreqkPrefs {
     }
 
     // Prevent instantiation
-    private BreqkPrefs() {
+    private BreakPrefs() {
     }
 }

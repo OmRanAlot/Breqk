@@ -1,4 +1,4 @@
-package com.breqk;
+package com.Break;
 
 /*
  * MainActivity
@@ -11,8 +11,8 @@ import com.facebook.react.ReactActivityDelegate;
 import com.facebook.react.ReactRootView;
 import android.content.Intent;
 import android.os.Bundle;
-import com.breqk.service.BreqkVpnService;
-import com.breqk.monitor.ServiceHelper;
+import com.Break.service.BreakVpnService;
+import com.Break.monitor.ServiceHelper;
 
 public class MainActivity extends ReactActivity {
 
@@ -22,7 +22,7 @@ public class MainActivity extends ReactActivity {
      */
     @Override
     protected String getMainComponentName() {
-        return "Breqk"; // This should match the "name" in app.json
+        return "Break"; // This should match the "name" in app.json
     }
 
     @Override

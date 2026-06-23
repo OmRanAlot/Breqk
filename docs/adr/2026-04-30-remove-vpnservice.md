@@ -1,4 +1,4 @@
-# ADR: Remove VpnService — Migrate BreqkVpnService to a Plain Foreground Service
+# ADR: Remove VpnService — Migrate BreakVpnService to a Plain Foreground Service
 
 **Date:** 2026-04-30  
 **Status:** Accepted  
@@ -7,7 +7,7 @@
 
 ## Context
 
-`BreqkVpnService` (originally `MyVpnService`) extended `android.net.VpnService` purely for one reason: foreground service longevity. No VPN tunnel was ever established. The class never called `establish()`, never opened a `ParcelFileDescriptor`, and never routed any network traffic. The inheritance was a historical accident — early prototypes explored VPN-based DNS blocking before the project pivoted to an AccessibilityService-based approach.
+`BreakVpnService` (originally `MyVpnService`) extended `android.net.VpnService` purely for one reason: foreground service longevity. No VPN tunnel was ever established. The class never called `establish()`, never opened a `ParcelFileDescriptor`, and never routed any network traffic. The inheritance was a historical accident — early prototypes explored VPN-based DNS blocking before the project pivoted to an AccessibilityService-based approach.
 
 This misuse caused three concrete problems:
 
@@ -21,30 +21,30 @@ A related latent crash (B4) existed in the same class: `onStartCommand()` passed
 
 ## Decision
 
-**Migrate `BreqkVpnService` from `android.net.VpnService` to `android.app.Service`.**
+**Migrate `BreakVpnService` from `android.net.VpnService` to `android.app.Service`.**
 
 Specific changes:
 
 | Location | Change |
 |----------|--------|
-| `service/BreqkVpnService.java` | `extends VpnService` → `extends Service` |
+| `service/BreakVpnService.java` | `extends VpnService` → `extends Service` |
 | `AndroidManifest.xml` | Removed `<uses-permission android:name="android.permission.BIND_VPN_SERVICE" />` |
 | `AndroidManifest.xml` | Replaced VPN `<service>` declaration (with `android:permission="BIND_VPN_SERVICE"` and VPN `<intent-filter>`) with a plain foreground service using `android:foregroundServiceType="specialUse"` |
-| `service/BreqkVpnService.java` | Notification channel ID `"BreqkVPN"` → `"BreqkMonitoring"`; notification text `"VPN Active"` → `"Breqk Active"` |
-| `service/BreqkVpnService.java` | Action strings `START_VPN` / `STOP_VPN` → `START_MONITORING` / `STOP_MONITORING` |
-| `service/BreqkVpnService.java` | Added null guards for `intent` and `action` in `onStartCommand()` before the switch (B4) |
+| `service/BreakVpnService.java` | Notification channel ID `"BreakVPN"` → `"BreakMonitoring"`; notification text `"VPN Active"` → `"Break Active"` |
+| `service/BreakVpnService.java` | Action strings `START_VPN` / `STOP_VPN` → `START_MONITORING` / `STOP_MONITORING` |
+| `service/BreakVpnService.java` | Added null guards for `intent` and `action` in `onStartCommand()` before the switch (B4) |
 | `bridge/VPNModule.java` | `requestVpnPermission()` stubbed as a no-op that immediately resolves `true`; `@ReactMethod` signature retained for JS backward compatibility |
 | `bridge/VPNModule.java` | Removed `import android.net.VpnService` |
 | `MainActivity.java` | Removed `VPN_REQUEST_CODE` constant and VPN-specific `onActivityResult()` branch |
 
-The class is intentionally still named `BreqkVpnService` rather than renamed to `BreqkMonitorService`. Renaming would require updating `AndroidManifest.xml`, all intent constructors, and any persisted intents in AlarmManager. The name is internal-only, carries no user-visible meaning, and the cosmetic rename can be done in a future cleanup pass.
+The class is intentionally still named `BreakVpnService` rather than renamed to `BreakMonitorService`. Renaming would require updating `AndroidManifest.xml`, all intent constructors, and any persisted intents in AlarmManager. The name is internal-only, carries no user-visible meaning, and the cosmetic rename can be done in a future cleanup pass.
 
 ## Consequences
 
 **Positive:**
 - No VPN permission dialog on first launch.
 - No VPN key icon in the status bar.
-- Notification reads "Breqk Active" — accurate and unambiguous.
+- Notification reads "Break Active" — accurate and unambiguous.
 - `BIND_VPN_SERVICE` removed from the manifest — smaller permission surface, cleaner Play Store review.
 - `onStartCommand()` now survives OS-initiated restarts without crashing (B4).
 - Build passes: `assembleDebug` — 0 errors, 4 pre-existing deprecation warnings unrelated to this change.

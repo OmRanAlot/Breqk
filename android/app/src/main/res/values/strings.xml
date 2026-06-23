@@ -1,8 +1,6 @@
 <resources>
-    <string name="app_name">Breqk</string>
-    <!-- Shown next to each Breqk accessibility toggle in system settings -->
-    <string name="accessibility_reels_intervention_description">Reels / Shorts / scroll budgets (Instagram &amp; YouTube). Not browser domain blocking.</string>
-    <string name="accessibility_browser_content_filter_description">Browser domains: blocks sites from your blocked list (Chrome &amp; other browsers here). Separate from Reels monitoring.</string>
-    <string name="accessibility_service_description">Monitor app usage to help reduce doom scrolling by detecting when blocked apps are opened</string>
-    <string name="widget_description">Focus score, time saved, and apps blocked. Tap to open Breqk.</string>
+    <string name="app_name">Break</string>
+    <!-- Shown next to the Break accessibility toggle in system settings -->
+    <string name="accessibility_reels_intervention_description">Monitors Instagram Reels, YouTube Shorts, browser domains, and app launches to help you stay intentional.</string>
+    <string name="widget_description">Focus score, time saved, and apps blocked. Tap to open Break.</string>
 </resources>

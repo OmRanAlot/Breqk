@@ -12,12 +12,17 @@
  *
  * safeModePlatform — if present, AppDetail shows an "Open in Safe Mode" button
  *                    navigating to Browser with that platform param.
+ *
+ * monogram — short dark-tile label rendered by the onboarding <Monogram>
+ *            component, reused on the Home "Managed Apps" rows so the icons
+ *            match the onboarding flow.
  */
 export const MANAGED_APPS = [
   {
     pkg: 'com.instagram.android',
     label: 'Instagram',
     emoji: '📷',
+    monogram: 'In',
     safeModePlatform: 'instagram',
     features: [
       { key: 'reels_detection', label: 'Reels Detection' },
@@ -35,13 +40,18 @@ export const MANAGED_APPS = [
     pkg: 'com.google.android.youtube',
     label: 'YouTube',
     emoji: '▶️',
+    monogram: 'Yt',
     safeModePlatform: 'youtube',
-    features: [{ key: 'shorts_detection', label: 'Shorts Detection' }],
+    // Native short-form detection reads `reels_detection` for every package
+    // (ReelsInterventionService), so YouTube uses that same key — the label is
+    // just the user-facing wording.
+    features: [{ key: 'reels_detection', label: 'Shorts Detection' }],
   },
   {
     pkg: 'com.zhiliaoapp.musically',
     label: 'TikTok',
     emoji: '🎵',
+    monogram: 'Tk',
     features: [
       { key: 'tiktok_foryou', label: 'For You Detection' },
       {
@@ -58,6 +68,7 @@ export const MANAGED_APPS = [
     pkg: 'com.reddit.frontpage',
     label: 'Reddit',
     emoji: '👽',
+    monogram: 'Re',
     features: [
       { key: 'reddit_feed', label: 'Feed / Video Detection' },
       {
@@ -74,6 +85,7 @@ export const MANAGED_APPS = [
     pkg: 'com.twitter.android',
     label: 'X / Twitter',
     emoji: '𝕏',
+    monogram: 'X',
     features: [
       { key: 'twitter_foryou', label: 'For You Detection' },
       {
@@ -90,12 +102,14 @@ export const MANAGED_APPS = [
     pkg: 'com.snapchat.android',
     label: 'Snapchat',
     emoji: '👻',
+    monogram: 'Sn',
     features: [{ key: 'snap_spotlight', label: 'Spotlight Detection' }],
   },
   {
     pkg: 'com.facebook.katana',
     label: 'Facebook',
     emoji: '📘',
+    monogram: 'Fb',
     features: [
       { key: 'facebook_reels', label: 'Reels Detection' },
       { key: 'facebook_feed', label: 'Feed Detection' },

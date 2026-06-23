@@ -7,7 +7,7 @@ WHY:
   be started by Android. Catches orphans after renames or copy-paste additions.
 
 WHAT:
-  Every Java file under com/breqk/ that extends Service or AccessibilityService
+  Every Java file under com/Break/ that extends Service or AccessibilityService
   has a corresponding <service> entry in AndroidManifest.xml.
 
 HOW:

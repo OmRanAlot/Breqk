@@ -2,8 +2,8 @@
 <!--
     overlay_uninstall_lock.xml
     ─────────────────────────────────────────────────────────────────────────────
-    Full-screen "don't delete Breqk" lock screen shown by UninstallLockOverlay
-    when the user reaches Settings → Apps → Breqk → Uninstall AND the
+    Full-screen "don't delete Break" lock screen shown by UninstallLockOverlay
+    when the user reaches Settings → Apps → Break → Uninstall AND the
     deletion-prevention setting is enabled.
 
     Design intent:
@@ -18,7 +18,7 @@
     View IDs used by UninstallLockOverlay.java:
       uninstall_lock_headline   — static headline
       uninstall_lock_message    — rotating motivational message (updated in code)
-      uninstall_lock_keep_btn   — primary "Keep Breqk" (GONE until 30s → HOME)
+      uninstall_lock_keep_btn   — primary "Keep Break" (GONE until 30s → HOME)
       uninstall_lock_delete_btn — discouraged "give up" escape (GONE until 30s →
                                   dismiss + suppress so the OS uninstall proceeds)
 
@@ -84,7 +84,7 @@
             android:layout_marginTop="32dp" />
 
         <!--
-            Primary "Keep Breqk": visibility=gone here. UninstallLockOverlay
+            Primary "Keep Break": visibility=gone here. UninstallLockOverlay
             flips it to VISIBLE only after UNINSTALL_LOCK_DURATION_MS so the user
             must sit with the messages first. onClick → GLOBAL_ACTION_HOME.
         -->
@@ -92,7 +92,7 @@
             android:id="@+id/uninstall_lock_keep_btn"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="Keep Breqk"
+            android:text="Keep Break"
             android:textSize="18sp"
             android:textStyle="bold"
             android:textColor="#FFFFFF"
@@ -110,7 +110,7 @@
             android:id="@+id/uninstall_lock_delete_btn"
             android:layout_width="match_parent"
             android:layout_height="52dp"
-            android:text="Give up and delete Breqk anyway"
+            android:text="Give up and delete Break anyway"
             android:textSize="14sp"
             android:textAllCaps="false"
             android:textColor="#737373"

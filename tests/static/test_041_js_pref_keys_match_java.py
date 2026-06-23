@@ -4,7 +4,7 @@ test_041_js_pref_keys_match_java.py
 
 WHAT:
   Every key string passed to SettingsModule.getSetting('xxx') /
-  setSetting('xxx', ...) from JS exists as a KEY_* constant in BreqkPrefs.java.
+  setSetting('xxx', ...) from JS exists as a KEY_* constant in BreakPrefs.java.
 
 WHY:
   A JS key string that doesn't match any Java KEY_* constant means the JS
@@ -12,7 +12,7 @@ WHY:
   returns defaults and the setting has no effect.
 
 HOW:
-  1. Parse BreqkPrefs.java for all KEY_* constant values.
+  1. Parse BreakPrefs.java for all KEY_* constant values.
   2. Scan JS/TS files for getSetting('key') / setSetting('key', ...) calls.
   3. Report JS keys that have no matching Java KEY_* constant.
 
@@ -20,7 +20,7 @@ OUTPUTS:
   PASS — all JS pref keys match Java KEY_* constants.
   FAIL — one or more JS keys have no matching Java constant.
   WARN — (not used).
-  SKIP — BreqkPrefs.java not found or no JS setting calls found.
+  SKIP — BreakPrefs.java not found or no JS setting calls found.
 
 EXTEND:
   - To allowlist a JS key: add to ALLOWLIST below.
@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _harness import PASS, FAIL, SKIP, result, grep_js
-from _paths import PROJECT_ROOT, BREQK_PREFS
+from _paths import PROJECT_ROOT, Break_PREFS
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
 ALLOWLIST: set = set()
@@ -39,7 +39,7 @@ TEST_ID = Path(__file__).stem
 
 
 def extract_java_key_values(prefs_file: Path) -> set:
-    """Extract string values from KEY_* and FEATURE_* constants in BreqkPrefs.java."""
+    """Extract string values from KEY_* and FEATURE_* constants in BreakPrefs.java."""
     text = prefs_file.read_text(encoding="utf-8", errors="ignore")
     values = set()
     for m in re.finditer(r'public\s+static\s+final\s+String\s+(?:KEY_|FEATURE_)\w+\s*=\s*"([^"]+)"', text):
@@ -50,11 +50,11 @@ def extract_java_key_values(prefs_file: Path) -> set:
 def main() -> None:
     print(f"[{TEST_ID}] verifying JS pref keys match Java KEY_* constants")
 
-    if not BREQK_PREFS.exists():
-        result(SKIP, f"BreqkPrefs.java not found at {BREQK_PREFS}")
+    if not Break_PREFS.exists():
+        result(SKIP, f"BreakPrefs.java not found at {Break_PREFS}")
         return
 
-    java_keys = extract_java_key_values(BREQK_PREFS)
+    java_keys = extract_java_key_values(Break_PREFS)
     print(f"  Java KEY_*/FEATURE_* values: {len(java_keys)}")
 
     # Find JS calls: getSetting('key'), setSetting('key', ...)

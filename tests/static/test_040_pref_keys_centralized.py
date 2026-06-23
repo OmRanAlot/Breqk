@@ -3,8 +3,8 @@ test_040_pref_keys_centralized.py
 ==================================
 
 WHAT:
-  Java files outside BreqkPrefs.java and WidgetPrefs.java should not contain
-  raw string literals matching keys defined in BreqkPrefs.KEY_* (forces use
+  Java files outside BreakPrefs.java and WidgetPrefs.java should not contain
+  raw string literals matching keys defined in BreakPrefs.KEY_* (forces use
   of constants).
 
 WHY:
@@ -13,15 +13,15 @@ WHY:
   and the feature appears broken.
 
 HOW:
-  1. Parse BreqkPrefs.java for all KEY_* constant values.
+  1. Parse BreakPrefs.java for all KEY_* constant values.
   2. Scan all other Java files for those literal strings.
   3. Report violations (files using raw strings instead of constants).
 
 OUTPUTS:
-  PASS — no raw pref key strings found outside BreqkPrefs/WidgetPrefs.
+  PASS — no raw pref key strings found outside BreakPrefs/WidgetPrefs.
   WARN — raw key strings found (likely should use constants).
   FAIL — (not used — WARN-only to allow migration code).
-  SKIP — BreqkPrefs.java not found.
+  SKIP — BreakPrefs.java not found.
 
 EXTEND:
   - To allowlist a file or class: add to FILE_ALLOWLIST below.
@@ -32,15 +32,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _harness import PASS, WARN, SKIP, result
-from _paths import JAVA_SRC, BREQK_PREFS
+from _paths import JAVA_SRC, Break_PREFS
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
-FILE_ALLOWLIST = {"BreqkPrefs.java", "WidgetPrefs.java"}
+FILE_ALLOWLIST = {"BreakPrefs.java", "WidgetPrefs.java"}
 TEST_ID = Path(__file__).stem
 
 
 def extract_key_values(prefs_file: Path) -> set:
-    """Extract string values from KEY_* constants in BreqkPrefs.java."""
+    """Extract string values from KEY_* constants in BreakPrefs.java."""
     text = prefs_file.read_text(encoding="utf-8", errors="ignore")
     # Match: public static final String KEY_xxx = "value";
     values = set()
@@ -50,14 +50,14 @@ def extract_key_values(prefs_file: Path) -> set:
 
 
 def main() -> None:
-    print(f"[{TEST_ID}] checking pref keys are centralized in BreqkPrefs constants")
+    print(f"[{TEST_ID}] checking pref keys are centralized in BreakPrefs constants")
 
-    if not BREQK_PREFS.exists():
-        result(SKIP, f"BreqkPrefs.java not found at {BREQK_PREFS}")
+    if not Break_PREFS.exists():
+        result(SKIP, f"BreakPrefs.java not found at {Break_PREFS}")
         return
 
-    key_values = extract_key_values(BREQK_PREFS)
-    print(f"  extracted {len(key_values)} KEY_* constant values from BreqkPrefs.java")
+    key_values = extract_key_values(Break_PREFS)
+    print(f"  extracted {len(key_values)} KEY_* constant values from BreakPrefs.java")
 
     violations = []
     scanned = 0
@@ -80,7 +80,7 @@ def main() -> None:
     print(f"  scanned: {scanned} Java files; violations: {len(violations)}")
 
     if violations:
-        result(WARN, f"{len(violations)} raw pref key string(s) found outside BreqkPrefs (use constants)")
+        result(WARN, f"{len(violations)} raw pref key string(s) found outside BreakPrefs (use constants)")
     else:
         result(PASS, f"no raw pref key strings found in {scanned} Java files")
 

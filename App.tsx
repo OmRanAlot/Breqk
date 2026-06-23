@@ -1,5 +1,5 @@
 // App.tsx
-// Root of Breqk. Checks permissions on mount, then renders a Stack
+// Root of Break. Checks permissions on mount, then renders a Stack
 // navigator containing Home → Customize / Modes → Browser.
 //
 // Navigation architecture:
@@ -8,7 +8,7 @@
 // Native overlays (AppUsageMonitor + ReelsInterventionService) handle all app-blocking
 // and Reels intervention UI directly via WindowManager. No JS-side modal is needed here.
 //
-// Deep linking: breqk://browser/:platform → Browser screen (used by widget buttons)
+// Deep linking: Break://browser/:platform → Browser screen (used by widget buttons)
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -42,11 +42,11 @@ export const navigationRef = createNavigationContainerRef();
 
 /**
  * Deep linking configuration for widget quick-launch buttons.
- * Maps breqk://browser/:platform → Browser screen.
+ * Maps Break://browser/:platform → Browser screen.
  * Works for both cold start and warm start (singleTask launchMode).
  */
 const linking = {
-  prefixes: ['breqk://'],
+  prefixes: ['Break://'],
   config: {
     screens: {
       // Browser is directly on the stack — deep link resolves correctly without tabs
@@ -61,8 +61,6 @@ const linking = {
  * intercepts the full screen when the 30-second delete delay is active.
  */
 const MainNavigator = () => {
-
-
   return (
     <SafeAreaProvider>
       <NavigationContainer ref={navigationRef} linking={linking}>
@@ -91,18 +89,32 @@ const App = () => {
   useEffect(() => {
     console.log('[App] checking permissions');
     VPNModule.checkPermissions()
-      .then((perms: { usage: boolean; overlay: boolean }) => {
-        const granted = perms.usage && perms.overlay;
-        console.log(
-          '[App] permissions result — usage:',
-          perms.usage,
-          'overlay:',
-          perms.overlay,
-          '→ granted:',
-          granted,
-        );
-        setPermissionsGranted(granted);
-      })
+      .then(
+        (perms: {
+          usage: boolean;
+          overlay: boolean;
+          accessibility?: boolean;
+        }) => {
+          // Accessibility is gated here now that the native pre-RN gate
+          // (AccessibilityPermissionActivity) is no longer the launcher — the
+          // onboarding requests it as a step. Older native builds that don't
+          // report `accessibility` (undefined) are treated as granted so the
+          // gate doesn't get stuck.
+          const accessibilityOk = perms.accessibility !== false;
+          const granted = perms.usage && perms.overlay && accessibilityOk;
+          console.log(
+            '[App] permissions result — usage:',
+            perms.usage,
+            'overlay:',
+            perms.overlay,
+            'accessibility:',
+            perms.accessibility,
+            '→ granted:',
+            granted,
+          );
+          setPermissionsGranted(granted);
+        },
+      )
       .catch((e: Error) => {
         console.error('[App] checkPermissions failed:', e);
         setPermissionsGranted(false);
@@ -115,7 +127,7 @@ const App = () => {
     console.log('[App] permission check in progress — rendering splash');
     return (
       <View style={splashStyles.container}>
-        <Text style={splashStyles.wordmark}>BREQK</Text>
+        <Text style={splashStyles.wordmark}>Break</Text>
         <ActivityIndicator
           size="small"
           color="#757575"

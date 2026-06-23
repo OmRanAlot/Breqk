@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.facebook;
+package com.Break.shortform.platform.facebook;
 
 /**
  * FacebookViewIds

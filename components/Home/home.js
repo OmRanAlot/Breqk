@@ -1,5 +1,5 @@
 /**
- * home.js — Home Screen (Tether light design system)
+ * home.js — Home Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Dashboard layout:
  *   • App name header (centred) + settings gear icon
@@ -41,7 +41,7 @@ import ManagedAppsList from './ManagedAppsList';
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
 
-// ─── Tether Light Palette ─────────────────────────────────────────────────────
+// ─── Break Light Palette ─────────────────────────────────────────────────────
 const L = {
   bg: '#F8F8F6',
   charcoal: '#1A1A1A',
@@ -185,13 +185,46 @@ const Home = ({ navigation }) => {
   // Called on mount, AppState→foreground, AND navigation focus (returning
   // from AppDetail / Customize / Modes).
   const loadPolicies = useCallback(() => {
-    SettingsModule.getAppPolicies(json => {
-      try {
-        setAppPolicies(json ? JSON.parse(json) : {});
-      } catch (e) {
-        console.warn('[Home] parse appPolicies failed:', e);
-        setAppPolicies({});
-      }
+    // Load the base per-app policies, then layer the active mode's
+    // policy_overrides on top so the Managed Apps list shows the EFFECTIVE
+    // state — the same resolution AppDetail and the native services use
+    // (BreakPrefs.isFeatureEnabled). Without this the list shows stale base
+    // flags (e.g. YouTube still reading reels_detection from the migration
+    // default) even though the active mode turned them off.
+    SettingsModule.getActiveMode(activeId => {
+      SettingsModule.getModes(modesJson => {
+        let modes = {};
+        try {
+          modes = modesJson ? JSON.parse(modesJson) : {};
+        } catch (e) {
+          console.warn('[Home] parse modes failed:', e);
+        }
+        const overrides =
+          activeId && modes[activeId]?.policy_overrides
+            ? modes[activeId].policy_overrides
+            : {};
+
+        SettingsModule.getAppPolicies(json => {
+          try {
+            const base = json ? JSON.parse(json) : {};
+            const effective = {};
+            // Base apps with their mode overrides merged on top.
+            Object.keys(base).forEach(pkg => {
+              effective[pkg] = { ...base[pkg], ...(overrides[pkg] || {}) };
+            });
+            // Apps that only exist as mode overrides still need a row.
+            Object.keys(overrides).forEach(pkg => {
+              if (!effective[pkg]) {
+                effective[pkg] = { ...overrides[pkg] };
+              }
+            });
+            setAppPolicies(effective);
+          } catch (e) {
+            console.warn('[Home] parse appPolicies failed:', e);
+            setAppPolicies({});
+          }
+        });
+      });
     });
   }, []);
 
@@ -502,7 +535,7 @@ const Home = ({ navigation }) => {
       <View style={styles.header}>
         <View style={styles.headerSpacer} />
 
-        <Text style={styles.appName}>BREQK</Text>
+        <Text style={styles.appName}>Break</Text>
 
         <View style={styles.headerActions}>
           <TouchableOpacity
@@ -596,7 +629,9 @@ const Home = ({ navigation }) => {
                     Green = budget available, Red = exhausted (with countdown to reset). */}
         {budgetStatus &&
           (() => {
-            const canScroll = budgetStatus.canScroll;
+            // Defensive guard: remainingMs=0 with canScroll=true is a stuck 0:00 state.
+            const canScroll =
+              budgetStatus.canScroll && budgetStatus.remainingMs > 0;
             const statusColor = canScroll ? L.accentGreen : '#E53935';
             const allowanceMs = budgetStatus.allowanceMinutes * 60 * 1000;
             const statusLabel = canScroll

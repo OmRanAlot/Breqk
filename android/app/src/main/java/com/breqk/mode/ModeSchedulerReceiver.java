@@ -1,5 +1,5 @@
-package com.breqk.mode;
-import com.breqk.prefs.BreqkPrefs;
+package com.Break.mode;
+import com.Break.prefs.BreakPrefs;
 
 /*
  * ModeSchedulerReceiver
@@ -34,8 +34,8 @@ public class ModeSchedulerReceiver extends BroadcastReceiver {
             case Intent.ACTION_BOOT_COMPLETED:
                 // Device rebooted — re-register all scheduled alarms and run migration
                 Log.i(TAG, "[BOOT] Device boot completed — re-registering mode alarms");
-                BreqkPrefs.migrateIfNeeded(context);
-                BreqkPrefs.createDefaultModesIfNeeded(context);
+                BreakPrefs.migrateIfNeeded(context);
+                BreakPrefs.createDefaultModesIfNeeded(context);
                 ModeManager.reregisterAllAlarms(context);
 
                 // Check if a scheduled mode should be active right now
@@ -76,7 +76,7 @@ public class ModeSchedulerReceiver extends BroadcastReceiver {
      */
     private void checkAndActivateCurrentSchedule(Context context) {
         try {
-            org.json.JSONObject modes = BreqkPrefs.getModes(context);
+            org.json.JSONObject modes = BreakPrefs.getModes(context);
             java.util.Iterator<String> keys = modes.keys();
             java.util.Calendar now = java.util.Calendar.getInstance();
             int currentMinutes = now.get(java.util.Calendar.HOUR_OF_DAY) * 60

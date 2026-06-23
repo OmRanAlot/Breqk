@@ -1,4 +1,4 @@
-package com.breqk.shortform;
+package com.Break.shortform;
 
 import android.content.Context;
 import android.graphics.Rect;

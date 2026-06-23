@@ -1,4 +1,4 @@
-package com.breqk;
+package com.Break;
 
 /*
  * ReelsInterventionService
@@ -56,7 +56,7 @@ package com.breqk;
  *   2. Slow path: full accessibility tree traversal for Reels view IDs
  *   Both paths gate through isFullScreenReelsViewPager() before confirming.
  *
- * Scroll budget status is read from SharedPreferences (BreqkPrefs.PREFS_NAME):
+ * Scroll budget status is read from SharedPreferences (BreakPrefs.PREFS_NAME):
  *   - scroll_budget_exhausted_at (long): >0 means budget is exhausted
  *   - scroll_window_start_time (long): when the current budget window started
  *   - scroll_window_minutes (int): duration of the budget window
@@ -76,7 +76,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import com.breqk.BuildConfig;
+import com.Break.BuildConfig;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -86,24 +86,25 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.service.BreqkVpnService;
-import com.breqk.shortform.AppEventRouter;
-import com.breqk.shortform.FrameworkClassFilter;
-import com.breqk.shortform.FullScreenCheck;
-import com.breqk.shortform.detection.InstagramDetector;
-import com.breqk.shortform.platform.PlatformRegistry;
-import com.breqk.shortform.platform.instagram.InstagramViewIds;
-import com.breqk.shortform.platform.youtube.YouTubeViewIds;
-import com.breqk.shortform.detection.ShortFormDetector;
-import com.breqk.shortform.detection.YouTubeDetector;
-import com.breqk.shortform.budget.BudgetState;
-import com.breqk.shortform.budget.BudgetHeartbeat;
-import com.breqk.shortform.budget.HomeFeedCounter;
-import com.breqk.shortform.intervention.InterventionOverlay;
-import com.breqk.shortform.intervention.ShortFormStateMachine;
-import com.breqk.uninstall.UninstallLockOverlay;
-import com.breqk.uninstall.UninstallScreenDetector;
+import com.Break.prefs.BreakPrefs;
+import com.Break.service.BreakVpnService;
+import com.Break.shortform.AppEventRouter;
+import com.Break.shortform.FrameworkClassFilter;
+import com.Break.shortform.FullScreenCheck;
+import com.Break.shortform.detection.InstagramDetector;
+import com.Break.shortform.platform.PlatformRegistry;
+import com.Break.shortform.platform.instagram.InstagramViewIds;
+import com.Break.shortform.platform.youtube.YouTubeViewIds;
+import com.Break.shortform.detection.ShortFormDetector;
+import com.Break.shortform.detection.YouTubeDetector;
+import com.Break.shortform.budget.BudgetState;
+import com.Break.shortform.budget.BudgetHeartbeat;
+import com.Break.shortform.budget.HomeFeedCounter;
+import com.Break.shortform.metrics.HomeFeedScrollMeter;
+import com.Break.shortform.intervention.InterventionOverlay;
+import com.Break.shortform.intervention.ShortFormStateMachine;
+import com.Break.uninstall.UninstallLockOverlay;
+import com.Break.uninstall.UninstallScreenDetector;
 
 import java.util.List;
 
@@ -196,7 +197,7 @@ public class ReelsInterventionService extends AccessibilityService {
     private YouTubeDetector   youtubeDetector;
 
     // lastYtTreeDump and YT_TREE_DUMP_INTERVAL_MS have been moved to YouTubeDetector
-    // (com.breqk.reels.detection.YouTubeDetector) as part of Step 2 refactor.
+    // (com.Break.reels.detection.YouTubeDetector) as part of Step 2 refactor.
 
     // --- Reels state persistence (shared with AppUsageMonitor) ---
     private static final String PREF_IS_IN_REELS = "is_in_reels";
@@ -205,12 +206,19 @@ public class ReelsInterventionService extends AccessibilityService {
 
     private BudgetState budgetState;
     private BudgetHeartbeat budgetHeartbeat;
+    private SharedPreferences.OnSharedPreferenceChangeListener budgetConfigListener;
 
     // --- Home feed scroll counter ---
     // In-memory; resets when user leaves Instagram. Independent of BudgetState.
     private final HomeFeedCounter homeFeedCounter = new HomeFeedCounter();
     // Separate debounce timestamp so home feed scrolls don't share state with Reels.
     private long lastFeedScrollTimestamp = 0;
+
+    // --- Home feed scroll meter (pure measurement) ---
+    // Counts posts-passed + pixel distance on the Instagram home feed ONLY.
+    // Logs under dedicated tag FEED_SCROLL; never triggers an intervention.
+    // Reset alongside homeFeedCounter (app-switch, entering Reels, onInterrupt).
+    private final HomeFeedScrollMeter homeFeedScrollMeter = new HomeFeedScrollMeter();
 
     // =========================================================================
     // Service lifecycle
@@ -258,8 +266,31 @@ public class ReelsInterventionService extends AccessibilityService {
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
         budgetState       = new BudgetState(this);
-        budgetState.load(BreqkPrefs.get(this));
-        budgetHeartbeat   = new BudgetHeartbeat(budgetState, mainHandler, BreqkPrefs.get(this), new BudgetHeartbeat.HeartbeatCallback() {
+        budgetState.load(BreakPrefs.get(this));
+
+        // Reload budget config immediately when allowance/window changes so the
+        // enforcement uses the new cap without a service restart.  If the user is
+        // actively in Reels and the new allowance is already exceeded, fire the
+        // lock-in overlay right away.
+        budgetConfigListener = (prefs, key) -> {
+            if (BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES.equals(key)
+                    || BreakPrefs.KEY_SCROLL_WINDOW_MINUTES.equals(key)
+                    || BreakPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT.equals(key)) {
+                budgetState.reloadFromPrefs(prefs);
+                long now = System.currentTimeMillis();
+                if (budgetState.isExhausted(now)
+                        && stateMachine.isInReels()
+                        && interventionOverlay != null
+                        && !interventionOverlay.isShowing()) {
+                    String pkg = prefs.getString(PREF_IS_IN_REELS_PACKAGE, "");
+                    Log.i(TAG, "[BUDGET] Config change — budget now exhausted while in Reels → immediate intervention for " + pkg);
+                    triggerIntervention(pkg);
+                }
+            }
+        };
+        BreakPrefs.get(this).registerOnSharedPreferenceChangeListener(budgetConfigListener);
+
+        budgetHeartbeat   = new BudgetHeartbeat(budgetState, mainHandler, BreakPrefs.get(this), new BudgetHeartbeat.HeartbeatCallback() {
             // Counts consecutive strict-detection failures while the overlay is showing.
             // Allows 1 glitch tick before dismissing (resets to 0 on any success).
             private int stickyFailCount = 0;
@@ -278,7 +309,7 @@ public class ReelsInterventionService extends AccessibilityService {
                     String rootPkgStr = rootPkg != null ? rootPkg.toString() : "";
 
                     // Our own overlay window is active — the user is still beneath it in the Shorts app.
-                    if ("com.breqk".equals(rootPkgStr)) {
+                    if ("com.Break".equals(rootPkgStr)) {
                         root.recycle();
                         stickyFailCount = 0;
                         Log.d(TAG, "[STICKY-FIX-HEARTBEAT] own overlay is active window -> true");
@@ -336,8 +367,8 @@ public class ReelsInterventionService extends AccessibilityService {
             }
         });
 
-        // Log browser-filter startup under BROWSER_WATCH tag (merged service).
-        BrowserBarContentFilter.logStandaloneServiceConnected(this);
+        // Log browser-filter readiness under BROWSER_WATCH (unified service).
+        BrowserBarContentFilter.logBrowserFilterReady(this);
 
         Log.d(TAG, "=== ReelsInterventionService CONNECTED (unified: Reels + Browser) ===");
         Log.d(TAG, "  watching (budget): " + PKG_INSTAGRAM + ", " + PKG_YOUTUBE);
@@ -392,10 +423,10 @@ public class ReelsInterventionService extends AccessibilityService {
             // [STICKY-FIX] If the intervention overlay is currently visible, ignore ALL
             // app-switch events regardless of source. The overlay must only be dismissed
             // by explicit user action (Lock In / Take a Break buttons) or a budget window
-            // rollover — never by ambient window-state events from the launcher, Breqk's
+            // rollover — never by ambient window-state events from the launcher, Break's
             // own WindowManager attachment, or any other background package.
             // Without this guard, the overlay disappears ~1s after appearing because the
-            // overlay's own attachment fires TYPE_WINDOW_STATE_CHANGED with com.breqk (or
+            // overlay's own attachment fires TYPE_WINDOW_STATE_CHANGED with com.Break (or
             // the home launcher behind it), which was previously treated as a real app switch.
             if (interventionOverlay != null && interventionOverlay.isShowing()) {
                 Log.d(TAG, "[STICKY-FIX] Suppressed app-switch reset from pkg=" + packageName
@@ -428,7 +459,7 @@ public class ReelsInterventionService extends AccessibilityService {
                 // (~0ms) than the 1s polling loop in AppUsageMonitor, so we can proactively
                 // dismiss any delay overlay here instead of waiting for the next poll tick.
                 Log.i(TAG, "[HOME_DISMISS] Sending DISMISS_OVERLAY intent to MyVpnService for newPkg=" + packageName);
-                Intent dismissIntent = new Intent(this, BreqkVpnService.class);
+                Intent dismissIntent = new Intent(this, BreakVpnService.class);
                 dismissIntent.setAction("DISMISS_OVERLAY");
                 try {
                     startService(dismissIntent);
@@ -451,6 +482,7 @@ public class ReelsInterventionService extends AccessibilityService {
             if (!FrameworkClassFilter.isFrameworkClass(homeFeedSwitchClass)
                     && !frameworkClassFilter.isSystemOverlayPackage(packageName, this, TAG)) {
                 homeFeedCounter.reset();
+                homeFeedScrollMeter.reset("app-switch");
                 lastFeedScrollTimestamp = 0;
                 Log.d(TAG, "[HOME_FEED] app switch to pkg=" + packageName + " → counter reset");
             }
@@ -467,7 +499,7 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         // ── Uninstall-screen detection (UNINSTALL_WATCH) ──────────────────────────────
-        // When the user opens Settings → Apps → Breqk → Uninstall, show a lock-in popup.
+        // When the user opens Settings → Apps → Break → Uninstall, show a lock-in popup.
         // We receive Settings events because packageNames filter is absent from the XML config.
         // Only scan on STATE_CHANGED or CONTENT_CHANGED to avoid reacting to scroll events.
         // Debounced to UNINSTALL_CHECK_DEBOUNCE_MS — Settings spams CONTENT_CHANGED.
@@ -475,7 +507,7 @@ public class ReelsInterventionService extends AccessibilityService {
             // Feature is opt-in. If the user hasn't enabled deletion prevention in
             // Customize, never inspect Settings or show the lock screen. Dismiss any
             // stale overlay defensively (e.g. setting was just turned off).
-            if (!BreqkPrefs.isUninstallLockEnabled(this)) {
+            if (!BreakPrefs.isUninstallLockEnabled(this)) {
                 if (uninstallOverlay != null && uninstallOverlay.isShowing()) {
                     uninstallOverlay.dismiss();
                 }
@@ -489,21 +521,21 @@ public class ReelsInterventionService extends AccessibilityService {
                 if (nowCheck - lastUninstallCheckMs >= UNINSTALL_CHECK_DEBOUNCE_MS) {
                     lastUninstallCheckMs = nowCheck;
                     AccessibilityNodeInfo settingsRoot = getRootInActiveWindow();
-                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreqkUninstallScreen(settingsRoot);
+                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreakUninstallScreen(settingsRoot);
                     if (settingsRoot != null) settingsRoot.recycle();
 
                     // STICKY: once the lock overlay is up it must persist regardless
                     // of subsequent screen changes. The opaque overlay window itself
                     // makes getRootInActiveWindow() stop reporting the uninstall
                     // screen (onUninstallScreen flips to false), and adding the
-                    // overlay fires a STATE_CHANGED for pkg=com.breqk — previously
+                    // overlay fires a STATE_CHANGED for pkg=com.Break — previously
                     // both tore the overlay down ~140ms after show, before the
                     // mandatory 30s wait could elapse. We now ONLY show; the
-                    // overlay's own buttons ("Return to home" / "Keep Breqk" /
+                    // overlay's own buttons ("Return to home" / "Keep Break" /
                     // "delete anyway" after 30s) are the sole dismissal paths.
                     if (onUninstallScreen
                             && uninstallOverlay != null && !uninstallOverlay.isShowing()) {
-                        Log.i(TAG, "[UNINSTALL_WATCH] Breqk uninstall screen detected — showing lock overlay");
+                        Log.i(TAG, "[UNINSTALL_WATCH] Break uninstall screen detected — showing lock overlay");
                         uninstallOverlay.show(() -> performGlobalAction(GLOBAL_ACTION_HOME));
                     }
                 }
@@ -521,8 +553,8 @@ public class ReelsInterventionService extends AccessibilityService {
             return;
 
         // Per-app policy check: skip if reels_detection is disabled for this app.
-        // Uses BreqkPrefs.isFeatureEnabled() which resolves active mode overrides → base policy.
-        boolean reelsEnabled = BreqkPrefs.isFeatureEnabled(this, packageName, BreqkPrefs.FEATURE_REELS_DETECTION);
+        // Uses BreakPrefs.isFeatureEnabled() which resolves active mode overrides → base policy.
+        boolean reelsEnabled = BreakPrefs.isFeatureEnabled(this, packageName, BreakPrefs.FEATURE_REELS_DETECTION);
         Log.i(TAG, "[INTERCEPT_DECISION] pkg=" + packageName + " reels_detection=" + reelsEnabled);
         if (!reelsEnabled) {
             Log.d(TAG, "[POLICY] reels_detection disabled for " + packageName + " — skipping event");
@@ -541,10 +573,15 @@ public class ReelsInterventionService extends AccessibilityService {
         // Service interrupted (e.g. user revoked permission) — clean up any visible overlay
         dismissIntervention();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (budgetConfigListener != null) {
+            BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
+            budgetConfigListener = null;
+        }
         // Clear Reels state so AppUsageMonitor doesn't keep accumulating budget
         persistReelsState(false, "");
         if (budgetHeartbeat != null) budgetHeartbeat.stop();
         homeFeedCounter.reset();
+        homeFeedScrollMeter.reset("service-interrupt");
         // Cancel any pending deferred browser URL peeks (merged browser filter)
         BrowserBarContentFilter.cancelDeferredCallbacks();
         // Destroy AppEventRouter subsystems (LaunchInterceptor + ContentFilter)
@@ -559,6 +596,10 @@ public class ReelsInterventionService extends AccessibilityService {
     public void onDestroy() {
         BrowserBarContentFilter.cancelDeferredCallbacks();
         if (uninstallOverlay != null) uninstallOverlay.dismiss();
+        if (budgetConfigListener != null) {
+            BreakPrefs.get(this).unregisterOnSharedPreferenceChangeListener(budgetConfigListener);
+            budgetConfigListener = null;
+        }
         super.onDestroy();
         Log.d(TAG, "onDestroy: browser deferred callbacks cancelled, uninstall overlay dismissed");
     }
@@ -749,8 +790,11 @@ public class ReelsInterventionService extends AccessibilityService {
                             + "' is framework class -- skipping (background shorts player overlay)");
                     slowResult = ShortFormDetector.DetectResult.notDetected();
                 } else if (stateMachine.isInReels()) {
-                    // Already confirmed in Shorts -- strict detection avoids bottom-nav false positives.
-                    slowResult = youtubeDetector.detectStrict(root);
+                    // Already confirmed in Shorts — use full detect() (Tier 1+2+3) so that
+                    // Tier 3 text scan can confirm we're still in Shorts when Tier 1/2 view IDs
+                    // are stale (YouTube updates them frequently). Tier 3 guards against the
+                    // bottom-nav "Shorts" tab via bounds check in scanNodeForShortsText().
+                    slowResult = youtubeDetector.detect(root);
                 } else {
                     slowResult = youtubeDetector.detect(root);
                 }
@@ -766,6 +810,16 @@ public class ReelsInterventionService extends AccessibilityService {
             if (stateMachine.isInReels()) {
                 Log.d(TAG, "Scroll outside Reels/Shorts — resetting state");
                 resetReelsState();
+            }
+
+            // [FEED_SCROLL] Pure measurement of Instagram home-feed scrolling
+            // (posts passed + pixel distance). Runs UNCONDITIONALLY for Instagram
+            // scroll events — independent of the intervention/free-break gating
+            // below — so the metrics reflect all home-feed scrolling. The meter
+            // itself confirms the scroll source is the home-feed RecyclerView.
+            if (packageName.equals(PKG_INSTAGRAM)
+                    && eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+                meterHomeFeedScroll(event);
             }
 
             // [HOME_FEED] Check if this is a scroll on the Instagram home feed.
@@ -788,6 +842,7 @@ public class ReelsInterventionService extends AccessibilityService {
         // toward the feed limit, and the counter is fresh when they return to the feed.
         if (!stateMachine.isInReels()) {
             homeFeedCounter.reset();
+            homeFeedScrollMeter.reset("entered-reels");
             lastFeedScrollTimestamp = 0;
         }
 
@@ -877,7 +932,7 @@ public class ReelsInterventionService extends AccessibilityService {
 
 
     // hasShortsTextSignal() and scanNodeForShortsText() have been moved to
-    // YouTubeDetector (com.breqk.reels.detection.YouTubeDetector) as part of
+    // YouTubeDetector (com.Break.reels.detection.YouTubeDetector) as part of
     // Step 2 of the reels-intervention-refactor.
 
     // =========================================================================
@@ -886,7 +941,7 @@ public class ReelsInterventionService extends AccessibilityService {
     //
     // APP_SWITCH_IGNORE_PACKAGES, isAndroidFrameworkClass(), and
     // isSystemOverlayPackage() have been moved to FrameworkClassFilter
-    // (com.breqk.reels.FrameworkClassFilter) as part of Step 1 of the
+    // (com.Break.reels.FrameworkClassFilter) as part of Step 1 of the
     // reels-intervention-refactor. The `frameworkClassFilter` instance field above
     // replaces both the static array and the private helper methods.
     //
@@ -971,6 +1026,38 @@ public class ReelsInterventionService extends AccessibilityService {
      *
      * Log filter: adb logcat -s REELS_WATCH | findstr "HOME_FEED"
      */
+    /**
+     * [FEED_SCROLL] Pure-measurement hook: feeds home-feed scroll events to the
+     * HomeFeedScrollMeter. Does NOT trigger any intervention.
+     *
+     * Strictness: only events whose source view ID is the home-feed RecyclerView
+     * ({@link InstagramViewIds#HOME_FEED_RECYCLER_ID}) are measured. Reels,
+     * Explore, DMs and Stories use different view IDs and are ignored here — this
+     * is what guarantees "home page only" tracking.
+     *
+     * Log filter: adb logcat -s FEED_SCROLL
+     */
+    private void meterHomeFeedScroll(AccessibilityEvent event) {
+        AccessibilityNodeInfo source = event.getSource();
+        if (source == null) return;
+
+        String viewId = source.getViewIdResourceName();
+        source.recycle();
+
+        Log.d("FEED_SCROLL", "[HOME_FEED_SOURCE] viewId=" + viewId);
+
+        boolean isFeedScroll = false;
+        for (String feedId : InstagramViewIds.HOME_FEED_IDS) {
+            if (feedId.equals(viewId)) {
+                isFeedScroll = true;
+                break;
+            }
+        }
+        if (!isFeedScroll) return;
+
+        homeFeedScrollMeter.onScroll(event);
+    }
+
     private void checkHomeFeedScroll(AccessibilityEvent event, String packageName) {
         AccessibilityNodeInfo source = event.getSource();
         if (source == null) return;
@@ -997,22 +1084,16 @@ public class ReelsInterventionService extends AccessibilityService {
 
         if (!isFeedScroll) return;
 
-        // Debounce: same window as Reels (600ms) — one physical swipe fires multiple events.
-        long now = System.currentTimeMillis();
-        if (now - lastFeedScrollTimestamp < SCROLL_DEBOUNCE_MS) {
-            logVerbose("[HOME_FEED] DEBOUNCED (elapsed=" + (now - lastFeedScrollTimestamp) + "ms)");
-            return;
-        }
-        lastFeedScrollTimestamp = now;
+        SharedPreferences prefs = BreakPrefs.get(this);
+        int postsPassed = homeFeedScrollMeter.getPostsPassed();
+        int limit = homeFeedCounter.getLimit(prefs);
 
-        SharedPreferences prefs = BreqkPrefs.get(this);
-        boolean limitReached = homeFeedCounter.increment(prefs);
+        Log.d(TAG, "[HOME_FEED] postsPassed=" + postsPassed + " limit=" + limit);
 
-        if (limitReached) {
-            Log.i(TAG, "[HOME_FEED] Post limit reached (count=" + homeFeedCounter.getCount()
-                    + " limit=" + homeFeedCounter.getLimit(prefs)
-                    + ") — triggering intervention for " + packageName);
-            homeFeedCounter.reset(); // reset so repeated re-entries don't immediately re-trigger
+        if (postsPassed >= limit) {
+            Log.i(TAG, "[HOME_FEED] Post limit reached (postsPassed=" + postsPassed
+                    + " limit=" + limit + ") — triggering intervention for " + packageName);
+            homeFeedScrollMeter.reset("limit-reached");
             triggerIntervention(packageName);
         }
     }
@@ -1091,7 +1172,7 @@ public class ReelsInterventionService extends AccessibilityService {
      *                    inReels=false)
      */
     private void persistReelsState(boolean inReels, String packageName) {
-        SharedPreferences prefs = BreqkPrefs.get(this);
+        SharedPreferences prefs = BreakPrefs.get(this);
         prefs.edit()
                 .putBoolean(PREF_IS_IN_REELS, inReels)
                 .putLong(PREF_IS_IN_REELS_TIMESTAMP, System.currentTimeMillis())
@@ -1171,9 +1252,12 @@ public class ReelsInterventionService extends AccessibilityService {
         // (e.g., tapped Home tab, opened DMs, etc.)
         // For YouTube, use strict detection (Tier 1+2 only) to avoid the Tier 3 text
         // scan falsely confirming Shorts via the bottom-nav "Shorts" tab.
+        // Use full detect() for YouTube so Tier 3 text scan confirms Shorts when
+        // Tier 1/2 view IDs are stale. Tier 3 rejects the bottom-nav tab via bounds
+        // check, so this does not reintroduce the B15 false-positive.
         ShortFormDetector.DetectResult stillResult = expectedPackage.equals(PKG_INSTAGRAM)
                 ? instagramDetector.detect(root)
-                : youtubeDetector.detectStrict(root);
+                : youtubeDetector.detect(root);
         boolean inReels = stillResult.inShortForm;
         root.recycle();
 
@@ -1220,7 +1304,7 @@ public class ReelsInterventionService extends AccessibilityService {
 
 
     // dumpYouTubeTreeIfNeeded() and dumpNodeChildren() have been moved to
-    // YouTubeDetector (com.breqk.reels.detection.YouTubeDetector) as part of
+    // YouTubeDetector (com.Break.reels.detection.YouTubeDetector) as part of
     // Step 2 of the reels-intervention-refactor.
     // To trigger a tree dump, YouTubeDetector.dumpYouTubeTreeIfNeeded() is called
     // automatically from youtubeDetector.detect() when all tiers fail.

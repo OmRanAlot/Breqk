@@ -1,6 +1,7 @@
-package com.breqk.monitor;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.R;
+package com.Break.monitor;
+import com.Break.prefs.BreakPrefs;
+import com.Break.shortform.budget.ScrollBudgetLogic;
+import com.Break.R;
 
 import android.app.usage.UsageStats;
 import android.app.usage.UsageEvents;
@@ -22,6 +23,7 @@ import android.view.WindowManager;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.widget.Button;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.content.SharedPreferences;
 
@@ -45,7 +47,7 @@ import java.util.HashMap;
  *  - Poll UsageStats for current foreground app at 1s interval (battery-aware)
  *  - Show delay overlay for apps in the blocked list, unless explicitly allowed this session
  *  - Maintain a lightweight in-memory session allowlist (`allowedThisSession`)
- *  - Persist blocked apps in SharedPreferences (breqk_prefs)
+ *  - Persist blocked apps in SharedPreferences (Break_prefs)
  *
  * Notes on Performance & Battery:
  *  - Polling is kept at 1000ms to balance responsiveness and battery usage.
@@ -182,7 +184,7 @@ public class AppUsageMonitor {
         this.usageStatsManager = (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         this.handler = new Handler(Looper.getMainLooper());
-        this.cachedPrefs = BreqkPrefs.get(context);
+        this.cachedPrefs = BreakPrefs.get(context);
     }
 
     public void startMonitoring() {
@@ -248,8 +250,8 @@ public class AppUsageMonitor {
     }
 
     public void loadBlockedAppsFromPrefs() {
-        // Use BreqkPrefs.getBlockedApps() which returns a defensive copy
-        blockedApps = BreqkPrefs.getBlockedApps(context);
+        // Use BreakPrefs.getBlockedApps() which returns a defensive copy
+        blockedApps = BreakPrefs.getBlockedApps(context);
     }
 
     // main monitoring loop that checks the foreground app every second and shows
@@ -326,7 +328,8 @@ public class AppUsageMonitor {
 
                         // Safety timeout: auto-dismiss if overlay has been visible too long
                         if (overlayShownAt > 0) {
-                            long maxOverlayDurationMs = (customDelayTimeSeconds + 30) * 1000L;
+                            int safetyDelaySecs = BreakPrefs.getEffectiveDelaySecs(context, lastAppPackage);
+                            long maxOverlayDurationMs = (safetyDelaySecs + 30) * 1000L;
                             if ((nowDismiss - overlayShownAt) > maxOverlayDurationMs) {
                                 final String dismissedPkg = lastAppPackage;
                                 Log.w(TAG, "[SAFETY_DISMISS] Overlay for " + dismissedPkg
@@ -341,7 +344,7 @@ public class AppUsageMonitor {
                         String appName = getAppName(foregroundApp);
                         // Read per-app policy directly so the decision is always live, regardless
                         // of whether the in-memory blockedApps cache has been updated yet.
-                        boolean isBlocked = BreqkPrefs.isFeatureEnabled(context, foregroundApp, BreqkPrefs.FEATURE_APP_OPEN_INTERCEPT);
+                        boolean isBlocked = BreakPrefs.isFeatureEnabled(context, foregroundApp, BreakPrefs.FEATURE_APP_OPEN_INTERCEPT);
                         Log.i(TAG, "[INTERCEPT_DECISION] pkg=" + foregroundApp
                                 + " app_open_intercept=" + isBlocked
                                 + " allowedSession=" + allowedThisSession.contains(foregroundApp));
@@ -681,11 +684,12 @@ public class AppUsageMonitor {
                 /*
                  * FIND VIEW COMPONENTS
                  * --------------------
-                 * New design (7_overlay.html): breathing_circle, title, backButton, continueButton.
-                 * Removed from old design: message TextView, countdown TextView, progressBar.
+                 * New design (overlay image.png): countdownRing, title, subtitle, backButton, continueButton.
+                 * The center ring fills over the wait time; the pause glyph and label are static.
                  */
-                View breathingCircle = overlayView.findViewById(R.id.pulse_ring);
+                ProgressBar countdownRing = overlayView.findViewById(R.id.countdownRing);
                 TextView titleText = overlayView.findViewById(R.id.title);
+                TextView subtitleText = overlayView.findViewById(R.id.subtitle);
                 Button continueButton = overlayView.findViewById(R.id.continueButton);
                 Button backButton = overlayView.findViewById(R.id.backButton);
 
@@ -693,20 +697,41 @@ public class AppUsageMonitor {
                  * SET INITIAL TEXT
                  * ----------------
                  * Title: use customMessage if the user set one, else the default question.
-                 * Continue button: disabled, shows countdown text ("Continue (Wait Xs)").
+                 * Continue button: disabled, shows countdown text ("Wait (Xs)").
                  */
-                // Resolve per-app overrides, falling back to global values
-                org.json.JSONObject perAppSettings = BreqkPrefs.getAppInterceptSettings(context, packageName);
+                // Resolve per-app overrides, falling back to global Customize values
+                org.json.JSONObject perAppSettings = BreakPrefs.getAppInterceptSettings(context, packageName);
                 String effectiveMessage = perAppSettings.optString("message", "");
                 if (effectiveMessage.isEmpty()) effectiveMessage = (customMessage != null && !customMessage.isEmpty()) ? customMessage : "Is this intentional?";
-                int effectiveDelaySecs = perAppSettings.has("delay_secs") ? perAppSettings.optInt("delay_secs", customDelayTimeSeconds) : customDelayTimeSeconds;
+                int effectiveDelaySecs = BreakPrefs.getEffectiveDelaySecs(context, packageName);
+                boolean perAppDelay = BreakPrefs.hasPerAppInterceptSettings(context, packageName)
+                        && perAppSettings.has("delay_secs");
 
                 titleText.setText(effectiveMessage);
                 Log.d(TAG, "Overlay title set to: " + titleText.getText());
+                Log.d(TAG, "Overlay delay pkg=" + packageName + " secs=" + effectiveDelaySecs
+                        + " perAppOverride=" + perAppDelay);
 
-                // Continue button starts disabled; countdown text reflects effective delay
+                /*
+                 * SUBTITLE (optional secondary line under the title)
+                 * --------------------------------------------------
+                 * Empty by default — leave subtitleLine = "" to hide it. To show an
+                 * extra line (e.g. "You opened " + appName + "."), set subtitleLine to
+                 * any non-empty string and it will appear, muted, beneath the title.
+                 */
+                String subtitleLine = "";
+                if (subtitleText != null) {
+                    if (subtitleLine != null && !subtitleLine.isEmpty()) {
+                        subtitleText.setText(subtitleLine);
+                        subtitleText.setVisibility(View.VISIBLE);
+                    } else {
+                        subtitleText.setVisibility(View.GONE);
+                    }
+                }
+
+                // Continue button starts disabled; countdown label reflects effective delay
                 continueButton.setEnabled(false);
-                continueButton.setText("Continue (Wait " + effectiveDelaySecs + "s)");
+                continueButton.setText("Wait (" + effectiveDelaySecs + "s)");
                 Log.d(TAG, "Continue button initialised — will enable after " + effectiveDelaySecs + "s");
 
                 /*
@@ -738,12 +763,13 @@ public class AppUsageMonitor {
                 }
 
                 /*
-                 * START BREATHING ANIMATION & COUNTDOWN
-                 * --------------------------------------
-                 * Breathing: ObjectAnimator scales the circle 1.0→1.05→1.0 every 3s (infinite).
-                 * Countdown: enables the Continue button after customDelayTimeSeconds ticks.
+                 * START COUNTDOWN RING & BUTTON COUNTDOWN
+                 * ---------------------------------------
+                 * Ring:     ObjectAnimator fills the center ring 0→full over the wait seconds.
+                 * Countdown: enables the Continue button after effectiveDelaySecs ticks.
+                 * Both finish together so the visual loader matches the enforced wait time.
                  */
-                startRippleAnimation(breathingCircle);
+                startCountdownRing(countdownRing, effectiveDelaySecs);
                 startContinueCountdown(continueButton, effectiveDelaySecs);
 
                 /*
@@ -795,21 +821,23 @@ public class AppUsageMonitor {
     }
 
     /*
-     * RIPPLE ANIMATION
-     * -----------------
-     * The pulse_ring view expands outward and fades, creating a sonar/ripple effect
-     * around the static "Is this intentional?" text.
+     * COUNTDOWN RING ANIMATION
+     * ------------------------
+     * Animates the center ProgressBar (@id/countdownRing) so its white ring fills up
+     * from empty to full over the exact wait duration. This matches the time the user
+     * MUST wait before the Continue button enables — the ring and the button countdown
+     * finish together.
      *
-     * Animation: scale 1.0→1.8 + alpha 0.5→0.0, 2s, INFINITE RESTART.
-     * Since alpha ends at 0.0, the instant reset to (scale=1.0, alpha=0.5) at restart
-     * is invisible — there is no visible jump between cycles.
+     * Animation: progress 0 → max (10000) over (seconds × 1000)ms, LINEAR, no repeat.
+     * The progress drawable (circular_countdown.xml) renders the level as a clockwise
+     * sweep starting at 12 o'clock.
      *
-     * The animator is stored in breathingAnimator so it can be cancelled in removeOverlay()
-     * before the view is detached from WindowManager.
+     * The animator is stored in breathingAnimator (reused slot) so it is cancelled in
+     * removeOverlay() before the view is detached from WindowManager.
      */
-    private void startRippleAnimation(View ring) {
+    private void startCountdownRing(ProgressBar ring, int seconds) {
         if (ring == null) {
-            Log.w(TAG, "startRippleAnimation: ring view is null, skipping animation");
+            Log.w(TAG, "startCountdownRing: ring view is null, skipping animation");
             return;
         }
         // Cancel any leftover animator from a previous overlay session
@@ -817,24 +845,27 @@ public class AppUsageMonitor {
             breathingAnimator.cancel();
             breathingAnimator = null;
         }
-        // Expand outward (scale) and fade out (alpha) simultaneously
-        breathingAnimator = ObjectAnimator.ofPropertyValuesHolder(ring,
-                PropertyValuesHolder.ofFloat("scaleX", 1.0f, 1.8f),
-                PropertyValuesHolder.ofFloat("scaleY", 1.0f, 1.8f),
-                PropertyValuesHolder.ofFloat("alpha", 0.5f, 0.0f));
-        breathingAnimator.setDuration(2000); // 2s per ripple cycle
-        breathingAnimator.setRepeatCount(ObjectAnimator.INFINITE);
-        breathingAnimator.setRepeatMode(ObjectAnimator.RESTART); // jump-reset is invisible at alpha=0
-        breathingAnimator.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        // Guard against a zero/negative delay: show the ring already full.
+        int durationMs = Math.max(0, seconds) * 1000;
+        if (durationMs == 0) {
+            ring.setProgress(ring.getMax());
+            Log.d(TAG, "startCountdownRing: zero delay, ring set to full immediately");
+            return;
+        }
+        // Fill the ring from empty (0) to full (max) over the wait duration.
+        breathingAnimator = ObjectAnimator.ofInt(ring, "progress", 0, ring.getMax());
+        breathingAnimator.setDuration(durationMs);
+        breathingAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
         breathingAnimator.start();
-        Log.d(TAG, "startRippleAnimation: 2s ripple (scale 1.0→1.8, alpha 0.5→0) started");
+        Log.d(TAG, "startCountdownRing: ring filling 0→" + ring.getMax()
+                + " over " + durationMs + "ms");
     }
 
     /*
      * CONTINUE BUTTON COUNTDOWN
      * --------------------------
      * Counts down from `seconds` and updates the Continue button text each tick:
-     *   "Continue (Wait 3s)" → "Continue (Wait 2s)" → "Continue (Wait 1s)" → "Continue" [enabled]
+     *   "Wait (3s)" → "Wait (2s)" → "Wait (1s)" → "Continue" [enabled]
      *
      * When the countdown completes, the button is enabled and its text/color updated to
      * signal it is now tappable. Uses the class-level handler (main looper).
@@ -863,7 +894,7 @@ public class AppUsageMonitor {
 
                 if (remaining > 0) {
                     // Still counting — update button text
-                    String label = "Continue (Wait " + remaining + "s)";
+                    String label = "Wait (" + remaining + "s)";
                     continueButton.setText(label);
                     Log.d(TAG, "startContinueCountdown: " + remaining + "s remaining for " + lastAppPackage);
                     handler.postDelayed(this, 1000);
@@ -1177,7 +1208,7 @@ public class AppUsageMonitor {
      * Integer.MAX_VALUE means "show once per open".
      */
     private int getPerAppPopupDelayMinutes(String packageName) {
-        org.json.JSONObject perApp = BreqkPrefs.getAppInterceptSettings(context, packageName);
+        org.json.JSONObject perApp = BreakPrefs.getAppInterceptSettings(context, packageName);
         if (perApp.has("popup_delay_min")) {
             return perApp.optInt("popup_delay_min", popupDelayMinutes);
         }
@@ -1189,13 +1220,13 @@ public class AppUsageMonitor {
      * Called on startMonitoring() so user-customized values survive service restarts.
      */
     private void loadInterceptSettingsFromPrefs() {
-        String msg = cachedPrefs.getString(BreqkPrefs.KEY_DELAY_MESSAGE, null);
+        String msg = cachedPrefs.getString(BreakPrefs.KEY_DELAY_MESSAGE, null);
         if (msg != null && !msg.trim().isEmpty()) {
             customMessage = msg;
         }
-        int secs = cachedPrefs.getInt(BreqkPrefs.KEY_DELAY_TIME_SECONDS, BreqkPrefs.DEFAULT_DELAY_TIME_SECONDS);
+        int secs = cachedPrefs.getInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
         customDelayTimeSeconds = Math.max(5, Math.min(120, secs));
-        int delay = cachedPrefs.getInt(BreqkPrefs.KEY_POPUP_DELAY_MINUTES, BreqkPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+        int delay = cachedPrefs.getInt(BreakPrefs.KEY_POPUP_DELAY_MINUTES, BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES);
         // Allow sentinel (Integer.MAX_VALUE = once per open); otherwise clamp 0–60.
         popupDelayMinutes = (delay == Integer.MAX_VALUE) ? delay : Math.max(0, Math.min(60, delay));
         Log.d(TAG, "[LOAD_INTERCEPT] message='" + customMessage + "' delaySecs=" + customDelayTimeSeconds
@@ -1207,12 +1238,12 @@ public class AppUsageMonitor {
      * Called on startMonitoring() so settings survive app restarts.
      */
     private void loadScrollBudgetFromPrefs() {
-        scrollAllowanceMinutes = cachedPrefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreqkPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
-        scrollWindowMinutes = cachedPrefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, BreqkPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
+        scrollAllowanceMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, BreakPrefs.DEFAULT_SCROLL_ALLOWANCE_MINUTES);
+        scrollWindowMinutes = cachedPrefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, BreakPrefs.DEFAULT_SCROLL_WINDOW_MINUTES);
         // Restore in-progress window state (survives short service interruptions)
-        scrollTimeUsedMs = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_TIME_USED_MS, 0);
-        windowStartTime = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
-        budgetExhaustedAt = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
+        scrollTimeUsedMs = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_TIME_USED_MS, 0);
+        windowStartTime = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
+        budgetExhaustedAt = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
         Log.d(TAG, "[ScrollBudget] Loaded from prefs: allowance=" + scrollAllowanceMinutes +
                 "min window=" + scrollWindowMinutes + "min usedMs=" + scrollTimeUsedMs +
                 " windowStart=" + windowStartTime + " exhaustedAt=" + budgetExhaustedAt);
@@ -1224,9 +1255,9 @@ public class AppUsageMonitor {
      * reading prefs on every 1s tick.
      */
     private void syncScrollBudgetFromPrefs() {
-        scrollTimeUsedMs = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_TIME_USED_MS, 0);
-        windowStartTime = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
-        budgetExhaustedAt = cachedPrefs.getLong(BreqkPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
+        scrollTimeUsedMs = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_TIME_USED_MS, 0);
+        windowStartTime = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_WINDOW_START_TIME, 0);
+        budgetExhaustedAt = cachedPrefs.getLong(BreakPrefs.KEY_SCROLL_BUDGET_EXHAUSTED_AT, 0);
         Log.d(TAG, "[ScrollBudget] Synced from prefs: usedMs=" + scrollTimeUsedMs +
                 " windowStart=" + windowStartTime + " exhaustedAt=" + budgetExhaustedAt);
     }
@@ -1243,6 +1274,8 @@ public class AppUsageMonitor {
     public void setScrollBudget(int allowanceMin, int windowMin) {
         this.scrollAllowanceMinutes = Math.max(0, allowanceMin);
         this.scrollWindowMinutes = Math.max(15, windowMin);
+        // Sync runtime state immediately so getScrollBudgetStatus reflects the new cap.
+        syncScrollBudgetFromPrefs();
         Log.d(TAG, "[ScrollBudget] Budget config updated in-memory: allowance=" + scrollAllowanceMinutes +
                 "min window=" + scrollWindowMinutes + "min");
     }
@@ -1254,24 +1287,28 @@ public class AppUsageMonitor {
      * Fields: allowanceMinutes, windowMinutes, usedMs, canScroll, nextScrollAtMs, remainingMs
      */
     public com.facebook.react.bridge.WritableMap getScrollBudgetStatus() {
-        com.facebook.react.bridge.WritableMap status = com.facebook.react.bridge.Arguments.createMap();
-        long allowanceMs = scrollAllowanceMinutes * 60 * 1000L;
-        boolean canScroll = !isScrollBudgetExhausted();
-        long remainingMs = canScroll ? Math.max(0, allowanceMs - scrollTimeUsedMs) : 0;
-        long nextScrollAtMs = isScrollBudgetExhausted() ? (windowStartTime + scrollWindowMinutes * 60 * 1000L) : 0;
+        ScrollBudgetLogic.Status s = ScrollBudgetLogic.derive(
+                scrollAllowanceMinutes, scrollWindowMinutes,
+                scrollTimeUsedMs, windowStartTime, budgetExhaustedAt,
+                System.currentTimeMillis());
 
+        com.facebook.react.bridge.WritableMap status = com.facebook.react.bridge.Arguments.createMap();
         status.putInt("allowanceMinutes", scrollAllowanceMinutes);
         status.putInt("windowMinutes", scrollWindowMinutes);
-        status.putDouble("usedMs", scrollTimeUsedMs);
-        status.putBoolean("canScroll", canScroll);
-        status.putDouble("nextScrollAtMs", nextScrollAtMs);
-        status.putDouble("remainingMs", remainingMs);
+        status.putDouble("usedMs", s.usedMs);
+        status.putBoolean("canScroll", s.canScroll);
+        status.putDouble("nextScrollAtMs", s.nextScrollAtMs);
+        status.putDouble("remainingMs", s.remainingMs);
         return status;
     }
 
     /** Returns true if the scroll budget has been exhausted for the current window. */
     public boolean isScrollBudgetExhausted() {
-        return budgetExhaustedAt > 0;
+        ScrollBudgetLogic.Status s = ScrollBudgetLogic.derive(
+                scrollAllowanceMinutes, scrollWindowMinutes,
+                scrollTimeUsedMs, windowStartTime, budgetExhaustedAt,
+                System.currentTimeMillis());
+        return !s.canScroll;
     }
 
     /**
@@ -1294,9 +1331,9 @@ public class AppUsageMonitor {
      * @return true if user is actively viewing Reels/Shorts in foregroundApp
      */
     private boolean isCurrentlyInReels(String foregroundApp) {
-        boolean inReels = cachedPrefs.getBoolean(BreqkPrefs.KEY_IS_IN_REELS, false);
-        long timestamp = cachedPrefs.getLong(BreqkPrefs.KEY_IS_IN_REELS_TIMESTAMP, 0);
-        String reelsPackage = cachedPrefs.getString(BreqkPrefs.KEY_IS_IN_REELS_PACKAGE, "");
+        boolean inReels = cachedPrefs.getBoolean(BreakPrefs.KEY_IS_IN_REELS, false);
+        long timestamp = cachedPrefs.getLong(BreakPrefs.KEY_IS_IN_REELS_TIMESTAMP, 0);
+        String reelsPackage = cachedPrefs.getString(BreakPrefs.KEY_IS_IN_REELS_PACKAGE, "");
 
         // Not in Reels at all
         if (!inReels) {

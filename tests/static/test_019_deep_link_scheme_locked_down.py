@@ -3,25 +3,25 @@ test_019_deep_link_scheme_locked_down.py
 =========================================
 
 WHAT:
-  The only deep-link <intent-filter> on MainActivity uses scheme="breqk"
+  The only deep-link <intent-filter> on MainActivity uses scheme="Break"
   AND a non-empty host. No wildcard hosts. No http/https deep links
   accepted by MainActivity.
 
 WHY:
   An http/https intent-filter would make the app a candidate handler for
   web URLs, causing Android disambiguation dialogs and potential phishing
-  attack surface. The breqk:// scheme with explicit host is safe because
+  attack surface. The Break:// scheme with explicit host is safe because
   only our widget and internal code generate those URIs.
 
 HOW:
   1. Parse AndroidManifest.xml.
   2. Find MainActivity.
   3. For each <intent-filter> with a <data> element:
-     a. Assert scheme is "breqk" (not http/https).
+     a. Assert scheme is "Break" (not http/https).
      b. Assert host is non-empty (no wildcard).
 
 OUTPUTS:
-  PASS — all deep-link filters use scheme="breqk" with non-empty host.
+  PASS — all deep-link filters use scheme="Break" with non-empty host.
   FAIL — an intent-filter uses http/https scheme or has empty/missing host.
   WARN — (not used).
   SKIP — no deep-link intent-filters found on MainActivity.
@@ -47,7 +47,7 @@ from _harness import (
 from _paths import MANIFEST
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
-ALLOWED_SCHEMES = {"breqk"}
+ALLOWED_SCHEMES = {"Break"}
 TEST_ID = Path(__file__).stem
 
 
@@ -100,7 +100,7 @@ def main() -> None:
                 f"{len(violations)} deep-link violation(s) — see VIOLATION lines above",
             )
         else:
-            result(PASS, "all deep-link filters use 'breqk' scheme with explicit host")
+            result(PASS, "all deep-link filters use 'Break' scheme with explicit host")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-package com.breqk.bridge;
+package com.Break.bridge;
 
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.NativeModule;
@@ -10,12 +10,12 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * BreqkReactPackage
+ * BreakReactPackage
  * ------------------
  * ReactPackage registration for custom native modules exposed to React Native.
  * Integration point connecting VPNModule and SettingsModule to the JS bridge.
  */
-public class BreqkReactPackage implements ReactPackage {
+public class BreakReactPackage implements ReactPackage {
 
     @Override
     public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {

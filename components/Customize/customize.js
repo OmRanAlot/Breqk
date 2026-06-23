@@ -1,5 +1,5 @@
 /**
- * customize.js — Customize Screen (Tether light design system)
+ * customize.js — Customize Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Settings screen layout:
  *   • Sticky header: back button + "Customize" title
@@ -37,6 +37,13 @@ import Slider from '@react-native-community/slider';
 import Svg, { Path } from 'react-native-svg';
 import BlockerInterstitial from '../BlockerInterstitial/BlockerInterstitial';
 import useDebouncedSaver from './useDebouncedSaver';
+import {
+  deriveBudgetStatus,
+  inferWindowStartMs,
+} from '../shared/scrollBudgetStatus';
+import useSettingsLock from './useSettingsLock';
+import SettingsLockGate from './SettingsLockGate';
+import SettingsLockSection from './SettingsLockSection';
 
 // Debounce window for Customize writes. Rapid toggles coalesce into a single
 // commit after this quiet period; any navigate-away / background / unmount
@@ -45,7 +52,7 @@ const SAVE_DEBOUNCE_MS = 7000;
 
 const { VPNModule, SettingsModule } = NativeModules;
 
-// ─── Tether Light Palette ─────────────────────────────────────────────────────
+// ─── Break Light Palette ─────────────────────────────────────────────────────
 const L = {
   bg: '#FAFAFA',
   charcoal: '#1A1A1A',
@@ -94,11 +101,11 @@ const Customize = ({ navigation }) => {
 
   // ── Browser content filter state ─────────────────────────────────────────
   const [contentFilterEnabled, setContentFilterEnabled] = useState(false);
-  const [contentFilterServiceActive, setContentFilterServiceActive] =
+  const [accessibilityServiceActive, setAccessibilityServiceActive] =
     useState(false);
 
   // ── Deletion-prevention (uninstall lock) state ───────────────────────────
-  // Opt-in. When on, a 30s lock screen appears if the user opens the Breqk
+  // Opt-in. When on, a 30s lock screen appears if the user opens the Break
   // uninstall screen in Android Settings.
   const [uninstallLockEnabled, setUninstallLockEnabled] = useState(false);
   // Confirmation modal shown before enabling deletion prevention, so the user
@@ -128,6 +135,12 @@ const Customize = ({ navigation }) => {
   const savedTimer = useRef(null);
   const [savedLabel, setSavedLabel] = useState('✓  Saved');
 
+  // Settings Change Lock for the GLOBAL scope. Any edit on this screen marks the
+  // scope dirty; leaving the screen (blur/background/unmount) then starts the lock
+  // if the feature is enabled. See useSettingsLock.
+  const settingsLock = useSettingsLock('global', navigation);
+  const { markDirty: markSettingsDirty } = settingsLock;
+
   // Called every time the user taps a toggle that gets scheduled.
   // Keeps the pill visible ("Saving…") until the commit fires.
   const showSavedPending = useCallback(() => {
@@ -137,7 +150,8 @@ const Customize = ({ navigation }) => {
     }
     setSavedLabel('Saving…');
     savedOpacity.setValue(1);
-  }, [savedOpacity]);
+    markSettingsDirty();
+  }, [savedOpacity, markSettingsDirty]);
 
   // Called by the saver's onCommit hook after pending writes flush to native.
   // Flips the label to "✓ Saved" and runs the fade-out animation.
@@ -156,7 +170,8 @@ const Customize = ({ navigation }) => {
         useNativeDriver: true,
       }).start();
     }, 1800);
-  }, [savedOpacity]);
+    markSettingsDirty();
+  }, [savedOpacity, markSettingsDirty]);
 
   // Legacy alias: immediate writes (e.g. scroll budget buttons, preview message)
   // that don't go through the debounced saver still use the one-shot pill.
@@ -225,8 +240,8 @@ const Customize = ({ navigation }) => {
         console.log('[Customize] content_filter_enabled=', enabled);
       });
       SettingsModule.isContentFilterServiceEnabled(active => {
-        setContentFilterServiceActive(active);
-        console.log('[Customize] content_filter_service_active=', active);
+        setAccessibilityServiceActive(active);
+        console.log('[Customize] accessibility_service_active=', active);
       });
 
       // Load deletion-prevention state
@@ -261,11 +276,32 @@ const Customize = ({ navigation }) => {
 
   const adjustAllowance = useCallback(
     delta => {
-      const next = Math.max(0, Math.min(30, scrollAllowance + delta));
+      const next = Math.max(0, Math.min(15, scrollAllowance + delta));
       setScrollAllowance(next);
-      VPNModule.setScrollBudget(next, scrollWindow).catch(e =>
-        console.warn('[Customize] setScrollBudget failed:', e),
-      );
+
+      // Optimistic UI: immediately derive the new status from current runtime
+      // data so the display updates before the native poll resolves.
+      setBudgetStatus(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          allowanceMinutes: next,
+          ...deriveBudgetStatus({
+            allowanceMinutes: next,
+            windowMinutes: scrollWindow,
+            usedMs: prev.usedMs,
+            windowStartMs: inferWindowStartMs(prev),
+            exhaustedAtMs: prev.canScroll
+              ? 0
+              : prev.nextScrollAtMs - scrollWindow * 60_000,
+          }),
+        };
+      });
+
+      // Fire native update in the background — no await so the UI doesn't block.
+      VPNModule.setScrollBudget(next, scrollWindow)
+        .then(() => VPNModule.getScrollBudgetStatus().then(setBudgetStatus))
+        .catch(e => console.warn('[Customize] setScrollBudget failed:', e));
       SettingsModule.saveScrollBudget(next, scrollWindow);
       console.log('[Customize] scroll allowance →', next);
       showSaved();
@@ -275,11 +311,29 @@ const Customize = ({ navigation }) => {
 
   const adjustWindow = useCallback(
     delta => {
-      const next = Math.max(15, Math.min(120, scrollWindow + delta));
+      const next = Math.max(45, Math.min(240, scrollWindow + delta));
       setScrollWindow(next);
-      VPNModule.setScrollBudget(scrollAllowance, next).catch(e =>
-        console.warn('[Customize] setScrollBudget failed:', e),
-      );
+
+      setBudgetStatus(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          windowMinutes: next,
+          ...deriveBudgetStatus({
+            allowanceMinutes: scrollAllowance,
+            windowMinutes: next,
+            usedMs: prev.usedMs,
+            windowStartMs: inferWindowStartMs(prev),
+            exhaustedAtMs: prev.canScroll
+              ? 0
+              : prev.nextScrollAtMs - next * 60_000,
+          }),
+        };
+      });
+
+      VPNModule.setScrollBudget(scrollAllowance, next)
+        .then(() => VPNModule.getScrollBudgetStatus().then(setBudgetStatus))
+        .catch(e => console.warn('[Customize] setScrollBudget failed:', e));
       SettingsModule.saveScrollBudget(scrollAllowance, next);
       console.log('[Customize] scroll window →', next);
       showSaved();
@@ -340,7 +394,7 @@ const Customize = ({ navigation }) => {
         // After enabling, re-check whether the accessibility service is active
         if (value) {
           SettingsModule.isContentFilterServiceEnabled(active => {
-            setContentFilterServiceActive(active);
+            setAccessibilityServiceActive(active);
           });
         }
       } catch (e) {
@@ -370,7 +424,9 @@ const Customize = ({ navigation }) => {
     value => {
       // Turning on requires reading the info modal first; turning off is direct.
       if (value) {
-        console.log('[Customize] uninstall_lock enable requested — showing info');
+        console.log(
+          '[Customize] uninstall_lock enable requested — showing info',
+        );
         setDeletionInfoVisible(true);
         return;
       }
@@ -418,205 +474,245 @@ const Customize = ({ navigation }) => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Scroll Budget ─────────────────────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Scroll Budget</Text>
+        {/* ── Settings Change Lock: read-only gate while the global scope is locked ── */}
+        {settingsLock.locked ? (
+          <SettingsLockGate remainingMs={settingsLock.remainingMs} />
+        ) : (
+          <>
+            {/* ── Scroll Budget ─────────────────────────────────────────── */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Scroll Budget</Text>
 
-          <View style={styles.budgetControls}>
-            <View style={styles.stepperGroup}>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => adjustAllowance(-1)}
-                accessibilityRole="button"
-                accessibilityLabel="Decrease allowance"
-              >
-                <Text style={styles.stepperBtnText}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.stepperValue}>{scrollAllowance}m</Text>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => adjustAllowance(1)}
-                accessibilityRole="button"
-                accessibilityLabel="Increase allowance"
-              >
-                <Text style={styles.stepperBtnText}>+</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.budgetDivider}>per</Text>
-
-            <View style={styles.stepperGroup}>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => adjustWindow(-15)}
-                accessibilityRole="button"
-                accessibilityLabel="Decrease window"
-              >
-                <Text style={styles.stepperBtnText}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.stepperValue}>{scrollWindow}m</Text>
-              <TouchableOpacity
-                style={styles.stepperBtn}
-                onPress={() => adjustWindow(15)}
-                accessibilityRole="button"
-                accessibilityLabel="Increase window"
-              >
-                <Text style={styles.stepperBtnText}>+</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {scrollAllowance === 0 && (
-            <Text style={styles.budgetWarning}>
-              0m allowance = Reels blocked immediately on every attempt.
-            </Text>
-          )}
-
-          {/* Live status row */}
-          {budgetStatus &&
-            (() => {
-              const canScroll = budgetStatus.canScroll;
-              const statusColor = canScroll ? '#4CAF50' : '#E53935';
-              const statusLabel = canScroll
-                ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
-                : `Scroll again in ${formatBudgetTime(
-                    budgetStatus.nextScrollAtMs - Date.now(),
-                  )}`;
-              const filledRatio = canScroll
-                ? Math.min(
-                    1,
-                    budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0,
-                  )
-                : 1;
-              return (
-                <View style={styles.budgetStatusSection}>
-                  <View style={styles.budgetStatusRow}>
-                    <View
-                      style={[
-                        styles.budgetDot,
-                        { backgroundColor: statusColor },
-                      ]}
-                    />
-                    <Text
-                      style={[styles.budgetStatusText, { color: statusColor }]}
-                    >
-                      {statusLabel}
-                    </Text>
-                  </View>
-                  <View style={styles.budgetProgressBg}>
-                    <View
-                      style={{
-                        flex: filledRatio,
-                        backgroundColor: statusColor,
-                        borderRadius: 2,
-                      }}
-                    />
-                    <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
-                  </View>
+              <View style={styles.budgetControls}>
+                <View style={styles.stepperGroup}>
+                  <TouchableOpacity
+                    style={styles.stepperBtn}
+                    onPress={() => adjustAllowance(-1)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Decrease allowance"
+                  >
+                    <Text style={styles.stepperBtnText}>−</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepperValue}>{scrollAllowance}m</Text>
+                  <TouchableOpacity
+                    style={styles.stepperBtn}
+                    onPress={() => adjustAllowance(1)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Increase allowance"
+                  >
+                    <Text style={styles.stepperBtnText}>+</Text>
+                  </TouchableOpacity>
                 </View>
-              );
-            })()}
-        </View>
 
-        {/* ── Intercept Message ────────────────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Intercept Message</Text>
+                <Text style={styles.budgetDivider}>per</Text>
 
-          <TextInput
-            style={styles.messageInput}
-            value={interceptMessage}
-            onChangeText={setInterceptMessage}
-            onSubmitEditing={handleMessageSubmit}
-            placeholder="Enter message..."
-            placeholderTextColor={L.muted}
-            returnKeyType="done"
-            accessibilityLabel="Intercept message"
-          />
+                <View style={styles.stepperGroup}>
+                  <TouchableOpacity
+                    style={styles.stepperBtn}
+                    onPress={() => adjustWindow(-15)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Decrease window"
+                  >
+                    <Text style={styles.stepperBtnText}>−</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepperValue}>{scrollWindow}m</Text>
+                  <TouchableOpacity
+                    style={styles.stepperBtn}
+                    onPress={() => adjustWindow(15)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Increase window"
+                  >
+                    <Text style={styles.stepperBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
 
-          <View style={styles.durationHeader}>
-            <Text style={styles.durationLabel}>Forced Pause Duration</Text>
-            <Text style={styles.durationValue}>{sliderValue} seconds</Text>
-          </View>
+              {scrollAllowance === 0 && (
+                <Text style={styles.budgetWarning}>
+                  0m allowance = Reels blocked immediately on every attempt.
+                </Text>
+              )}
 
-          <Slider
-            style={styles.slider}
-            minimumValue={1}
-            maximumValue={30}
-            step={1}
-            value={pauseDuration}
-            minimumTrackTintColor={L.charcoal}
-            maximumTrackTintColor={L.sliderTrack}
-            thumbTintColor={L.sliderThumb}
-            onValueChange={handleSliderChange}
-            onSlidingComplete={handleSliderComplete}
-            accessibilityLabel="Pause duration in seconds"
-          />
-
-          <View style={styles.sliderLabels}>
-            <Text style={styles.sliderRangeLabel}>1s</Text>
-            <Text style={styles.sliderRangeLabel}>30s</Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.previewButton}
-            activeOpacity={0.85}
-            onPress={() => {
-              console.log('[Customize] showing preview interstitial');
-              setPreviewVisible(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Preview intercept"
-          >
-            <Text style={styles.previewButtonText}>Preview Intercept</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ── Browser Content Filter ───────────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Browser Safety</Text>
-
-          <View style={styles.toggleRow}>
-            <View style={styles.toggleLabelGroup}>
-              <Text style={styles.toggleLabel}>Content filter</Text>
-              <Text style={styles.toggleCaption}>
-                Blocks listed domains in browsers. Uses a separate Accessibility
-                entry from Reels/Shorts; turn on both toggles if you want both
-                features.
-              </Text>
+              {/* Live status row */}
+              {budgetStatus &&
+                (() => {
+                  // Defensive guard: if remainingMs is 0 but canScroll is still true
+                  // (can happen briefly before native reconciliation), treat as exhausted.
+                  const canScroll =
+                    budgetStatus.canScroll && budgetStatus.remainingMs > 0;
+                  const statusColor = canScroll ? '#4CAF50' : '#E53935';
+                  const statusLabel = canScroll
+                    ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
+                    : `Scroll again in ${formatBudgetTime(
+                        budgetStatus.nextScrollAtMs - Date.now(),
+                      )}`;
+                  const filledRatio = canScroll
+                    ? Math.min(
+                        1,
+                        budgetStatus.usedMs / (scrollAllowance * 60 * 1000) ||
+                          0,
+                      )
+                    : 1;
+                  return (
+                    <View style={styles.budgetStatusSection}>
+                      <View style={styles.budgetStatusRow}>
+                        <View
+                          style={[
+                            styles.budgetDot,
+                            { backgroundColor: statusColor },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.budgetStatusText,
+                            { color: statusColor },
+                          ]}
+                        >
+                          {statusLabel}
+                        </Text>
+                      </View>
+                      <View style={styles.budgetProgressBg}>
+                        <View
+                          style={{
+                            flex: filledRatio,
+                            backgroundColor: statusColor,
+                            borderRadius: 2,
+                          }}
+                        />
+                        <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
+                      </View>
+                    </View>
+                  );
+                })()}
             </View>
-            <Switch
-              value={contentFilterEnabled}
-              onValueChange={handleContentFilterToggle}
-              trackColor={{ false: L.border, true: L.charcoal }}
-              thumbColor="#FFFFFF"
-              accessibilityLabel="Browser content filter"
-            />
-          </View>
 
-          {contentFilterEnabled && !contentFilterServiceActive && (
-            <TouchableOpacity
-              style={styles.permissionHint}
-              activeOpacity={0.75}
-              onPress={() => {
-                console.log(
-                  '[Customize] opening accessibility settings for unified service',
-                );
-                Linking.sendIntent(
-                  'android.settings.ACCESSIBILITY_SETTINGS',
-                ).catch(e =>
-                  console.warn('[Customize] openSettings error:', e),
-                );
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Grant accessibility permission for Breqk"
-            >
-              <Text style={styles.permissionHintText}>
-                ⚠ Enable the Breqk accessibility service — tap to open
-                Accessibility Settings
+            {/* ── Intercept Message ────────────────────────────────────── */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Intercept Message</Text>
+
+              <TextInput
+                style={styles.messageInput}
+                value={interceptMessage}
+                onChangeText={setInterceptMessage}
+                onSubmitEditing={handleMessageSubmit}
+                placeholder="Enter message..."
+                placeholderTextColor={L.muted}
+                returnKeyType="done"
+                accessibilityLabel="Intercept message"
+              />
+
+              <View style={styles.durationHeader}>
+                <Text style={styles.durationLabel}>Default Pause Duration</Text>
+                <Text style={styles.durationValue}>{sliderValue} seconds</Text>
+              </View>
+              <Text style={styles.toggleCaption}>
+                Applies to all apps unless you set a custom countdown on an
+                app&apos;s detail screen.
               </Text>
-            </TouchableOpacity>
-          )}
-        </View>
+
+              <Slider
+                style={styles.slider}
+                minimumValue={1}
+                maximumValue={30}
+                step={1}
+                value={pauseDuration}
+                minimumTrackTintColor={L.charcoal}
+                maximumTrackTintColor={L.sliderTrack}
+                thumbTintColor={L.sliderThumb}
+                onValueChange={handleSliderChange}
+                onSlidingComplete={handleSliderComplete}
+                accessibilityLabel="Pause duration in seconds"
+              />
+
+              <View style={styles.sliderLabels}>
+                <Text style={styles.sliderRangeLabel}>1s</Text>
+                <Text style={styles.sliderRangeLabel}>30s</Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.previewButton}
+                activeOpacity={0.85}
+                onPress={() => {
+                  console.log('[Customize] showing preview interstitial');
+                  setPreviewVisible(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Preview intercept"
+              >
+                <Text style={styles.previewButtonText}>Preview Intercept</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* ── Browser Content Filter ───────────────────────────────── */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Browser Safety</Text>
+
+              <View style={styles.toggleRow}>
+                <View style={styles.toggleLabelGroup}>
+                  <Text style={styles.toggleLabel}>Content filter</Text>
+                  <Text style={styles.toggleCaption}>
+                    Blocks listed domains in Chrome and other browsers. Requires
+                    the Break accessibility service (one toggle in system
+                    settings).
+                  </Text>
+                </View>
+                <Switch
+                  value={contentFilterEnabled}
+                  onValueChange={handleContentFilterToggle}
+                  trackColor={{ false: L.border, true: L.charcoal }}
+                  thumbColor="#FFFFFF"
+                  accessibilityLabel="Browser content filter"
+                />
+              </View>
+
+              {contentFilterEnabled && !accessibilityServiceActive && (
+                <TouchableOpacity
+                  style={styles.permissionHint}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    console.log(
+                      '[Customize] opening accessibility settings for unified service',
+                    );
+                    Linking.sendIntent(
+                      'android.settings.ACCESSIBILITY_SETTINGS',
+                    ).catch(e =>
+                      console.warn('[Customize] openSettings error:', e),
+                    );
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Grant accessibility permission for Break"
+                >
+                  <Text style={styles.permissionHintText}>
+                    ⚠ Enable the Break accessibility service — tap to open
+                    Accessibility Settings
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* ── Settings Change Lock (opt-in) ─────────────────────────
+                Lives INSIDE the gate so that once the global scope is locked
+                the toggle itself is read-only — you can't simply disable the
+                feature to bypass the wait. Enabling it (or changing its
+                duration) marks the scope dirty, so leaving the screen arms the
+                lock the same way any other change does. */}
+            <SettingsLockSection
+              enabled={settingsLock.enabled}
+              durationMs={settingsLock.durationMs}
+              locked={settingsLock.anyLocked}
+              onToggle={value => {
+                settingsLock.setEnabled(value);
+                // Turning it ON (or keeping it on) commits the global scope so
+                // it locks on exit. Turning OFF never arms a lock.
+                if (value) markSettingsDirty();
+              }}
+              onPickDuration={hours => {
+                settingsLock.setDurationHours(hours);
+                markSettingsDirty();
+              }}
+            />
+          </>
+        )}
 
         {/* ── Deletion Prevention ──────────────────────────────────── */}
         <View style={styles.section}>
@@ -626,7 +722,7 @@ const Customize = ({ navigation }) => {
             <View style={styles.toggleLabelGroup}>
               <Text style={styles.toggleLabel}>Prevent deletion</Text>
               <Text style={styles.toggleCaption}>
-                If you open the Breqk uninstall screen, a full-screen pause
+                If you open the Break uninstall screen, a full-screen pause
                 appears for 30 seconds with reasons to keep going before you can
                 continue. Helps you not quit on impulse.
               </Text>
@@ -691,7 +787,7 @@ const Customize = ({ navigation }) => {
 
               <Text style={styles.infoModalSectionHeading}>What it does</Text>
               {[
-                'Uses the accessibility service you already granted to notice when you open Breqk’s App Info / uninstall screen in Android Settings.',
+                'Uses the accessibility service you already granted to notice when you open Break’s App Info / uninstall screen in Android Settings.',
                 'Shows a full-screen pause for 30 seconds with reasons to keep going.',
                 'After the 30 seconds you can continue — it never permanently stops you from uninstalling.',
               ].map((line, i) => (
@@ -705,10 +801,10 @@ const Customize = ({ navigation }) => {
                 Risks &amp; limitations
               </Text>
               {[
-                'This is friction, not a lock. You can wait out the timer, turn off the accessibility service, or use safe mode to remove Breqk anytime.',
+                'This is friction, not a lock. You can wait out the timer, turn off the accessibility service, or use safe mode to remove Break anytime.',
                 'Detection reads only the on-screen text of the Settings uninstall page to know when to show the pause — nothing else.',
                 'Some phone brands label that screen differently, so on rare devices the pause may not appear.',
-                'Like any accessibility feature, it depends on a permission that can read screen content; Breqk uses it solely to detect blocked apps and this screen.',
+                'Like any accessibility feature, it depends on a permission that can read screen content; Break uses it solely to detect blocked apps and this screen.',
               ].map((line, i) => (
                 <View key={`risk-${i}`} style={styles.infoModalBulletRow}>
                   <Text style={styles.infoModalBullet}>{'•'}</Text>
@@ -718,9 +814,9 @@ const Customize = ({ navigation }) => {
 
               <Text style={styles.infoModalSectionHeading}>Your privacy</Text>
               <Text style={styles.infoModalPrivacy}>
-                Breqk collects no data at all. It cannot — the app has no
-                server and makes no network connection whatsoever, so there is no
-                way for any of this to ever leave your phone. Everything stays in
+                Break collects no data at all. It cannot — the app has no server
+                and makes no network connection whatsoever, so there is no way
+                for any of this to ever leave your phone. Everything stays in
                 local settings on your device. Nothing is collected, nothing is
                 sent.
               </Text>

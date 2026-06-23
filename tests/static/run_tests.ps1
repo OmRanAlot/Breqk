@@ -1,4 +1,4 @@
-# run_tests.ps1 — Windows PowerShell shim for the Breqk static test harness.
+# run_tests.ps1 — Windows PowerShell shim for the Break static test harness.
 #
 # Usage (from project root):
 #   pwsh tests/static/run_tests.ps1

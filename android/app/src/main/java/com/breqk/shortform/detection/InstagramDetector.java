@@ -1,11 +1,11 @@
-package com.breqk.shortform.detection;
+package com.Break.shortform.detection;
 
 import android.content.Context;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import com.breqk.shortform.FullScreenCheck;
-import com.breqk.shortform.platform.instagram.InstagramViewIds;
+import com.Break.shortform.FullScreenCheck;
+import com.Break.shortform.platform.instagram.InstagramViewIds;
 
 import java.util.List;
 

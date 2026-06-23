@@ -34,7 +34,7 @@ from _harness import PASS, FAIL, SKIP, result, time_guard, grep_js
 from _paths import PROJECT_ROOT, BRIDGE_DIR
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
-ALLOWLIST: set = {"BreqkReactPackage"}  # Not a module, skip
+ALLOWLIST: set = {"BreakReactPackage"}  # Not a module, skip
 TEST_ID = Path(__file__).stem
 
 

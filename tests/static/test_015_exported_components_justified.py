@@ -4,7 +4,7 @@ test_015_exported_components_justified.py
 
 WHAT:
   For every <activity|service|receiver> with android:exported="true": must have
-  either a launcher intent-filter, breqk deep-link, BIND-flavoured permission,
+  either a launcher intent-filter, Break deep-link, BIND-flavoured permission,
   or be an AppWidget receiver. Lists violators.
 
 WHY:
@@ -14,7 +14,7 @@ WHY:
 HOW:
   1. Parse AndroidManifest.xml.
   2. Iterate all components with android:exported="true".
-  3. Check if justified by: launcher intent-filter, breqk scheme, BIND_*
+  3. Check if justified by: launcher intent-filter, Break scheme, BIND_*
      permission, or appwidget action.
   4. Report unjustified exports.
 
@@ -78,9 +78,9 @@ def is_justified(element) -> bool:
         if "android.intent.action.BOOT_COMPLETED" in actions:
             return True
 
-        # Deep-link with breqk scheme
+        # Deep-link with Break scheme
         for data in filt["data"]:
-            if data["scheme"] == "breqk":
+            if data["scheme"] == "Break":
                 return True
 
     return False

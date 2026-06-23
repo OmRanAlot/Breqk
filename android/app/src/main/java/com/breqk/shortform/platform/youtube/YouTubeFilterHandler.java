@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.youtube;
+package com.Break.shortform.platform.youtube;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
@@ -6,9 +6,9 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import com.breqk.shortform.FullScreenCheck;
-import com.breqk.shortform.platform.FilterHandler;
-import com.breqk.shortform.platform.Platform;
+import com.Break.shortform.FullScreenCheck;
+import com.Break.shortform.platform.FilterHandler;
+import com.Break.shortform.platform.Platform;
 
 import java.util.List;
 
