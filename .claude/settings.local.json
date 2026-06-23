@@ -78,7 +78,18 @@
       "Bash(tar -xzf webfetch-1781632197457-o5r785.bin -C design_extract)",
       "Bash(npx eslint *)",
       "Bash(npx jest *)",
-      "PowerShell(.\\\\android\\\\gradlew.bat -p android compileDebugJavaWithJavac -q 2>&1 | Select-Object -Last 40)"
+      "PowerShell(.\\\\android\\\\gradlew.bat -p android compileDebugJavaWithJavac -q 2>&1 | Select-Object -Last 40)",
+      "Bash(npm test *)",
+      "mcp__code-review-graph__build_or_update_graph_tool",
+      "Bash(read -r _)",
+      "Bash(echo)",
+      "Bash(echo \"new line count:\")",
+      "Bash(wc -l)",
+      "Bash(echo \"last 3 lines:\")",
+      "Bash(echo \"=== exit: $? \\(1=no matches=dead\\) ===\")",
+      "Bash(git commit -q -m 'refactor\\(ui\\): extract styles and sub-components from large JS screens *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -78,7 +78,8 @@ const ScrollBudgetSection = ({
       (() => {
         // Defensive guard: if remainingMs is 0 but canScroll is still true
         // (can happen briefly before native reconciliation), treat as exhausted.
-        const canScroll = budgetStatus.canScroll && budgetStatus.remainingMs > 0;
+        const canScroll =
+          budgetStatus.canScroll && budgetStatus.remainingMs > 0;
         const statusColor = canScroll ? '#4CAF50' : '#E53935';
         const statusLabel = canScroll
           ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
@@ -86,7 +87,10 @@ const ScrollBudgetSection = ({
               budgetStatus.nextScrollAtMs - Date.now(),
             )}`;
         const filledRatio = canScroll
-          ? Math.min(1, budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0)
+          ? Math.min(
+              1,
+              budgetStatus.usedMs / (scrollAllowance * 60 * 1000) || 0,
+            )
           : 1;
         return (
           <View style={styles.budgetStatusSection}>

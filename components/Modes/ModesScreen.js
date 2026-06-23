@@ -202,7 +202,9 @@ const ModesScreen = ({ navigation }) => {
     const loadData = async () => {
       console.log('[ModesScreen] loading modes and active mode');
       try {
-        const activeId = await new Promise(resolve => SettingsModule.getActiveMode(resolve));
+        const activeId = await new Promise(resolve =>
+          SettingsModule.getActiveMode(resolve),
+        );
         setActiveModeId(activeId || null);
 
         const modesJson = await new Promise(resolve =>
@@ -218,7 +220,7 @@ const ModesScreen = ({ navigation }) => {
 
         let needsSave = false;
         Object.keys(parsedModes).forEach(id => {
-          const shouldBeEnabled = (id === activeId);
+          const shouldBeEnabled = id === activeId;
           if (parsedModes[id].enabled !== shouldBeEnabled) {
             parsedModes[id].enabled = shouldBeEnabled;
             needsSave = true;
@@ -274,7 +276,9 @@ const ModesScreen = ({ navigation }) => {
             if (!newValue && id === 'default' && normalized['default']) {
               setModes(prev => {
                 const next = { ...prev };
-                Object.keys(next).forEach(k => next[k].enabled = (k === 'default'));
+                Object.keys(next).forEach(
+                  k => (next[k].enabled = k === 'default'),
+                );
                 SettingsModule.saveModes(JSON.stringify(next));
                 return next;
               });
@@ -384,7 +388,10 @@ const ModesScreen = ({ navigation }) => {
         {activeModes.length > 0 && (
           <View style={styles.activeBanner}>
             <Text style={styles.activeBannerText}>
-              {activeModeId && modes[activeModeId] ? modes[activeModeId].name : 'A mode'} active
+              {activeModeId && modes[activeModeId]
+                ? modes[activeModeId].name
+                : 'A mode'}{' '}
+              active
             </Text>
           </View>
         )}

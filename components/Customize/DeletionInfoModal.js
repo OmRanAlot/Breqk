@@ -8,13 +8,7 @@
  */
 
 import React from 'react';
-import {
-  View,
-  Text,
-  Modal,
-  ScrollView,
-  TouchableOpacity,
-} from 'react-native';
+import { View, Text, Modal, ScrollView, TouchableOpacity } from 'react-native';
 import { styles } from './customize.styles';
 
 const WHAT_IT_DOES = [
