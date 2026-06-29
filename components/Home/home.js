@@ -1,5 +1,5 @@
 /**
- * home.js — Home Screen (Tether light design system)
+ * home.js — Home Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Dashboard layout:
  *   • App name header (centred) + settings gear icon
@@ -30,34 +30,18 @@ import {
   NativeEventEmitter,
   TouchableOpacity,
   ScrollView,
-  ActivityIndicator,
-  StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Circle } from 'react-native-svg';
 import useDigitalWellbeing from './useDigitalWellbeing';
 import ManagedAppsList from './ManagedAppsList';
+import HomeScrollBudgetCard from './HomeScrollBudgetCard';
+import FreeBreakCard from './FreeBreakCard';
+import { styles, L } from './home.styles';
+import { formatTime, formatCount } from '../common/format';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
-
-// ─── Tether Light Palette ─────────────────────────────────────────────────────
-const L = {
-  bg: '#F8F8F6',
-  charcoal: '#1A1A1A',
-  muted: '#757575',
-  captionOpacity: 'rgba(26,26,26,0.6)',
-  ctaBg: '#1A1A1A',
-  ctaText: '#FFFFFF',
-  // Accent colours for stats
-  accentGreen: '#4CAF50',
-  accentBlue: '#2196F3',
-  accentOrange: '#FF9800',
-  cardBg: '#FFFFFF',
-  cardBorder: 'rgba(0,0,0,0.07)',
-  barBg: 'rgba(0,0,0,0.07)',
-  barFill: '#1A1A1A',
-};
 
 // ─── Settings icon ────────────────────────────────────────────────────────────
 const SettingsIcon = ({ color, size }) => (
@@ -93,34 +77,6 @@ const ModesIcon = ({ color, size }) => (
     <Path d="M2 12l10 5 10-5" />
   </Svg>
 );
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Format minutes as "Xh Ym", "Xh", or "Ym" */
-const formatTime = minutes => {
-  if (minutes == null) return '—';
-  const m = Math.round(minutes);
-  if (m >= 60) {
-    const h = Math.floor(m / 60);
-    const rem = m % 60;
-    return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
-  }
-  return `${m}m`;
-};
-
-/** Format a nullable integer stat; returns '—' for null/undefined */
-const formatCount = value => (value == null ? '—' : String(value));
-
-// ─── Scroll budget helper ─────────────────────────────────────────────────────
-
-/** Format milliseconds as "M:SS" for the scroll budget countdown display. */
-const formatBudgetTime = ms => {
-  if (ms == null || ms <= 0) return '0:00';
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${String(sec).padStart(2, '0')}`;
-};
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -180,44 +136,102 @@ const Home = ({ navigation }) => {
   const [appPolicies, setAppPolicies] = useState({});
   const [activeModeName, setActiveModeName] = useState(null);
 
-  useEffect(() => {
-    const loadPolicies = () => {
-      SettingsModule.getAppPolicies(json => {
+  // ── Centralized settings loader ────────────────────────────────────────────
+  // Loads app policies, active mode name, and triggers free break poll.
+  // Called on mount, AppState→foreground, AND navigation focus (returning
+  // from AppDetail / Customize / Modes).
+  const loadPolicies = useCallback(() => {
+    // Load the base per-app policies, then layer the active mode's
+    // policy_overrides on top so the Managed Apps list shows the EFFECTIVE
+    // state — the same resolution AppDetail and the native services use
+    // (BreakPrefs.isFeatureEnabled). Without this the list shows stale base
+    // flags (e.g. YouTube still reading reels_detection from the migration
+    // default) even though the active mode turned them off.
+    SettingsModule.getActiveMode(activeId => {
+      SettingsModule.getModes(modesJson => {
+        let modes = {};
         try {
-          setAppPolicies(json ? JSON.parse(json) : {});
+          modes = modesJson ? JSON.parse(modesJson) : {};
         } catch (e) {
-          console.warn('[Home] parse appPolicies failed:', e);
-          setAppPolicies({});
+          console.warn('[Home] parse modes failed:', e);
         }
-      });
-    };
-    const loadActiveMode = () => {
-      SettingsModule.getActiveMode(modeId => {
-        if (!modeId) {
-          setActiveModeName(null);
-          return;
-        }
-        SettingsModule.getModes(json => {
+        const overrides =
+          activeId && modes[activeId]?.policy_overrides
+            ? modes[activeId].policy_overrides
+            : {};
+
+        SettingsModule.getAppPolicies(json => {
           try {
-            const modes = json ? JSON.parse(json) : {};
-            setActiveModeName(modes[modeId]?.name || null);
+            const base = json ? JSON.parse(json) : {};
+            const effective = {};
+            // Base apps with their mode overrides merged on top.
+            Object.keys(base).forEach(pkg => {
+              effective[pkg] = { ...base[pkg], ...(overrides[pkg] || {}) };
+            });
+            // Apps that only exist as mode overrides still need a row.
+            Object.keys(overrides).forEach(pkg => {
+              if (!effective[pkg]) {
+                effective[pkg] = { ...overrides[pkg] };
+              }
+            });
+            setAppPolicies(effective);
           } catch (e) {
-            console.warn('[Home] parse modes failed:', e);
-            setActiveModeName(null);
+            console.warn('[Home] parse appPolicies failed:', e);
+            setAppPolicies({});
           }
         });
       });
-    };
+    });
+  }, []);
+
+  const loadActiveMode = useCallback(() => {
+    SettingsModule.getActiveMode(modeId => {
+      if (!modeId) {
+        setActiveModeName(null);
+        return;
+      }
+      SettingsModule.getModes(json => {
+        try {
+          const modes = json ? JSON.parse(json) : {};
+          setActiveModeName(modes[modeId]?.name || null);
+        } catch (e) {
+          console.warn('[Home] parse modes failed:', e);
+          setActiveModeName(null);
+        }
+      });
+    });
+  }, []);
+
+  const reloadAll = useCallback(() => {
+    console.log('[Home] reloadAll triggered');
     loadPolicies();
     loadActiveMode();
+  }, [loadPolicies, loadActiveMode]);
+
+  // Load on mount + refresh on foreground resume
+  useEffect(() => {
+    reloadAll();
     const sub = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
-        loadPolicies();
-        loadActiveMode();
+        reloadAll();
       }
     });
     return () => sub?.remove();
-  }, []);
+  }, [reloadAll]);
+
+  // Reload when screen regains focus (e.g. returning from AppDetail where
+  // the user may have toggled free_break_enabled or changed per-app policies)
+  useEffect(() => {
+    const focusUnsub = navigation?.addListener
+      ? navigation.addListener('focus', () => {
+          console.log('[Home] focus → reloading policies & mode');
+          reloadAll();
+        })
+      : null;
+    return () => {
+      if (focusUnsub) focusUnsub();
+    };
+  }, [navigation, reloadAll]);
 
   // Derived: any app has reels_detection enabled → scroll budget matters.
   const anyReelsOn = Object.values(appPolicies).some(
@@ -243,11 +257,11 @@ const Home = ({ navigation }) => {
         setBudgetStatus(status);
         console.log(
           '[Home] scroll budget polled: canScroll=' +
-          status.canScroll +
-          ' remainingMs=' +
-          status.remainingMs +
-          ' usedMs=' +
-          status.usedMs,
+            status.canScroll +
+            ' remainingMs=' +
+            status.remainingMs +
+            ' usedMs=' +
+            status.usedMs,
         );
       } catch (e) {
         console.warn('[Home] getScrollBudgetStatus failed:', e);
@@ -477,7 +491,7 @@ const Home = ({ navigation }) => {
       <View style={styles.header}>
         <View style={styles.headerSpacer} />
 
-        <Text style={styles.appName}>BREQK</Text>
+        <Text style={styles.appName}>Break</Text>
 
         <View style={styles.headerActions}>
           <TouchableOpacity
@@ -567,135 +581,14 @@ const Home = ({ navigation }) => {
         </View>
 
         {/* ── Scroll Budget card ─────────────────────────────── */}
-        {/* Shows time remaining in the current scroll budget window.
-                    Green = budget available, Red = exhausted (with countdown to reset). */}
-        {budgetStatus &&
-          (() => {
-            const canScroll = budgetStatus.canScroll;
-            const statusColor = canScroll ? L.accentGreen : '#E53935';
-            const allowanceMs = budgetStatus.allowanceMinutes * 60 * 1000;
-            const statusLabel = canScroll
-              ? `${formatBudgetTime(budgetStatus.remainingMs)} remaining`
-              : `Resets in ${formatBudgetTime(
-                budgetStatus.nextScrollAtMs - Date.now(),
-              )}`;
-            const filledRatio = canScroll
-              ? Math.min(1, budgetStatus.usedMs / allowanceMs || 0)
-              : 1;
-
-            return (
-              <View style={styles.budgetCard}>
-                <View style={styles.budgetHeader}>
-                  <Text style={styles.sectionTitle}>Scroll Budget</Text>
-                  <View
-                    style={[styles.budgetDot, { backgroundColor: statusColor }]}
-                  />
-                </View>
-                <Text
-                  style={[styles.budgetStatusLabel, { color: statusColor }]}
-                >
-                  {statusLabel}
-                </Text>
-                {/* Progress bar: filled = time used, unfilled = time remaining */}
-                <View style={styles.budgetProgressBg}>
-                  <View
-                    style={{
-                      flex: filledRatio,
-                      backgroundColor: statusColor,
-                      borderRadius: 2,
-                    }}
-                  />
-                  <View style={{ flex: Math.max(0, 1 - filledRatio) }} />
-                </View>
-                <Text style={styles.budgetCaption}>
-                  {budgetStatus.allowanceMinutes}m allowed per{' '}
-                  {budgetStatus.windowMinutes}m window
-                </Text>
-              </View>
-            );
-          })()}
+        <HomeScrollBudgetCard budgetStatus={budgetStatus} />
 
         {/* ── Free Break card / button ──────────────────────────── */}
-        {/* Only rendered when the 20-Min Free Break toggle is ON in Customize settings */}
-        {freeBreakStatus?.enabled &&
-          (() => {
-            const { active, usedToday, remainingMs } = freeBreakStatus;
-
-            if (active) {
-              // Break in progress: green card with live countdown + early-end option
-              return (
-                <View style={styles.freeBreakCard}>
-                  <View style={styles.freeBreakCardHeader}>
-                    <Text style={styles.freeBreakCardTitle}>
-                      Free Break Active
-                    </Text>
-                    <View
-                      style={[styles.budgetDot, { backgroundColor: '#4CAF50' }]}
-                    />
-                  </View>
-                  <Text style={styles.freeBreakCountdown}>
-                    {formatBudgetTime(remainingMs)} remaining
-                  </Text>
-                  <Text style={styles.freeBreakSubtext}>
-                    Scroll freely — no interruptions until the timer ends.
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.freeBreakEndButton}
-                    onPress={handleEndFreeBreak}
-                    activeOpacity={0.75}
-                    accessibilityRole="button"
-                    accessibilityLabel="End free break early"
-                  >
-                    <Text style={styles.freeBreakEndButtonText}>
-                      End Break Early
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            }
-
-            if (usedToday) {
-              // Already used today: disabled pill. Caption tells the user WHEN
-              // it unlocks again so the dead-end state has a clear resolution.
-              return (
-                <View style={styles.freeBreakDisabledWrap}>
-                  <TouchableOpacity
-                    style={[
-                      styles.freeBreakButton,
-                      styles.freeBreakButtonDisabled,
-                    ]}
-                    disabled={true}
-                    activeOpacity={1}
-                    accessibilityRole="button"
-                    accessibilityLabel="Free break already used today, resets at midnight"
-                    accessibilityState={{ disabled: true }}
-                  >
-                    <Text style={styles.freeBreakButtonTextDisabled}>
-                      Free Break Used Today
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={styles.freeBreakResetCaption}>
-                    Resets at midnight
-                  </Text>
-                </View>
-              );
-            }
-
-            // Available: primary action pill
-            return (
-              <TouchableOpacity
-                style={styles.freeBreakButton}
-                onPress={handleStartFreeBreak}
-                activeOpacity={0.85}
-                accessibilityRole="button"
-                accessibilityLabel="Start 20-minute free break"
-              >
-                <Text style={styles.freeBreakButtonText}>
-                  Start 20-Min Free Break
-                </Text>
-              </TouchableOpacity>
-            );
-          })()}
+        <FreeBreakCard
+          freeBreakStatus={freeBreakStatus}
+          onStart={handleStartFreeBreak}
+          onEnd={handleEndFreeBreak}
+        />
 
         {/* ── Error state ───────────────────────────────────────── */}
         {error && error !== 'usage_permission_missing' && (
@@ -754,379 +647,9 @@ const Home = ({ navigation }) => {
             navigation.navigate('AppDetail', { packageName: pkg })
           }
         />
-
-
       </ScrollView>
     </View>
   );
 };
 
 export default Home;
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  //Button for 20 minute break
-
-  container: {
-    flex: 1,
-    backgroundColor: L.bg,
-    paddingBottom: 32,
-  },
-
-  // ── Header ────────────────────────────────────────────────────────────────
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 8,
-    paddingHorizontal: 28,
-  },
-  headerSpacer: {
-    width: 76,
-  },
-  appName: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: L.charcoal,
-    letterSpacing: 1.5,
-    textAlign: 'center',
-    flex: 1,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  headerButton: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // ── Status strip ──────────────────────────────────────────────────────────
-  statusStrip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 28,
-    paddingTop: 6,
-  },
-  statusItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  statusText: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: L.muted,
-    letterSpacing: 0.3,
-  },
-  statusDivider: {
-    fontSize: 12,
-    color: L.muted,
-  },
-
-  // ── Scroll ────────────────────────────────────────────────────────────────
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 28,
-    paddingTop: 20,
-    paddingBottom: 12,
-    gap: 20,
-  },
-
-  // ── Summary stat cards ────────────────────────────────────────────────────
-  statsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: L.cardBg,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    paddingVertical: 16,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    gap: 4,
-  },
-  statValue: {
-    fontSize: 22,
-    fontWeight: '300',
-    color: L.charcoal,
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: L.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    textAlign: 'center',
-  },
-
-  // ── Skeleton placeholders ─────────────────────────────────────────────────
-  skeletonValue: {
-    height: 24,
-    width: '60%',
-    backgroundColor: 'rgba(0,0,0,0.08)',
-    borderRadius: 6,
-  },
-  skeletonText: {
-    height: 12,
-    backgroundColor: 'rgba(0,0,0,0.07)',
-    borderRadius: 4,
-  },
-
-  // ── Error ─────────────────────────────────────────────────────────────────
-  errorRow: {
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  errorText: {
-    fontSize: 13,
-    color: '#C62828',
-  },
-
-  // ── Top apps section ──────────────────────────────────────────────────────
-  topAppsSection: {
-    gap: 10,
-  },
-  topAppsSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  topAppsTotalTime: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: L.charcoal,
-    fontVariant: ['tabular-nums'],
-  },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: L.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-  },
-  appUsageRow: {
-    gap: 6,
-  },
-  appUsageInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-  },
-  appUsageName: {
-    fontSize: 14,
-    fontWeight: '400',
-    color: L.charcoal,
-    flex: 1,
-    marginRight: 8,
-  },
-  appUsageTime: {
-    fontSize: 13,
-    color: L.muted,
-    fontVariant: ['tabular-nums'],
-  },
-  usageBar: {
-    height: 4,
-    backgroundColor: L.barBg,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  usageBarFill: {
-    height: '100%',
-    backgroundColor: L.barFill,
-    borderRadius: 2,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: L.muted,
-    textAlign: 'center',
-    paddingVertical: 16,
-  },
-
-  // ── Scroll Budget card ──────────────────────────────────────────────────
-  budgetCard: {
-    backgroundColor: L.cardBg,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    padding: 16,
-    gap: 8,
-  },
-  budgetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  budgetDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  budgetStatusLabel: {
-    fontSize: 16,
-    fontWeight: '500',
-    fontVariant: ['tabular-nums'],
-  },
-  budgetProgressBg: {
-    height: 4,
-    flexDirection: 'row',
-    backgroundColor: L.barBg,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  budgetCaption: {
-    fontSize: 11,
-    color: L.muted,
-    fontVariant: ['tabular-nums'],
-  },
-
-  // ── Free Break ──────────────────────────────────────────────────────────
-  freeBreakCard: {
-    backgroundColor: '#F0FAF1',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#A5D6A7',
-    padding: 16,
-    gap: 8,
-  },
-  freeBreakCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  freeBreakCardTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#2E7D32',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-  },
-  freeBreakCountdown: {
-    fontSize: 26,
-    fontWeight: '300',
-    color: L.charcoal,
-    fontVariant: ['tabular-nums'],
-    letterSpacing: -0.5,
-  },
-  freeBreakSubtext: {
-    fontSize: 12,
-    color: '#555555',
-    lineHeight: 17,
-  },
-  freeBreakEndButton: {
-    marginTop: 4,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 9999,
-    borderWidth: 1,
-    borderColor: '#A5D6A7',
-    alignSelf: 'center',
-  },
-  freeBreakEndButtonText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#2E7D32',
-  },
-  freeBreakButton: {
-    backgroundColor: L.ctaBg,
-    borderRadius: 9999,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  freeBreakButtonText: {
-    color: L.ctaText,
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  freeBreakButtonDisabled: {
-    backgroundColor: 'rgba(0,0,0,0.08)',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  freeBreakButtonTextDisabled: {
-    color: 'rgba(0,0,0,0.35)',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  freeBreakDisabledWrap: {
-    gap: 6,
-    alignItems: 'center',
-  },
-  freeBreakResetCaption: {
-    fontSize: 11,
-    color: L.muted,
-    fontVariant: ['tabular-nums'],
-  },
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  footer: {
-    gap: 10,
-    alignItems: 'center',
-    paddingHorizontal: 28,
-  },
-  primaryButton: {
-    backgroundColor: L.ctaBg,
-    borderRadius: 9999,
-    paddingVertical: 18,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  primaryButtonText: {
-    color: L.ctaText,
-    fontSize: 17,
-    fontWeight: '500',
-  },
-  // Outlined variant for stacked Safe Mode buttons — used when both Instagram
-  // and YouTube are enabled so the hierarchy stays clear.
-  secondaryButton: {
-    backgroundColor: 'transparent',
-    borderRadius: 9999,
-    borderWidth: 1.5,
-    borderColor: L.ctaBg,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-  },
-  secondaryButtonText: {
-    color: L.ctaBg,
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  caption: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: L.captionOpacity,
-    textTransform: 'uppercase',
-    letterSpacing: 2,
-  },
-});

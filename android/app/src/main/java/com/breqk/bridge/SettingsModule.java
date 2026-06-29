@@ -1,8 +1,9 @@
-package com.breqk.bridge;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.mode.ModeManager;
-import com.breqk.widget.BreqkWidgetProvider;
-import com.breqk.monitor.AppUsageMonitor;
+package com.Break.bridge;
+import com.Break.prefs.BreakPrefs;
+import com.Break.mode.ModeManager;
+import com.Break.widget.BreakWidgetProvider;
+import com.Break.monitor.AppUsageMonitor;
+import com.Break.lock.SettingsLockManager;
 
 /*
  * SettingsModule
@@ -11,19 +12,25 @@ import com.breqk.monitor.AppUsageMonitor;
  * Currently manages the blocked apps set via SharedPreferences.
  *
  * Notes:
- *  - Uses a single preferences file (breqk_prefs) and key (blocked_apps).
+ *  - Uses a single preferences file (Break_prefs) and key (blocked_apps).
  *  - Writes are applied asynchronously (apply) to avoid main-thread blocking.
+ *  - Settings writes are immediate. Impulse friction is provided separately by the
+ *    opt-in Settings Change Lock (see com.Break.lock.SettingsLockManager), which
+ *    makes a whole SCOPE (global or a per-app screen) read-only for a while AFTER
+ *    the user edits and leaves it — it does not gate individual writes here.
  */
 
 import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.appwidget.AppWidgetManager;
+import android.provider.Settings;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
@@ -53,7 +60,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getBlockedApps(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getBlockedApps called");
-        Set<String> blockedApps = BreqkPrefs.getBlockedApps(reactContext);
+        Set<String> blockedApps = BreakPrefs.getBlockedApps(reactContext);
         Log.d(TAG, "[GET] returning " + blockedApps.size() + " apps: " + blockedApps.toString());
 
         // CRITICAL FIX: Convert Set to WritableArray so React Native receives a proper
@@ -71,17 +78,18 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveMonitoringEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveMonitoringEnabled called with enabled=" + enabled);
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        prefs.edit().putBoolean(BreqkPrefs.KEY_MONITORING_ENABLED, enabled).apply();
+        BreakPrefs.get(reactContext).edit()
+                .putBoolean(BreakPrefs.KEY_MONITORING_ENABLED, enabled)
+                .apply();
         Log.d(TAG, "[SAVE] monitoring_enabled=" + enabled + " saved");
     }
 
     @ReactMethod
     public void getMonitoringEnabled(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getMonitoringEnabled called");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
         // Default to true so that after onboarding the blocker starts as ON
-        boolean enabled = prefs.getBoolean(BreqkPrefs.KEY_MONITORING_ENABLED, true);
+        boolean enabled = prefs.getBoolean(BreakPrefs.KEY_MONITORING_ENABLED, true);
         Log.d(TAG, "[GET] monitoring_enabled=" + enabled);
         callback.invoke(enabled);
     }
@@ -89,9 +97,9 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getRedirectInstagramToBrowser(Callback callback) {
         Log.d(TAG, "[GET] getRedirectInstagramToBrowser called");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
         // Default to true so current behavior (always redirect to Reels-free browser) is unchanged
-        boolean value = prefs.getBoolean(BreqkPrefs.KEY_REDIRECT_INSTAGRAM, true);
+        boolean value = prefs.getBoolean(BreakPrefs.KEY_REDIRECT_INSTAGRAM, true);
         Log.d(TAG, "[GET] redirect_instagram_to_browser=" + value);
         callback.invoke(value);
     }
@@ -99,17 +107,17 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveRedirectInstagramToBrowser(boolean value) {
         Log.d(TAG, "[SAVE] saveRedirectInstagramToBrowser called with value=" + value);
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        prefs.edit().putBoolean(BreqkPrefs.KEY_REDIRECT_INSTAGRAM, value).apply();
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
+        prefs.edit().putBoolean(BreakPrefs.KEY_REDIRECT_INSTAGRAM, value).apply();
         Log.d(TAG, "[SAVE] redirect_instagram_to_browser=" + value + " saved");
     }
 
     @ReactMethod
     public void updateWidgetStats(int focusScore, int timeSavedMin, int appsBlocked, boolean monitoringEnabled) {
         Log.d(TAG, "[WIDGET] updateWidgetStats focusScore=" + focusScore + " timeSavedMin=" + timeSavedMin + " appsBlocked=" + appsBlocked + " monitoring=" + monitoringEnabled);
-        BreqkPrefs.updateWidgetCache(reactContext, focusScore, timeSavedMin, appsBlocked, monitoringEnabled);
+        BreakPrefs.updateWidgetCache(reactContext, focusScore, timeSavedMin, appsBlocked, monitoringEnabled);
         AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(reactContext);
-        ComponentName provider = new ComponentName(reactContext, BreqkWidgetProvider.class);
+        ComponentName provider = new ComponentName(reactContext, BreakWidgetProvider.class);
         int[] appWidgetIds = appWidgetManager.getAppWidgetIds(provider);
         if (appWidgetIds != null && appWidgetIds.length > 0) {
             reactContext.sendBroadcast(new android.content.Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE)
@@ -119,7 +127,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     /**
      * Persists the scroll threshold for Reels/Shorts intervention.
-     * Read by ContentFilterService.getScrollThreshold() at runtime.
+     * Read by ReelsInterventionService at runtime.
      *
      * @param threshold Number of scrolls before intervention popup fires (1–20).
      */
@@ -127,10 +135,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveScrollThreshold(int threshold) {
         // Clamp to sane range before persisting
         int clamped = Math.max(1, Math.min(20, threshold));
-        Log.d(TAG, "[SAVE] saveScrollThreshold called with threshold=" + threshold + " (clamped=" + clamped + ")");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        prefs.edit().putInt(BreqkPrefs.KEY_SCROLL_THRESHOLD, clamped).apply();
-        Log.d(TAG, "[SAVE] scroll_threshold=" + clamped + " saved");
+        Log.d(TAG, "[SAVE] saveScrollThreshold threshold=" + threshold + " (clamped=" + clamped + ")");
+        BreakPrefs.get(reactContext).edit()
+                .putInt(BreakPrefs.KEY_SCROLL_THRESHOLD, clamped)
+                .apply();
     }
 
     /**
@@ -140,8 +148,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getScrollThreshold(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getScrollThreshold called");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        int threshold = prefs.getInt(BreqkPrefs.KEY_SCROLL_THRESHOLD, 4);
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
+        int threshold = prefs.getInt(BreakPrefs.KEY_SCROLL_THRESHOLD, 4);
         Log.d(TAG, "[GET] scroll_threshold=" + threshold);
         callback.invoke(threshold);
     }
@@ -157,13 +165,12 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveScrollBudget(int allowanceMinutes, int windowMinutes) {
         int clampedAllowance = Math.max(1, Math.min(30, allowanceMinutes));
         int clampedWindow = Math.max(15, Math.min(120, windowMinutes));
-        Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window=" + clampedWindow + "min");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        prefs.edit()
-                .putInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, clampedAllowance)
-                .putInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, clampedWindow)
+        Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window="
+                + clampedWindow + "min");
+        BreakPrefs.get(reactContext).edit()
+                .putInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, clampedAllowance)
+                .putInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, clampedWindow)
                 .apply();
-        Log.d(TAG, "[SAVE] scroll budget saved");
     }
 
     /**
@@ -174,9 +181,9 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getScrollBudget(Callback callback) {
         Log.d(TAG, "[GET] getScrollBudget called");
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
-        int allowanceMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, 5);
-        int windowMinutes = prefs.getInt(BreqkPrefs.KEY_SCROLL_WINDOW_MINUTES, 60);
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
+        int allowanceMinutes = prefs.getInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, 5);
+        int windowMinutes = prefs.getInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, 60);
         Log.d(TAG, "[GET] scroll budget: allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
         callback.invoke(allowanceMinutes, windowMinutes);
     }
@@ -190,20 +197,20 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveHomeFeedPostLimit(int limit) {
         int clamped = Math.max(5, Math.min(100, limit));
         Log.d(TAG, "[SAVE] saveHomeFeedPostLimit limit=" + limit + " (clamped=" + clamped + ")");
-        BreqkPrefs.get(reactContext).edit()
-                .putInt(BreqkPrefs.KEY_HOME_FEED_POST_LIMIT, clamped)
+        BreakPrefs.get(reactContext).edit()
+                .putInt(BreakPrefs.KEY_HOME_FEED_POST_LIMIT, clamped)
                 .apply();
     }
 
     /**
      * Retrieves the current Instagram home feed post limit.
-     * Returns default (20) if not yet set.
+     * Returns default (30) if not yet set.
      */
     @ReactMethod
     public void getHomeFeedPostLimit(Callback callback) {
         Log.d(TAG, "[GET] getHomeFeedPostLimit called");
-        int limit = BreqkPrefs.get(reactContext)
-                .getInt(BreqkPrefs.KEY_HOME_FEED_POST_LIMIT, BreqkPrefs.DEFAULT_HOME_FEED_POST_LIMIT);
+        int limit = BreakPrefs.get(reactContext)
+                .getInt(BreakPrefs.KEY_HOME_FEED_POST_LIMIT, BreakPrefs.DEFAULT_HOME_FEED_POST_LIMIT);
         Log.d(TAG, "[GET] home_feed_post_limit=" + limit);
         callback.invoke(limit);
     }
@@ -215,8 +222,8 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveFreeBreakEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveFreeBreakEnabled called with enabled=" + enabled);
-        BreqkPrefs.get(reactContext).edit()
-                .putBoolean(BreqkPrefs.KEY_FREE_BREAK_ENABLED, enabled)
+        BreakPrefs.get(reactContext).edit()
+                .putBoolean(BreakPrefs.KEY_FREE_BREAK_ENABLED, enabled)
                 .apply();
         Log.d(TAG, "[SAVE] free_break_enabled=" + enabled + " saved");
     }
@@ -228,16 +235,40 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getFreeBreakEnabled(com.facebook.react.bridge.Callback callback) {
         Log.d(TAG, "[GET] getFreeBreakEnabled called");
-        boolean enabled = BreqkPrefs.get(reactContext)
-                .getBoolean(BreqkPrefs.KEY_FREE_BREAK_ENABLED, false);
+        boolean enabled = BreakPrefs.get(reactContext)
+                .getBoolean(BreakPrefs.KEY_FREE_BREAK_ENABLED, false);
         Log.d(TAG, "[GET] free_break_enabled=" + enabled);
+        callback.invoke(enabled);
+    }
+
+    /**
+     * Persists the deletion-prevention (uninstall lock) feature toggle.
+     * When false (default), ReelsInterventionService never inspects the Settings
+     * uninstall screen and the lock screen never appears.
+     */
+    @ReactMethod
+    public void saveUninstallLockEnabled(boolean enabled) {
+        Log.d(TAG, "[SAVE] saveUninstallLockEnabled called with enabled=" + enabled);
+        BreakPrefs.setUninstallLockEnabled(reactContext, enabled);
+        Log.d(TAG, "[SAVE] uninstall_lock_enabled=" + enabled + " saved");
+    }
+
+    /**
+     * Retrieves the deletion-prevention toggle.
+     * Defaults to false so existing users are unaffected until they opt in.
+     */
+    @ReactMethod
+    public void getUninstallLockEnabled(com.facebook.react.bridge.Callback callback) {
+        Log.d(TAG, "[GET] getUninstallLockEnabled called");
+        boolean enabled = BreakPrefs.isUninstallLockEnabled(reactContext);
+        Log.d(TAG, "[GET] uninstall_lock_enabled=" + enabled);
         callback.invoke(enabled);
     }
 
     @ReactMethod
     public void saveBlockedApps(ReadableArray apps) {
         Log.d(TAG, "[SAVE] saveBlockedApps called with size=" + apps.size());
-        SharedPreferences prefs = BreqkPrefs.get(reactContext);
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
         SharedPreferences.Editor editor = prefs.edit();
         Set<String> appSet = new HashSet<>();
 
@@ -247,7 +278,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         }
         Log.d(TAG, "[SAVE] saving set size=" + appSet.size() + " data=" + appSet.toString());
 
-        editor.putStringSet(BreqkPrefs.KEY_BLOCKED_APPS, appSet);
+        editor.putStringSet(BreakPrefs.KEY_BLOCKED_APPS, appSet);
         editor.apply();
         Log.d(TAG, "[SAVE] apply complete");
     }
@@ -265,14 +296,14 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getAppPolicies(Callback callback) {
         Log.d(TAG, "[POLICY] getAppPolicies called");
-        String json = BreqkPrefs.get(reactContext).getString(BreqkPrefs.KEY_APP_POLICIES, "{}");
+        String json = BreakPrefs.get(reactContext).getString(BreakPrefs.KEY_APP_POLICIES, "{}");
         Log.d(TAG, "[POLICY] returning: " + json);
         callback.invoke(json);
     }
 
     /**
      * Saves the full app policies from a JSON string received from React Native.
-     * Also triggers legacy blocked_apps sync.
+     * Also triggers legacy blocked_apps sync. Applied immediately.
      *
      * @param jsonString Full policies JSON, e.g. {"com.instagram.android":{"app_open_intercept":true,...}}
      */
@@ -280,24 +311,19 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveAppPolicies(String jsonString) {
         Log.d(TAG, "[POLICY] saveAppPolicies called");
         try {
-            // Parse to validate, then re-save through BreqkPrefs helper (which handles sync)
-            JSONObject parsed = new JSONObject(jsonString);
-            BreqkPrefs.get(reactContext).edit()
-                    .putString(BreqkPrefs.KEY_APP_POLICIES, parsed.toString())
+            BreakPrefs.get(reactContext).edit()
+                    .putString(BreakPrefs.KEY_APP_POLICIES, jsonString)
                     .apply();
-            // Sync legacy blocked_apps
-            BreqkPrefs.syncBlockedAppsFromPolicies(reactContext);
-            // Notify running monitors so the change takes effect live
-            BreqkPrefs.dispatchBlockedAppsReload(reactContext);
-            Log.d(TAG, "[POLICY] saveAppPolicies saved + synced blocked_apps");
+            BreakPrefs.syncBlockedAppsFromPolicies(reactContext);
+            BreakPrefs.dispatchBlockedAppsReload(reactContext);
+            Log.d(TAG, "[POLICY] saveAppPolicies applied=" + jsonString);
         } catch (Exception e) {
             Log.e(TAG, "[POLICY] saveAppPolicies error: " + e.getMessage());
         }
     }
 
     /**
-     * Atomically updates a single feature for a single app.
-     * More efficient than sending the full policy map for a single toggle change.
+     * Atomically updates a single feature for a single app. Applied immediately.
      *
      * @param packageName e.g. "com.instagram.android"
      * @param featureKey  e.g. "app_open_intercept", "reels_detection"
@@ -307,12 +333,117 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void setAppFeature(String packageName, String featureKey, boolean enabled, Promise promise) {
         Log.d(TAG, "[POLICY] setAppFeature pkg=" + packageName + " " + featureKey + "=" + enabled);
         try {
-            BreqkPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
+            BreakPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
             promise.resolve(true);
         } catch (Exception e) {
             Log.e(TAG, "[POLICY] setAppFeature failed: " + e.getMessage());
             promise.reject("SET_APP_FEATURE_FAILED", e.getMessage());
         }
+    }
+
+    @ReactMethod
+    public void getAppInterceptSettings(String packageName, Promise promise) {
+        try {
+            org.json.JSONObject entry = BreakPrefs.getAppInterceptSettings(reactContext, packageName);
+            com.facebook.react.bridge.WritableMap map = com.facebook.react.bridge.Arguments.createMap();
+            map.putString("message", entry.optString("message", ""));
+            map.putInt("delaySecs", BreakPrefs.getEffectiveDelaySecs(reactContext, packageName));
+            map.putBoolean("hasDelayOverride", BreakPrefs.hasPerAppInterceptSettings(reactContext, packageName)
+                    && entry.has("delay_secs"));
+            map.putInt("popupDelayMin", entry.has("popup_delay_min")
+                    ? entry.optInt("popup_delay_min", BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES)
+                    : BreakPrefs.get(reactContext).getInt(
+                            BreakPrefs.KEY_POPUP_DELAY_MINUTES, BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES));
+            Log.d(TAG, "[INTERCEPT_SETTINGS] getAppInterceptSettings pkg=" + packageName
+                    + " delaySecs=" + map.getInt("delaySecs")
+                    + " hasDelayOverride=" + map.getBoolean("hasDelayOverride"));
+            promise.resolve(map);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] getAppInterceptSettings failed: " + e.getMessage());
+            promise.reject("GET_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    /**
+     * Saves per-app intercept settings (message, pause length, popup frequency).
+     * Applied immediately.
+     */
+    @ReactMethod
+    public void setAppInterceptSettings(String packageName, String message, int delaySecs, int popupDelayMin, Promise promise) {
+        try {
+            int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
+            BreakPrefs.setAppInterceptSettings(reactContext, packageName, message, clampedNew, popupDelayMin);
+            Log.d(TAG, "[INTERCEPT_SETTINGS] setAppInterceptSettings pkg=" + packageName
+                    + " delay=" + clampedNew + " popupDelayMin=" + popupDelayMin);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] setAppInterceptSettings failed: " + e.getMessage());
+            promise.reject("SET_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    @ReactMethod
+    public void setAllAppsInterceptSettings(String message, int delaySecs, int popupDelayMin, Promise promise) {
+        try {
+            int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
+            BreakPrefs.setAllAppsInterceptSettings(reactContext, message, clampedNew, popupDelayMin);
+            Log.d(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings delay=" + clampedNew
+                    + " popupDelayMin=" + popupDelayMin);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings failed: " + e.getMessage());
+            promise.reject("SET_ALL_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings Change Lock methods (opt-in per-scope edit lock)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the lock state for ONE scope as a JSON string:
+     * { enabled, locked, lockUntil (epoch ms), durationMs }.
+     * scope is "global" or a managed app's package name.
+     */
+    @ReactMethod
+    public void getSettingsLockState(String scope, Callback callback) {
+        String json = SettingsLockManager.getStateJson(reactContext, scope);
+        Log.d(TAG, "[SETTINGS_LOCK] getSettingsLockState scope=" + scope + " → " + json);
+        callback.invoke(json);
+    }
+
+    /** Enables/disables the whole feature. Disabling instantly unlocks every scope. */
+    @ReactMethod
+    public void setSettingsLockEnabled(boolean enabled) {
+        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockEnabled=" + enabled);
+        SettingsLockManager.setEnabled(reactContext, enabled);
+    }
+
+    /** Reads the feature toggle (default false). */
+    @ReactMethod
+    public void getSettingsLockEnabled(Callback callback) {
+        boolean enabled = SettingsLockManager.isEnabled(reactContext);
+        Log.d(TAG, "[SETTINGS_LOCK] getSettingsLockEnabled=" + enabled);
+        callback.invoke(enabled);
+    }
+
+    /** Sets the lock length in HOURS (clamped 24–168). Applies to the next lock that starts. */
+    @ReactMethod
+    public void setSettingsLockDuration(int hours) {
+        long ms = (long) hours * 60L * 60L * 1000L;
+        SettingsLockManager.setDurationMs(reactContext, ms);
+        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockDuration hours=" + hours);
+    }
+
+    /**
+     * Starts (or restarts) the lock for {@code scope}. The JS layer calls this when
+     * the user has edited the scope and is leaving the screen. No-op if the feature
+     * is off. scope is "global" or a managed app's package name.
+     */
+    @ReactMethod
+    public void startSettingsLock(String scope) {
+        Log.d(TAG, "[SETTINGS_LOCK] startSettingsLock scope=" + scope);
+        SettingsLockManager.startLock(reactContext, scope);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -325,7 +456,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getModes(Callback callback) {
         Log.d(TAG, "[MODE] getModes called");
-        String json = BreqkPrefs.get(reactContext).getString(BreqkPrefs.KEY_MODES, "{}");
+        String json = BreakPrefs.get(reactContext).getString(BreakPrefs.KEY_MODES, "{}");
         Log.d(TAG, "[MODE] returning: " + json);
         callback.invoke(json);
     }
@@ -338,8 +469,12 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         Log.d(TAG, "[MODE] saveModes called");
         try {
             JSONObject parsed = new JSONObject(jsonString);
-            BreqkPrefs.saveModes(reactContext, parsed);
-            Log.d(TAG, "[MODE] saveModes saved");
+            BreakPrefs.saveModes(reactContext, parsed);
+            // Schedule edits made in the UI must take effect immediately. Without
+            // this, AlarmManager schedules only refreshed on boot / app cold-start,
+            // so a newly edited start/end time was ignored until the next reboot.
+            ModeManager.reregisterAllAlarms(reactContext);
+            Log.d(TAG, "[MODE] saveModes saved + alarms re-registered");
         } catch (Exception e) {
             Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
         }
@@ -350,7 +485,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void getActiveMode(Callback callback) {
-        String modeId = BreqkPrefs.getActiveMode(reactContext);
+        String modeId = BreakPrefs.getActiveMode(reactContext);
         Log.d(TAG, "[MODE] getActiveMode → " + modeId);
         callback.invoke(modeId);
     }
@@ -385,6 +520,102 @@ public class SettingsModule extends ReactContextBaseJavaModule {
             Log.e(TAG, "[MODE] deactivateMode error: " + e.getMessage());
             promise.reject("MODE_ERROR", e.getMessage());
         }
+    }
+
+    /** Reads the global mode-notifications toggle (default true). */
+    @ReactMethod
+    public void getModeNotifsEnabled(Callback callback) {
+        boolean enabled = BreakPrefs.isModeNotifsEnabled(reactContext);
+        Log.d(TAG, "[MODE] getModeNotifsEnabled → " + enabled);
+        callback.invoke(enabled);
+    }
+
+    /** Sets the global mode-notifications toggle. */
+    @ReactMethod
+    public void setModeNotifsEnabled(boolean enabled) {
+        Log.d(TAG, "[MODE] setModeNotifsEnabled=" + enabled);
+        BreakPrefs.setModeNotifsEnabled(reactContext, enabled);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Browser content filter methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Enables or disables the browser content filter.
+     * ReelsInterventionService checks this pref on browser accessibility events.
+     */
+    @ReactMethod
+    public void saveContentFilterEnabled(boolean enabled, Promise promise) {
+        Log.d(TAG, "[FILTER] saveContentFilterEnabled=" + enabled);
+        try {
+            BreakPrefs.setContentFilterEnabled(reactContext, enabled);
+            promise.resolve(null);
+        } catch (Exception e) {
+            Log.e(TAG, "[FILTER] saveContentFilterEnabled error: " + e.getMessage());
+            promise.reject("FILTER_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the current content filter enabled state (default true if never set).
+     */
+    @ReactMethod
+    public void getContentFilterEnabled(Callback callback) {
+        boolean enabled = BreakPrefs.isContentFilterEnabled(reactContext);
+        Log.d(TAG, "[FILTER] getContentFilterEnabled=" + enabled);
+        callback.invoke(enabled);
+    }
+
+    /**
+     * Returns true if ReelsInterventionService is enabled in Android Accessibility
+     * Settings (the single Break accessibility toggle).
+     * Independent of the content_filter_enabled in-app feature pref.
+     */
+    @ReactMethod
+    public void isContentFilterServiceEnabled(Callback callback) {
+        try {
+            String enabled = Settings.Secure.getString(
+                    reactContext.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            boolean active = enabled != null &&
+                    enabled.contains("com.Break/com.Break.ReelsInterventionService");
+            Log.d(TAG, "[FILTER] accessibilityServiceEnabled=" + active);
+            callback.invoke(active);
+        } catch (Exception e) {
+            Log.e(TAG, "[FILTER] isContentFilterServiceEnabled error: " + e.getMessage());
+            callback.invoke(false);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Intercept message & delay getters
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Retrieves the saved intercept message from SharedPreferences.
+     * Returns default "Is this intentional?" if not yet set.
+     */
+    @ReactMethod
+    public void getDelayMessage(Callback callback) {
+        Log.d(TAG, "[GET] getDelayMessage called");
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
+        String message = prefs.getString(BreakPrefs.KEY_DELAY_MESSAGE, "Is this intentional?");
+        Log.d(TAG, "[GET] delay_message=" + message);
+        callback.invoke(message);
+    }
+
+    /**
+     * Retrieves the saved forced pause duration from SharedPreferences.
+     * Returns default (15 seconds) if not yet set.
+     */
+    @ReactMethod
+    public void getDelayTime(Callback callback) {
+        Log.d(TAG, "[GET] getDelayTime called");
+        SharedPreferences prefs = BreakPrefs.get(reactContext);
+        int seconds = prefs.getInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, 15);
+        Log.d(TAG, "[GET] delay_time_seconds=" + seconds);
+        callback.invoke(seconds);
     }
 
 }

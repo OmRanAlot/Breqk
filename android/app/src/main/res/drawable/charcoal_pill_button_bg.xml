@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    charcoal_pill_button_bg.xml
+    Solid charcoal (#1A1A1A) pill for primary actions on LIGHT-themed surfaces.
+    Matches the React Native app theme (L.charcoal). Used by:
+      - overlay_uninstall_lock.xml: primary "Keep Break" button
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#1A1A1A" />
+    <corners android:radius="9999dp" />
+</shape>

@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.snapchat;
+package com.Break.shortform.platform.snapchat;
 
 /**
  * SnapchatViewIds

@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform;
+package com.Break.shortform.platform;
 
 /**
  * Enum of all platforms for which short-form content monitoring is defined.

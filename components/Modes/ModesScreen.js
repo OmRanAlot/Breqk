@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   Switch,
   TouchableOpacity,
   ScrollView,
@@ -10,10 +9,12 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import ModeEditorModal from './ModeEditorModal';
+import { styles, L } from './ModesScreen.styles';
 
 if (
   Platform.OS === 'android' &&
@@ -23,15 +24,6 @@ if (
 }
 
 const { SettingsModule, VPNModule } = require('react-native').NativeModules;
-
-const L = {
-  bg: '#FAFAFA',
-  charcoal: '#1A1A1A',
-  muted: '#737373',
-  border: '#E5E5E5',
-  cardBg: '#FFFFFF',
-  cardBorder: 'rgba(0,0,0,0.07)',
-};
 
 const MODE_ICONS = {
   book: '📖',
@@ -71,13 +63,47 @@ const DEFAULT_MODES = {
         reels_detection: true,
       },
     },
-    setting_overrides: { delay_time_seconds: 20 },
+    setting_overrides: {
+      delay_time_seconds: 15,
+      delay_message: "It's bedtime. Put the phone down.",
+      recurring_overlay: true,
+      overlay_interval_seconds: 5,
+    },
     schedule: {
       start_time: '22:00',
       end_time: '07:00',
       days: [0, 1, 2, 3, 4, 5, 6],
     },
   },
+  // Throwaway mode for testing the schedule timers yourself. Use the editor's
+  // "Quick test" button to arm a fresh near-future window, then watch it switch
+  // on and back to default. The native default seeds a near-future schedule on
+  // first install; this JS fallback is only used if native modes are empty.
+  testing: {
+    name: 'Testing',
+    icon: 'focus',
+    color: '#2196F3',
+    enabled: false,
+    policy_overrides: {
+      'com.instagram.android': { app_open_intercept: true },
+    },
+    setting_overrides: { delay_time_seconds: 5, persistent_notification: true },
+    schedule: {
+      start_time: '00:00',
+      end_time: '00:02',
+      days: [0, 1, 2, 3, 4, 5, 6],
+    },
+  },
+};
+
+// Formats a 24h "HH:mm" string as a 12-hour "h:mm AM/PM" label for display.
+const formatTime12 = hhmm => {
+  const [h, m] = (hhmm || '').split(':').map(n => parseInt(n, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return hhmm || '';
+  const period = h >= 12 ? 'PM' : 'AM';
+  let hour12 = h % 12;
+  if (hour12 === 0) hour12 = 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
 };
 
 const BackIcon = ({ color, size }) => (
@@ -119,8 +145,16 @@ const generateModeSummary = mode => {
     parts.push(settings.delay_time_seconds + 's delay');
   }
 
+  if (settings.recurring_overlay) {
+    parts.push('Recurring overlay');
+  }
+
   if (mode.schedule) {
-    parts.push(mode.schedule.start_time + '–' + mode.schedule.end_time);
+    parts.push(
+      formatTime12(mode.schedule.start_time) +
+        '–' +
+        formatTime12(mode.schedule.end_time),
+    );
   } else if (mode.enabled) {
     parts.push('Manual');
   }
@@ -181,10 +215,12 @@ const ModesScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
 
   const [modes, setModes] = useState({});
+  const [activeModeId, setActiveModeId] = useState(null);
   const [editingModeId, setEditingModeId] = useState(null);
   const [editingMode, setEditingMode] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [isNewMode, setIsNewMode] = useState(false);
+  const [notifsEnabled, setNotifsEnabled] = useState(true);
 
   const savedOpacity = useRef(new Animated.Value(0)).current;
   const savedTimer = useRef(null);
@@ -206,11 +242,21 @@ const ModesScreen = ({ navigation }) => {
   }, [savedOpacity]);
 
   useEffect(() => {
-    const load = async () => {
-      console.log('[ModesScreen] loading modes');
+    const loadData = async () => {
+      console.log('[ModesScreen] loading modes and active mode');
       try {
+        const activeId = await new Promise(resolve =>
+          SettingsModule.getActiveMode(resolve),
+        );
+        setActiveModeId(activeId || null);
+
+        const notifsOn = await new Promise(resolve =>
+          SettingsModule.getModeNotifsEnabled(resolve),
+        );
+        setNotifsEnabled(notifsOn !== false);
+
         const modesJson = await new Promise(resolve =>
-          SettingsModule.getModes(json => resolve(json)),
+          SettingsModule.getModes(resolve),
         );
         let parsedModes = {};
         try {
@@ -218,18 +264,35 @@ const ModesScreen = ({ navigation }) => {
         } catch (_) {}
         if (!parsedModes || Object.keys(parsedModes).length === 0) {
           parsedModes = DEFAULT_MODES;
+        }
+
+        let needsSave = false;
+        Object.keys(parsedModes).forEach(id => {
+          const shouldBeEnabled = id === activeId;
+          if (parsedModes[id].enabled !== shouldBeEnabled) {
+            parsedModes[id].enabled = shouldBeEnabled;
+            needsSave = true;
+          }
+        });
+
+        if (needsSave) {
           SettingsModule.saveModes(JSON.stringify(parsedModes));
         }
+
         setModes(parsedModes);
-        console.log(
-          '[ModesScreen] modes loaded:',
-          Object.keys(parsedModes).length,
-        );
       } catch (e) {
         console.warn('[ModesScreen] load error:', e);
       }
     };
-    load();
+    loadData();
+
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        loadData();
+      }
+    });
+
+    return () => sub?.remove();
   }, []);
 
   const handleToggleActive = useCallback(
@@ -253,9 +316,26 @@ const ModesScreen = ({ navigation }) => {
       const nativeCall = newValue
         ? VPNModule.activateMode(modeId)
         : VPNModule.deactivateMode();
-      Promise.resolve(nativeCall).catch(e =>
-        console.warn('[ModesScreen] native mode toggle failed:', e),
-      );
+      Promise.resolve(nativeCall)
+        .then(() => {
+          SettingsModule.getActiveMode(id => {
+            setActiveModeId(id || null);
+            // Native fallback to default on deactivate
+            if (!newValue && id === 'default' && normalized['default']) {
+              setModes(prev => {
+                const next = { ...prev };
+                Object.keys(next).forEach(
+                  k => (next[k].enabled = k === 'default'),
+                );
+                SettingsModule.saveModes(JSON.stringify(next));
+                return next;
+              });
+            }
+          });
+        })
+        .catch(e =>
+          console.warn('[ModesScreen] native mode toggle failed:', e),
+        );
       showSaved();
     },
     [modes, showSaved],
@@ -288,20 +368,25 @@ const ModesScreen = ({ navigation }) => {
       console.log('[ModesScreen] saving mode:', modeId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      if (isNewMode) {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      } else {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
+      const updatedModes = { ...modes, [modeId]: updatedMode };
+      setModes(updatedModes);
+      SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+      // If we just edited the ACTIVE mode, re-activate it natively so the new
+      // policy_overrides resync blocked_apps + overlay settings immediately —
+      // the same path AppDetail uses after a per-app edit. Without this the
+      // native monitor keeps the pre-edit blocked set until something else
+      // re-triggers a sync.
+      if (modeId === activeModeId) {
+        Promise.resolve(VPNModule.activateMode(activeModeId)).catch(e =>
+          console.warn('[ModesScreen] re-activate after save failed:', e),
+        );
       }
 
       setModalVisible(false);
       showSaved();
     },
-    [modes, isNewMode, showSaved],
+    [modes, activeModeId, showSaved],
   );
 
   const handleDelete = useCallback(
@@ -316,6 +401,16 @@ const ModesScreen = ({ navigation }) => {
       showSaved();
     },
     [modes, showSaved],
+  );
+
+  const handleToggleNotifs = useCallback(
+    value => {
+      console.log('[ModesScreen] mode notifications →', value);
+      setNotifsEnabled(value);
+      SettingsModule.setModeNotifsEnabled(value);
+      showSaved();
+    },
+    [showSaved],
   );
 
   const handleCloseModal = useCallback(() => {
@@ -356,7 +451,9 @@ const ModesScreen = ({ navigation }) => {
         {activeModes.length > 0 && (
           <View style={styles.activeBanner}>
             <Text style={styles.activeBannerText}>
-              {activeModes.length} mode{activeModes.length > 1 ? 's' : ''}{' '}
+              {activeModeId && modes[activeModeId]
+                ? modes[activeModeId].name
+                : 'A mode'}{' '}
               active
             </Text>
           </View>
@@ -373,7 +470,7 @@ const ModesScreen = ({ navigation }) => {
             key={id}
             modeId={id}
             mode={mode}
-            isActive={mode.enabled}
+            isActive={id === activeModeId}
             onToggleActive={handleToggleActive}
             onEdit={handleEdit}
           />
@@ -386,6 +483,23 @@ const ModesScreen = ({ navigation }) => {
         >
           <Text style={styles.createModeBtnText}>+ Create Mode</Text>
         </TouchableOpacity>
+
+        <Text style={styles.sectionLabel}>NOTIFICATIONS</Text>
+        <View style={styles.notifCard}>
+          <View style={styles.notifCardInfo}>
+            <Text style={styles.notifCardTitle}>Mode notifications</Text>
+            <Text style={styles.notifCardCaption}>
+              Alerts when a mode switches on or off, plus an ongoing badge while
+              modes set to stay-visible (like Bedtime) are active.
+            </Text>
+          </View>
+          <Switch
+            value={notifsEnabled}
+            onValueChange={handleToggleNotifs}
+            trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+            thumbColor="#FFFFFF"
+          />
+        </View>
 
         <View style={styles.infoSection}>
           <Text style={styles.infoTitle}>How modes work</Text>
@@ -416,172 +530,5 @@ const ModesScreen = ({ navigation }) => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: L.bg,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: L.bg,
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: '500',
-    color: L.charcoal,
-  },
-  headerSpacer: { width: 36 },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 24,
-    paddingTop: 28,
-    paddingBottom: 48,
-  },
-  activeBanner: {
-    backgroundColor: 'rgba(0,0,0,0.06)',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginBottom: 20,
-  },
-  activeBannerText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: L.charcoal,
-    textAlign: 'center',
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: L.charcoal,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom: 8,
-  },
-  sectionCaption: {
-    fontSize: 13,
-    color: L.muted,
-    lineHeight: 18,
-    marginBottom: 16,
-  },
-  modeCard: {
-    backgroundColor: L.cardBg,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    padding: 16,
-    marginBottom: 12,
-  },
-  modeCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  modeIcon: {
-    fontSize: 24,
-  },
-  modeCardInfo: {
-    flex: 1,
-  },
-  modeCardName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: L.charcoal,
-  },
-  modeCardSummary: {
-    fontSize: 12,
-    color: L.muted,
-    marginTop: 2,
-    lineHeight: 16,
-  },
-  modeEditLink: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: L.border,
-  },
-  modeEditLinkText: {
-    fontSize: 13,
-    color: L.muted,
-    fontWeight: '500',
-  },
-  activeBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  activeBadgeText: {
-    fontSize: 10,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  createModeBtn: {
-    backgroundColor: L.charcoal,
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  createModeBtnText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  infoSection: {
-    marginTop: 32,
-    padding: 16,
-    backgroundColor: L.cardBg,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-  },
-  infoTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: L.charcoal,
-    marginBottom: 8,
-  },
-  infoText: {
-    fontSize: 13,
-    color: L.muted,
-    lineHeight: 18,
-  },
-  savedToast: {
-    position: 'absolute',
-    bottom: 40,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  savedToastText: {
-    backgroundColor: L.charcoal,
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-});
 
 export default ModesScreen;

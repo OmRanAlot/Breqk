@@ -1,11 +1,11 @@
-package com.breqk.shortform.platform.snapchat;
+package com.Break.shortform.platform.snapchat;
 
 import android.content.Context;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import com.breqk.shortform.detection.ShortFormDetector;
-import com.breqk.shortform.detection.ShortFormDetector.DetectResult;
+import com.Break.shortform.detection.ShortFormDetector;
+import com.Break.shortform.detection.ShortFormDetector.DetectResult;
 
 /**
  * SnapchatDetector

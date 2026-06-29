@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "Breqk.app"
-               BlueprintName = "Breqk"
-               ReferencedContainer = "container:Breqk.xcodeproj">
+               BuildableName = "Break.app"
+               BlueprintName = "Break"
+               ReferencedContainer = "container:Break.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "00E356ED1AD99517003FC87E"
-               BuildableName = "BreqkTests.xctest"
-               BlueprintName = "BreqkTests"
-               ReferencedContainer = "container:Breqk.xcodeproj">
+               BuildableName = "BreakTests.xctest"
+               BlueprintName = "BreakTests"
+               ReferencedContainer = "container:Break.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -55,9 +55,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Breqk.app"
-            BlueprintName = "Breqk"
-            ReferencedContainer = "container:Breqk.xcodeproj">
+            BuildableName = "Break.app"
+            BlueprintName = "Break"
+            ReferencedContainer = "container:Break.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,9 +72,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Breqk.app"
-            BlueprintName = "Breqk"
-            ReferencedContainer = "container:Breqk.xcodeproj">
+            BuildableName = "Break.app"
+            BlueprintName = "Break"
+            ReferencedContainer = "container:Break.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

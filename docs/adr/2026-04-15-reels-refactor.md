@@ -10,7 +10,7 @@
 
 ## Decision
 
-We split the service into a package of single-responsibility collaborators under `com.breqk.reels`:
+We split the service into a package of single-responsibility collaborators under `com.Break.reels`:
 
 - **`ShortFormIds`** — single source of truth for view ID arrays and full-screen thresholds (closes B1)
 - **`FullScreenCheck`** — static utility replacing duplicated `isFullScreen*()` helpers

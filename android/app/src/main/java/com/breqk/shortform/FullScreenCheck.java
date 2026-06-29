@@ -1,10 +1,11 @@
-package com.breqk.shortform;
+package com.Break.shortform;
 
 import android.content.Context;
 import android.graphics.Rect;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 /**
  * FullScreenCheck
@@ -38,6 +39,56 @@ public final class FullScreenCheck {
     public static final int MAX_TOP_OFFSET_PX = 200;
 
     private FullScreenCheck() {}
+
+    /**
+     * Returns true if {@code node} belongs to the active, foreground TYPE_APPLICATION window.
+     *
+     * YouTube keeps a resident "background Shorts player" alive as a floating overlay window
+     * (TYPE_APPLICATION_OVERLAY) after the user exits a short. Nodes inside that overlay window
+     * report isVisibleToUser()=true and full-screen bounds, causing false-positive Shorts detection
+     * on scrolls/heartbeats while the user is on the home feed or a regular video.
+     *
+     * This check rejects nodes whose window is:
+     *   - null (cannot verify — fail-open: return true to avoid breaking detection)
+     *   - type != TYPE_APPLICATION (e.g. overlay, system, accessibility)
+     *   - isActive()=false (background/not-currently-interacted window)
+     *
+     * Called after isFullScreen() in YouTubeDetector Tier 1 and Tier 2 only.
+     * Not applied to Instagram (different false-positive profile).
+     *
+     * Requires FLAG_RETRIEVE_INTERACTIVE_WINDOWS in AccessibilityServiceInfo (already set).
+     *
+     * Log filter: adb logcat -s REELS_WATCH | findstr "BG_PLAYER"
+     *
+     * @param node The node whose window membership to check. Null -> false.
+     * @param tag  Log tag of the calling class.
+     * @return true if the node is in the active foreground application window (or window info unavailable).
+     */
+    public static boolean isInActiveForegroundWindow(AccessibilityNodeInfo node, String tag) {
+        if (node == null) return false;
+
+        AccessibilityWindowInfo window = node.getWindow();
+        if (window == null) {
+            Log.d(tag, "[BG_PLAYER] isInActiveForegroundWindow: window=null -- cannot verify, allowing");
+            return true;
+        }
+
+        int type = window.getType();
+        boolean active = window.isActive();
+        window.recycle();
+
+        if (type != AccessibilityWindowInfo.TYPE_APPLICATION) {
+            Log.d(tag, "[BG_PLAYER] isInActiveForegroundWindow: type=" + type
+                    + " (not TYPE_APPLICATION=" + AccessibilityWindowInfo.TYPE_APPLICATION
+                    + ") -- background overlay, rejecting");
+            return false;
+        }
+        if (!active) {
+            Log.d(tag, "[BG_PLAYER] isInActiveForegroundWindow: isActive()=false -- background window, rejecting");
+            return false;
+        }
+        return true;
+    }
 
     /**
      * Returns true if {@code node} is visible to the user and covers at least

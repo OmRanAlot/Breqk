@@ -13,6 +13,7 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
+import { Monogram } from '../Permissions/onboarding/components';
 
 const L = {
   charcoal: '#1A1A1A',
@@ -65,6 +66,9 @@ const ManagedAppsList = ({ appPolicies = {}, onSelect }) => {
           const policy = appPolicies[app.pkg];
           const status = statusLine(policy, app);
           const isLast = index === MANAGED_APPS.length - 1;
+          // Tile is "active" (dark) when the app has any intervention on, matching
+          // the onboarding selection styling.
+          const isActive = Boolean(policy) && policy.enabled !== false;
 
           return (
             <TouchableOpacity
@@ -78,7 +82,13 @@ const ManagedAppsList = ({ appPolicies = {}, onSelect }) => {
               accessibilityRole="button"
               accessibilityLabel={`${app.label} settings`}
             >
-              <Text style={styles.emoji}>{app.emoji}</Text>
+              <Monogram
+                text={app.monogram}
+                active={isActive}
+                size={36}
+                radius={10}
+                fontSize={14}
+              />
               <View style={styles.rowContent}>
                 <Text style={styles.appLabel}>{app.label}</Text>
                 <Text style={styles.statusText}>{status}</Text>
@@ -122,11 +132,6 @@ const styles = StyleSheet.create({
   rowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: L.border,
-  },
-  emoji: {
-    fontSize: 20,
-    width: 28,
-    textAlign: 'center',
   },
   rowContent: {
     flex: 1,

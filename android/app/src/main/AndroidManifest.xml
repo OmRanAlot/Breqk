@@ -14,13 +14,26 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     
-    <!-- VPN permission (if you want to keep VPN functionality) -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"
-        tools:ignore="ProtectedPermissions" />
+
 
     <!-- Exact alarms for mode scheduling (Bedtime, Study Mode, etc.) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+        Package visibility (Android 11+, API 30+).
+        QUERY_ALL_PACKAGES (above) currently grants visibility into every installed app,
+        which is what VPNModule.getInstalledApps() relies on for the "Manage Apps"
+        settings screen. The <queries> block below is a forward-compatible fallback:
+        if/when QUERY_ALL_PACKAGES is removed (Play Store sensitive permission policy),
+        we still see every launcher-visible app via this LAUNCHER intent declaration.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:name=".MainApplication"
@@ -31,17 +44,13 @@
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
 
-        <!-- VPN Service (optional - mainly using UsageStatsManager instead) -->
+        <!-- Foreground monitoring service — keeps AppUsageMonitor alive in the background.
+             NOT a VPN. Uses foregroundServiceType=specialUse to avoid OS kill. -->
         <service
-            android:name=".service.BreqkVpnService"
+            android:name=".service.BreakVpnService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-        </service>
+            android:foregroundServiceType="specialUse" />
 
 <!-- Instagram Reels and YouTube Shorts scroll intervention -->
         <service
@@ -57,30 +66,6 @@
         </service>
 
         <!--
-            Device Administrator receiver.
-            Registers Breqk as a Device Admin so it cannot be uninstalled without
-            first deactivating admin privileges — deliberate friction against deletion.
-            Logcat tag: DEVICE_ADMIN
-
-            DEV bypass (ADB):
-              adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
-              adb uninstall com.breqk
-        -->
-        <receiver
-            android:name=".deviceadmin.BreqkDeviceAdminReceiver"
-            android:exported="true"
-            android:permission="android.permission.BIND_DEVICE_ADMIN">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-                <action android:name="android.app.action.DEVICE_ADMIN_DISABLE_REQUESTED" />
-                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
-            </intent-filter>
-        </receiver>
-
-        <!--
             Mode schedule receiver.
             Handles AlarmManager intents for mode auto-activation/deactivation
             (e.g., Bedtime mode at 10pm) and re-registers alarms on boot.
@@ -91,13 +76,13 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="com.breqk.ACTION_MODE_START" />
-                <action android:name="com.breqk.ACTION_MODE_END" />
+                <action android:name="com.Break.ACTION_MODE_START" />
+                <action android:name="com.Break.ACTION_MODE_END" />
             </intent-filter>
         </receiver>
 
         <receiver
-            android:name=".widget.BreqkWidgetProvider"
+            android:name=".widget.BreakWidgetProvider"
             android:exported="true"
             android:label="@string/widget_description">
             <intent-filter>
@@ -105,28 +90,38 @@
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_breqk_info" />
+                android:resource="@xml/widget_break_info" />
         </receiver>
 
         <!--
-            Entry point — shown on every cold launch until ReelsInterventionService is enabled.
-            Forwards to MainActivity automatically once permission is granted.
+            Uninstall-lock expiry receiver.
+            Fired by AlarmManager when the 24-hour (or debug 60-second) cooldown elapses.
+            Also handles BOOT_COMPLETED to re-schedule the alarm after a device reboot.
+            Logcat tag: UNINSTALL_LOCK
+        -->
+        <receiver
+            android:name=".lock.UninstallExpiryReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Legacy native accessibility gate. No longer the launcher: the React
+            Native onboarding (PermissionsScreen) now requests the accessibility
+            permission with proper UI, so this all-black pre-RN gate is bypassed.
+            Kept declared (non-launcher) in case it is opened explicitly.
             Logcat tag: ACC_PERM_GATE
         -->
         <activity
             android:name=".accessibility.AccessibilityPermissionActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
 
         <!--
-            Main React Native app screen.
-            Only reached after AccessibilityPermissionActivity confirms the service is enabled.
-            Launcher intent filter removed — now lives on AccessibilityPermissionActivity.
+            Main React Native app screen — now the cold-launch entry point.
+            Onboarding (including the accessibility permission step) runs inside RN.
         -->
         <activity
             android:name=".MainActivity"
@@ -137,11 +132,16 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- Deep link for widget browser quick-launch buttons (breqk://browser/instagram, breqk://browser/youtube) -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link for widget browser quick-launch buttons (Break://browser/instagram, Break://browser/youtube) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="breqk" android:host="browser" />
+                <data android:scheme="Break" android:host="browser" />
             </intent-filter>
         </activity>
     </application>

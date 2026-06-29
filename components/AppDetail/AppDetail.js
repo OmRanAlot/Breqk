@@ -16,30 +16,27 @@
  * Logging prefix: [AppDetail]
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   Switch,
   TouchableOpacity,
   ScrollView,
-  StyleSheet,
   NativeModules,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
+import useSettingsLock from '../Customize/useSettingsLock';
+import SettingsLockGate from '../Customize/SettingsLockGate';
+import { styles, L } from './AppDetail.styles';
+import InterceptCustomization from './InterceptCustomization';
+import ApplyAllModal from './ApplyAllModal';
 
 const { VPNModule, SettingsModule } = NativeModules;
 
-const L = {
-  bg: '#FAFAFA',
-  charcoal: '#1A1A1A',
-  muted: '#737373',
-  border: '#E5E5E5',
-  cardBg: '#FFFFFF',
-  cardBorder: 'rgba(0,0,0,0.07)',
-};
+const POPUP_DELAY_ONCE_SENTINEL = 2147483647;
 
 const BackIcon = ({ color, size }) => (
   <Svg
@@ -64,15 +61,71 @@ const AppDetail = ({ navigation, route }) => {
 
   const appInfo = MANAGED_APPS.find(a => a.pkg === packageName);
 
+  // Settings Change Lock for THIS app's scope (its package name). Editing any
+  // control marks the scope dirty; leaving the screen then starts the lock if the
+  // feature is enabled. Independent of the global scope and other apps.
+  const settingsLock = useSettingsLock(packageName, navigation);
+  const { markDirty: markSettingsDirty } = settingsLock;
+
   const [policy, setPolicy] = useState({});
   const [postLimit, setPostLimit] = useState(DEFAULT_POST_LIMIT);
+  const [activeModeId, setActiveModeId] = useState(null);
+  const [modes, setModes] = useState({});
+
+  // ── Per-app intercept settings ─────────────────────────────────────────────
+  const [interceptMessage, setInterceptMessage] = useState('');
+  const [interceptDelaySecs, setInterceptDelaySecs] = useState(15);
+  const [interceptFreqMode, setInterceptFreqMode] = useState('repeat'); // 'once' | 'repeat'
+  const [interceptRepeatMin, setInterceptRepeatMin] = useState(10);
+  const [showApplyAllModal, setShowApplyAllModal] = useState(false);
+  const interceptSaveTimer = useRef(null);
+  // Holds the latest intercept field values so the unmount flush reads current
+  // state without re-subscribing on every edit. Re-running the flush effect on
+  // each value change caused its cleanup to fire mid-edit with the PREVIOUS
+  // render's values — e.g. selecting "Once per open" would be overwritten by a
+  // stale "repeat / 10 min" save, so the overlay kept re-showing every 10 min.
+  const interceptValuesRef = useRef({
+    message: '',
+    delaySecs: 15,
+    mode: 'repeat',
+    repeatMin: 10,
+  });
 
   useEffect(() => {
     console.log('[AppDetail] loading policy for', packageName);
-    SettingsModule.getAppPolicies(json => {
+    const loadData = async () => {
       try {
-        const policies = JSON.parse(json || '{}');
-        const p = policies[packageName] || {};
+        const activeId = await new Promise(resolve =>
+          SettingsModule.getActiveMode(resolve),
+        );
+        setActiveModeId(activeId || null);
+
+        const modesJson = await new Promise(resolve =>
+          SettingsModule.getModes(resolve),
+        );
+        let parsedModes = {};
+        try {
+          parsedModes = JSON.parse(modesJson || '{}');
+        } catch (e) {}
+        setModes(parsedModes);
+
+        const policiesJson = await new Promise(resolve =>
+          SettingsModule.getAppPolicies(resolve),
+        );
+        let basePolicies = {};
+        try {
+          basePolicies = JSON.parse(policiesJson || '{}');
+        } catch (e) {}
+
+        let p = basePolicies[packageName] || {};
+
+        // If a mode is active, layer its overrides on top so the UI reflects the true effective state
+        if (activeId && parsedModes[activeId]?.policy_overrides) {
+          const overrides =
+            parsedModes[activeId].policy_overrides[packageName] || {};
+          p = { ...p, ...overrides };
+        }
+
         setPolicy(p);
 
         if (typeof p.session_post_limit === 'number') {
@@ -83,27 +136,157 @@ const AppDetail = ({ navigation, route }) => {
           });
         }
 
-        console.log('[AppDetail] policy loaded:', JSON.stringify(p));
+        console.log('[AppDetail] effective policy loaded:', JSON.stringify(p));
+
+        // Load per-app intercept settings
+        try {
+          const s = await SettingsModule.getAppInterceptSettings(packageName);
+          setInterceptMessage(s.message ?? '');
+          setInterceptDelaySecs(
+            typeof s.delaySecs === 'number' ? s.delaySecs : 15,
+          );
+          if (s.popupDelayMin === POPUP_DELAY_ONCE_SENTINEL) {
+            setInterceptFreqMode('once');
+            setInterceptRepeatMin(10);
+          } else {
+            setInterceptFreqMode('repeat');
+            setInterceptRepeatMin(s.popupDelayMin ?? 10);
+          }
+        } catch (e) {
+          console.warn('[AppDetail] load intercept settings failed:', e);
+        }
       } catch (e) {
-        console.warn('[AppDetail] parse policy failed:', e);
+        console.warn('[AppDetail] load data failed:', e);
       }
-    });
+    };
+    loadData();
   }, [packageName]);
+
+  const saveInterceptSettings = useCallback(
+    async (msg, secs, mode, repeatMin) => {
+      const delayMin = mode === 'once' ? POPUP_DELAY_ONCE_SENTINEL : repeatMin;
+      const roundedSecs = Math.round(secs);
+      try {
+        await SettingsModule.setAppInterceptSettings(
+          packageName,
+          msg,
+          roundedSecs,
+          delayMin,
+        );
+        console.log(
+          '[AppDetail] intercept settings saved pkg=' +
+            packageName +
+            ' secs=' +
+            roundedSecs +
+            ' delayMin=' +
+            delayMin,
+        );
+      } catch (e) {
+        console.warn('[AppDetail] save intercept settings failed:', e);
+      }
+    },
+    [packageName],
+  );
+
+  const scheduleInterceptSave = useCallback(
+    (msg, secs, mode, repeatMin) => {
+      markSettingsDirty();
+      if (interceptSaveTimer.current) clearTimeout(interceptSaveTimer.current);
+      interceptSaveTimer.current = setTimeout(() => {
+        saveInterceptSettings(msg, secs, mode, repeatMin);
+      }, 1500);
+    },
+    [saveInterceptSettings, markSettingsDirty],
+  );
+
+  // Keep the ref in sync with the latest intercept field values on every render.
+  // The unmount flush below reads from this ref instead of depending on the
+  // values directly — see interceptValuesRef declaration for why.
+  interceptValuesRef.current = {
+    message: interceptMessage,
+    delaySecs: interceptDelaySecs,
+    mode: interceptFreqMode,
+    repeatMin: interceptRepeatMin,
+  };
+
+  // Flush a pending intercept save ONLY on true unmount. Empty deps means the
+  // cleanup never fires mid-edit, so it can never overwrite a fresh selection
+  // (e.g. "Once per open") with stale values captured from a previous render.
+  useEffect(
+    () => () => {
+      if (interceptSaveTimer.current) {
+        clearTimeout(interceptSaveTimer.current);
+        interceptSaveTimer.current = null;
+        const { message, delaySecs, mode, repeatMin } =
+          interceptValuesRef.current;
+        saveInterceptSettings(message, delaySecs, mode, repeatMin);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const applyInterceptToAll = useCallback(async () => {
+    const delayMin =
+      interceptFreqMode === 'once'
+        ? POPUP_DELAY_ONCE_SENTINEL
+        : interceptRepeatMin;
+    try {
+      await SettingsModule.setAllAppsInterceptSettings(
+        interceptMessage,
+        interceptDelaySecs,
+        delayMin,
+      );
+      console.log('[AppDetail] intercept settings applied to all apps');
+    } catch (e) {
+      console.warn('[AppDetail] apply to all failed:', e);
+    }
+  }, [
+    interceptMessage,
+    interceptDelaySecs,
+    interceptFreqMode,
+    interceptRepeatMin,
+  ]);
 
   const setFeature = useCallback(
     async (key, value) => {
       console.log('[AppDetail] setFeature', packageName, key, '→', value);
+      markSettingsDirty();
       setPolicy(prev => ({ ...prev, [key]: value }));
       try {
+        // Update base policy
         await SettingsModule.setAppFeature(packageName, key, value);
+
+        // If a mode is active, propagate the change so it persists in the mode
+        if (activeModeId && modes[activeModeId]) {
+          const updatedModes = { ...modes };
+          if (!updatedModes[activeModeId].policy_overrides) {
+            updatedModes[activeModeId].policy_overrides = {};
+          }
+          if (!updatedModes[activeModeId].policy_overrides[packageName]) {
+            updatedModes[activeModeId].policy_overrides[packageName] = {};
+          }
+          updatedModes[activeModeId].policy_overrides[packageName][key] = value;
+          setModes(updatedModes);
+          SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+          // Re-trigger activation to sync blocked_apps natively
+          VPNModule.activateMode(activeModeId).catch(() => {});
+        }
+
         if (key === 'app_open_intercept') {
           VPNModule.startMonitoring().catch(() => {});
+        }
+        // Sync the global free_break_enabled pref so Home's getFreeBreakStatus()
+        // picks up the change (it reads from the global pref, not per-app policy).
+        if (key === 'free_break_enabled') {
+          SettingsModule.saveFreeBreakEnabled(value);
         }
       } catch (e) {
         console.error('[AppDetail] setAppFeature failed:', e);
       }
     },
-    [packageName],
+    [packageName, activeModeId, modes, markSettingsDirty],
   );
 
   const stepperFeature = appInfo?.features.find(
@@ -120,13 +303,40 @@ const AppDetail = ({ navigation, route }) => {
         Math.min(stepperFeature.max, postLimit + delta * stepperFeature.step),
       );
       setPostLimit(next);
+      markSettingsDirty();
       console.log('[AppDetail] session_post_limit →', next);
       SettingsModule.setAppFeature(packageName, 'session_post_limit', next);
+
+      // If a mode is active, propagate the change so it persists in the mode
+      if (activeModeId && modes[activeModeId]) {
+        const updatedModes = { ...modes };
+        if (!updatedModes[activeModeId].policy_overrides) {
+          updatedModes[activeModeId].policy_overrides = {};
+        }
+        if (!updatedModes[activeModeId].policy_overrides[packageName]) {
+          updatedModes[activeModeId].policy_overrides[packageName] = {};
+        }
+        updatedModes[activeModeId].policy_overrides[packageName][
+          'session_post_limit'
+        ] = next;
+        setModes(updatedModes);
+        SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+        VPNModule.activateMode(activeModeId).catch(() => {});
+      }
+
       if (packageName === 'com.instagram.android') {
         SettingsModule.saveHomeFeedPostLimit(next);
       }
     },
-    [packageName, postLimit, stepperFeature],
+    [
+      packageName,
+      postLimit,
+      stepperFeature,
+      activeModeId,
+      modes,
+      markSettingsDirty,
+    ],
   );
 
   if (!appInfo) {
@@ -150,9 +360,7 @@ const AppDetail = ({ navigation, route }) => {
         >
           <BackIcon color={L.charcoal} size={22} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          {appInfo.emoji} {appInfo.label}
-        </Text>
+        <Text style={styles.headerTitle}>{appInfo.label}</Text>
         <View style={styles.headerSpacer} />
       </View>
 
@@ -161,149 +369,198 @@ const AppDetail = ({ navigation, route }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* ── Master toggle ── */}
-        <View style={styles.section}>
-          <View style={styles.toggleRow}>
-            <View style={styles.toggleLabelGroup}>
-              <Text style={styles.toggleLabel}>Enable</Text>
-              <Text style={styles.toggleCaption}>
-                Turn off to disable all interventions for {appInfo.label}.
-              </Text>
-            </View>
-            <Switch
-              value={isEnabled}
-              onValueChange={val => setFeature('enabled', val)}
-              trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-              thumbColor="#FFFFFF"
-              accessibilityLabel={`Enable ${appInfo.label} interventions`}
-            />
-          </View>
-        </View>
-
-        {/* ── Per-app controls (gated on master toggle) ── */}
-        {isEnabled && (
+        {settingsLock.locked ? (
+          <SettingsLockGate
+            remainingMs={settingsLock.remainingMs}
+            scopeLabel={appInfo.label}
+          />
+        ) : (
           <>
-            {/* App Open Intercept */}
+            {/* ── Master toggle ── */}
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>App Open</Text>
               <View style={styles.toggleRow}>
                 <View style={styles.toggleLabelGroup}>
-                  <Text style={styles.toggleLabel}>App Open Intercept</Text>
+                  <Text style={styles.toggleLabel}>Enable</Text>
                   <Text style={styles.toggleCaption}>
-                    Show a delay overlay every time you open {appInfo.label}.
+                    Turn off to disable all interventions for {appInfo.label}.
                   </Text>
                 </View>
                 <Switch
-                  value={policy.app_open_intercept === true}
-                  onValueChange={val => setFeature('app_open_intercept', val)}
+                  value={isEnabled}
+                  onValueChange={val => setFeature('enabled', val)}
                   trackColor={{ false: '#D6D6D6', true: L.charcoal }}
                   thumbColor="#FFFFFF"
-                  accessibilityLabel="App Open Intercept"
+                  accessibilityLabel={`Enable ${appInfo.label} interventions`}
                 />
               </View>
             </View>
 
-            {/* Feature toggles */}
-            {toggleFeatures.length > 0 && (
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Interventions</Text>
-                {toggleFeatures.map((feature, i) => (
-                  <View
-                    key={feature.key}
-                    style={[styles.toggleRow, i > 0 && styles.toggleRowDivided]}
-                  >
-                    <Text style={styles.toggleLabel}>{feature.label}</Text>
+            {/* ── Per-app controls (gated on master toggle) ── */}
+            {isEnabled && (
+              <>
+                {/* App Open Intercept */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionLabel}>App Open</Text>
+                  <View style={styles.toggleRow}>
+                    <View style={styles.toggleLabelGroup}>
+                      <Text style={styles.toggleLabel}>App Open Intercept</Text>
+                      <Text style={styles.toggleCaption}>
+                        Show a delay overlay every time you open {appInfo.label}
+                        .
+                      </Text>
+                    </View>
                     <Switch
-                      value={policy[feature.key] === true}
-                      onValueChange={val => setFeature(feature.key, val)}
+                      value={policy.app_open_intercept === true}
+                      onValueChange={val =>
+                        setFeature('app_open_intercept', val)
+                      }
                       trackColor={{ false: '#D6D6D6', true: L.charcoal }}
                       thumbColor="#FFFFFF"
-                      accessibilityLabel={feature.label}
+                      accessibilityLabel="App Open Intercept"
                     />
                   </View>
-                ))}
-              </View>
-            )}
 
-            {/* Session post limit stepper */}
-            {stepperFeature && (
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>{stepperFeature.label}</Text>
-                <Text style={styles.sectionCaption}>
-                  After this many posts, you'll be prompted to stop scrolling.
-                </Text>
-                <View style={styles.stepperRow}>
-                  <TouchableOpacity
-                    style={styles.stepperBtn}
-                    onPress={() => adjustPostLimit(-1)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Decrease limit"
-                  >
-                    <Text style={styles.stepperBtnText}>−</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.stepperValue}>{postLimit}</Text>
-                  <TouchableOpacity
-                    style={styles.stepperBtn}
-                    onPress={() => adjustPostLimit(1)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Increase limit"
-                  >
-                    <Text style={styles.stepperBtnText}>+</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.stepperUnit}>posts</Text>
+                  {/* Per-app intercept customization — only shown when intercept is on */}
+                  {policy.app_open_intercept === true && (
+                    <InterceptCustomization
+                      interceptMessage={interceptMessage}
+                      setInterceptMessage={setInterceptMessage}
+                      interceptDelaySecs={interceptDelaySecs}
+                      setInterceptDelaySecs={setInterceptDelaySecs}
+                      interceptFreqMode={interceptFreqMode}
+                      setInterceptFreqMode={setInterceptFreqMode}
+                      interceptRepeatMin={interceptRepeatMin}
+                      setInterceptRepeatMin={setInterceptRepeatMin}
+                      interceptSaveTimer={interceptSaveTimer}
+                      scheduleInterceptSave={scheduleInterceptSave}
+                      saveInterceptSettings={saveInterceptSettings}
+                      onApplyAll={() => setShowApplyAllModal(true)}
+                    />
+                  )}
                 </View>
-              </View>
-            )}
 
-            {/* 20-Min Free Break */}
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Free Break</Text>
-              <View style={styles.toggleRow}>
-                <View style={styles.toggleLabelGroup}>
-                  <Text style={styles.toggleLabel}>20-Min Free Break</Text>
-                  <Text style={styles.toggleCaption}>
-                    Once per day — scroll freely for 20 min with no
-                    interruptions.
-                  </Text>
-                </View>
-                <Switch
-                  value={policy.free_break_enabled === true}
-                  onValueChange={val => setFeature('free_break_enabled', val)}
-                  trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                  thumbColor="#FFFFFF"
-                  accessibilityLabel="20-Minute Free Break"
-                />
-              </View>
-            </View>
-
-            {/* Safe Mode */}
-            {hasSafeMode && (
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Safe Mode</Text>
-                <Text style={styles.sectionCaption}>
-                  Opens {appInfo.label} through a restricted browser — no Reels
-                  or Shorts.
-                </Text>
-                <TouchableOpacity
-                  style={styles.safeModeButton}
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    console.log(
-                      '[AppDetail] Open Safe Mode:',
-                      appInfo.safeModePlatform,
-                    );
-                    navigation.navigate('Browser', {
-                      platform: appInfo.safeModePlatform,
-                    });
+                {/* Apply-to-all confirmation modal */}
+                <ApplyAllModal
+                  visible={showApplyAllModal}
+                  appLabel={appInfo.label}
+                  onCancel={() => setShowApplyAllModal(false)}
+                  onConfirm={async () => {
+                    setShowApplyAllModal(false);
+                    await applyInterceptToAll();
                   }}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open ${appInfo.label} in Safe Mode`}
-                >
-                  <Text style={styles.safeModeButtonText}>
-                    Open in Safe Mode
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                />
+
+                {/* Feature toggles */}
+                {toggleFeatures.length > 0 && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionLabel}>Interventions</Text>
+                    {toggleFeatures.map((feature, i) => (
+                      <View
+                        key={feature.key}
+                        style={[
+                          styles.toggleRow,
+                          i > 0 && styles.toggleRowDivided,
+                        ]}
+                      >
+                        <Text style={styles.toggleLabel}>{feature.label}</Text>
+                        <Switch
+                          value={policy[feature.key] === true}
+                          onValueChange={val => setFeature(feature.key, val)}
+                          trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                          thumbColor="#FFFFFF"
+                          accessibilityLabel={feature.label}
+                        />
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Session post limit stepper */}
+                {stepperFeature && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionLabel}>
+                      {stepperFeature.label}
+                    </Text>
+                    <Text style={styles.sectionCaption}>
+                      After this many posts, you'll be prompted to stop
+                      scrolling.
+                    </Text>
+                    <View style={styles.stepperRow}>
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => adjustPostLimit(-1)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Decrease limit"
+                      >
+                        <Text style={styles.stepperBtnText}>−</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.stepperValue}>{postLimit}</Text>
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => adjustPostLimit(1)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Increase limit"
+                      >
+                        <Text style={styles.stepperBtnText}>+</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.stepperUnit}>posts</Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* 20-Min Free Break */}
+                <View style={styles.section}>
+                  <Text style={styles.sectionLabel}>Free Break</Text>
+                  <View style={styles.toggleRow}>
+                    <View style={styles.toggleLabelGroup}>
+                      <Text style={styles.toggleLabel}>20-Min Free Break</Text>
+                      <Text style={styles.toggleCaption}>
+                        Once per day — scroll freely for 20 min with no
+                        interruptions.
+                      </Text>
+                    </View>
+                    <Switch
+                      value={policy.free_break_enabled === true}
+                      onValueChange={val =>
+                        setFeature('free_break_enabled', val)
+                      }
+                      trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                      thumbColor="#FFFFFF"
+                      accessibilityLabel="20-Minute Free Break"
+                    />
+                  </View>
+                </View>
+
+                {/* Safe Mode */}
+                {hasSafeMode && (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionLabel}>Safe Mode</Text>
+                    <Text style={styles.sectionCaption}>
+                      Opens {appInfo.label} through a restricted browser — no
+                      Reels or Shorts.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.safeModeButton}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        console.log(
+                          '[AppDetail] Open Safe Mode:',
+                          appInfo.safeModePlatform,
+                        );
+                        navigation.navigate('Browser', {
+                          platform: appInfo.safeModePlatform,
+                        });
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${appInfo.label} in Safe Mode`}
+                    >
+                      <Text style={styles.safeModeButtonText}>
+                        Open in Safe Mode
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </>
             )}
           </>
         )}
@@ -313,132 +570,3 @@ const AppDetail = ({ navigation, route }) => {
 };
 
 export default AppDetail;
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: L.bg,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    backgroundColor: L.bg,
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: '500',
-    color: L.charcoal,
-    letterSpacing: -0.2,
-  },
-  headerSpacer: { width: 36 },
-
-  scroll: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: 24,
-    paddingTop: 28,
-    paddingBottom: 48,
-  },
-
-  section: { marginBottom: 32 },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: L.charcoal,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom: 12,
-  },
-  sectionCaption: {
-    fontSize: 12,
-    color: L.muted,
-    lineHeight: 17,
-    marginBottom: 14,
-    marginTop: -4,
-  },
-
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  toggleRowDivided: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: L.border,
-  },
-  toggleLabelGroup: {
-    flex: 1,
-    marginRight: 12,
-  },
-  toggleLabel: {
-    fontSize: 16,
-    color: L.charcoal,
-    fontWeight: '400',
-  },
-  toggleCaption: {
-    fontSize: 12,
-    color: L.muted,
-    marginTop: 3,
-    lineHeight: 17,
-  },
-
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  stepperBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: L.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: L.cardBg,
-  },
-  stepperBtnText: {
-    fontSize: 20,
-    color: L.charcoal,
-    lineHeight: 24,
-  },
-  stepperValue: {
-    fontSize: 22,
-    fontWeight: '300',
-    color: L.charcoal,
-    minWidth: 40,
-    textAlign: 'center',
-  },
-  stepperUnit: {
-    fontSize: 14,
-    color: L.muted,
-  },
-
-  safeModeButton: {
-    backgroundColor: L.charcoal,
-    borderRadius: 9999,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-  },
-  safeModeButtonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '500',
-  },
-});

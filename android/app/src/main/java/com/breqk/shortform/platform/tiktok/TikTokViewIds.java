@@ -1,4 +1,4 @@
-package com.breqk.shortform.platform.tiktok;
+package com.Break.shortform.platform.tiktok;
 
 /**
  * TikTokViewIds

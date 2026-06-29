@@ -1,13 +1,13 @@
-package com.breqk.shortform.platform.facebook;
+package com.Break.shortform.platform.facebook;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import com.breqk.shortform.detection.ShortFormDetector.DetectResult;
-import com.breqk.shortform.platform.FilterHandler;
-import com.breqk.shortform.platform.Platform;
+import com.Break.shortform.detection.ShortFormDetector.DetectResult;
+import com.Break.shortform.platform.FilterHandler;
+import com.Break.shortform.platform.Platform;
 
 /**
  * FacebookFilterHandler

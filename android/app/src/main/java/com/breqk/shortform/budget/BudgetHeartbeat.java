@@ -1,4 +1,4 @@
-package com.breqk.shortform.budget;
+package com.Break.shortform.budget;
 
 import android.content.SharedPreferences;
 import android.os.Handler;
@@ -67,10 +67,12 @@ public class BudgetHeartbeat {
                     }
                 }
 
-                // Flush every 4 seconds to keep prefs updated for AppUsageMonitor (which checks for 5s staleness)
+                // Every 4 seconds: flush accumulated state and reload config so an
+                // allowance change made in the UI takes effect without a restart.
                 tickCount++;
                 if (tickCount % 4 == 0) {
                     budgetState.flush(prefs);
+                    budgetState.reloadFromPrefs(prefs);
                 }
 
                 mainHandler.postDelayed(this, REELS_HEARTBEAT_INTERVAL_MS);

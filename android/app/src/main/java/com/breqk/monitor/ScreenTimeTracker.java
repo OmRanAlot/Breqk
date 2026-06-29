@@ -1,4 +1,4 @@
-package com.breqk.monitor;
+package com.Break.monitor;
 
 /*
  * ScreenTimeTracker

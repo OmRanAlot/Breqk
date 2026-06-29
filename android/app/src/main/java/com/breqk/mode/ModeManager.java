@@ -1,7 +1,7 @@
-package com.breqk.mode;
-import com.breqk.prefs.BreqkPrefs;
-import com.breqk.service.BreqkVpnService;
-import com.breqk.monitor.ServiceHelper;
+package com.Break.mode;
+import com.Break.prefs.BreakPrefs;
+import com.Break.service.BreakVpnService;
+import com.Break.monitor.ServiceHelper;
 
 /*
  * ModeManager
@@ -43,8 +43,8 @@ public final class ModeManager {
     private static final String TAG = "MODE_MGR";
 
     // Intent actions for AlarmManager-triggered schedule events
-    public static final String ACTION_MODE_START = "com.breqk.ACTION_MODE_START";
-    public static final String ACTION_MODE_END   = "com.breqk.ACTION_MODE_END";
+    public static final String ACTION_MODE_START = "com.Break.ACTION_MODE_START";
+    public static final String ACTION_MODE_END   = "com.Break.ACTION_MODE_END";
     // Intent extra key for the mode ID
     public static final String EXTRA_MODE_ID = "mode_id";
 
@@ -66,17 +66,41 @@ public final class ModeManager {
      */
     public static void activate(Context context, String modeId, String source) {
         Log.i(TAG, "[ACTIVATE] Activating mode '" + modeId + "' source=" + source);
-        SharedPreferences prefs = BreqkPrefs.get(context);
+        SharedPreferences prefs = BreakPrefs.get(context);
+
+        // If we're switching away from a different non-default mode, emit its
+        // "ended" notification first. This is the single source of truth for
+        // end events — manual switches, schedule end (via deactivate→default),
+        // and direct mode-to-mode swaps all funnel through here.
+        String previousMode = BreakPrefs.getActiveMode(context);
+        if (!modeId.equals(previousMode) && !"default".equals(previousMode)) {
+            ModeNotifier.notifyModeEnded(context, previousMode);
+            // Tear down the previous mode's persistent badge (if any) before we
+            // switch. Safe to call unconditionally — clearOngoing no-ops when there
+            // is nothing to cancel.
+            ModeNotifier.clearOngoing(context, previousMode);
+        }
+
         prefs.edit()
-                .putString(BreqkPrefs.KEY_ACTIVE_MODE, modeId)
-                .putString(BreqkPrefs.KEY_ACTIVE_MODE_SOURCE, source)
+                .putString(BreakPrefs.KEY_ACTIVE_MODE, modeId)
+                .putString(BreakPrefs.KEY_ACTIVE_MODE_SOURCE, source)
                 .apply();
 
         // Sync legacy blocked_apps from effective policies (base + mode overrides)
-        BreqkPrefs.syncBlockedAppsFromPolicies(context);
+        BreakPrefs.syncBlockedAppsFromPolicies(context);
 
         // Notify MyVpnService so its AppUsageMonitor picks up the new blocked_apps set
         notifyServiceBlockedAppsChanged(context);
+
+        // User-visible "mode started" notification. Skip "default" — it's the
+        // always-on fallback, not a mode the user deliberately enters.
+        if (!"default".equals(modeId)) {
+            ModeNotifier.notifyModeStarted(context, modeId);
+            // Show the persistent "mode is active" badge if this mode opts in.
+            if (BreakPrefs.isModePersistentNotification(context, modeId)) {
+                ModeNotifier.showOngoing(context, modeId);
+            }
+        }
 
         Log.i(TAG, "[ACTIVATE] Mode '" + modeId + "' is now active");
     }
@@ -87,10 +111,11 @@ public final class ModeManager {
      * explicitly overridden by another mode.
      */
     public static void deactivate(Context context) {
-        String previousMode = BreqkPrefs.getActiveMode(context);
+        String previousMode = BreakPrefs.getActiveMode(context);
         Log.i(TAG, "[DEACTIVATE] Deactivating mode '" + previousMode + "' → falling back to 'default'");
 
-        // Fall back to Default mode instead of no mode
+        // Fall back to Default mode instead of no mode. activate() emits the
+        // "ended" notification for previousMode as part of the transition.
         activate(context, "default", "manual");
 
         Log.i(TAG, "[DEACTIVATE] Fell back to 'default' mode");
@@ -109,7 +134,7 @@ public final class ModeManager {
      */
     public static void registerScheduleAlarms(Context context, String modeId) {
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             if (!modes.has(modeId)) {
                 Log.w(TAG, "[SCHEDULE] Cannot register alarms: mode '" + modeId + "' not found");
                 return;
@@ -129,23 +154,32 @@ public final class ModeManager {
                 return;
             }
 
+            // Register START + END alarms independently. getNextAlarmTime() always
+            // returns the *next future* occurrence of each "HH:mm", so both already
+            // resolve correctly for overnight windows (e.g. 22:00→07:00).
+            //
+            // DO NOT add a "if end <= start, end += 24h" overnight adjustment here.
+            // When the START alarm fires and we re-register, START rolls forward to
+            // tomorrow while END is the upcoming morning — so end < start is the
+            // normal, correct state. The old adjustment shoved END a full day late,
+            // leaving overnight modes (Bedtime) stuck on and never switching back to
+            // default. See MODE_MGR bug fix.
+
             // Register start alarm
             long startMillis = getNextAlarmTime(startTime);
             PendingIntent startIntent = createAlarmIntent(context, modeId, ACTION_MODE_START);
             setExactAlarm(alarmManager, startMillis, startIntent);
             Log.i(TAG, "[SCHEDULE] Registered START alarm for mode '" + modeId
-                    + "' at " + startTime + " (epochMs=" + startMillis + ")");
+                    + "' at " + startTime + " (epochMs=" + startMillis
+                    + ", in " + minutesFromNow(startMillis) + " min)");
 
-            // Register end alarm
+            // Register end alarm — next future occurrence, no overnight fixup.
             long endMillis = getNextAlarmTime(endTime);
-            // If end time is before start time (overnight schedule), ensure end is after start
-            if (endMillis <= startMillis) {
-                endMillis += 24 * 60 * 60 * 1000; // add 24 hours
-            }
             PendingIntent endIntent = createAlarmIntent(context, modeId, ACTION_MODE_END);
             setExactAlarm(alarmManager, endMillis, endIntent);
             Log.i(TAG, "[SCHEDULE] Registered END alarm for mode '" + modeId
-                    + "' at " + endTime + " (epochMs=" + endMillis + ")");
+                    + "' at " + endTime + " (epochMs=" + endMillis
+                    + ", in " + minutesFromNow(endMillis) + " min)");
 
         } catch (JSONException e) {
             Log.e(TAG, "[SCHEDULE] Error registering alarms: " + e.getMessage());
@@ -175,7 +209,7 @@ public final class ModeManager {
     public static void reregisterAllAlarms(Context context) {
         Log.d(TAG, "[SCHEDULE] Re-registering all mode schedule alarms");
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             Iterator<String> keys = modes.keys();
             while (keys.hasNext()) {
                 String modeId = keys.next();
@@ -212,7 +246,7 @@ public final class ModeManager {
      */
     public static void handleScheduleEnd(Context context, String modeId) {
         Log.i(TAG, "[SCHEDULE] END alarm fired for mode '" + modeId + "'");
-        String activeMode = BreqkPrefs.getActiveMode(context);
+        String activeMode = BreakPrefs.getActiveMode(context);
         if (modeId.equals(activeMode)) {
             deactivate(context);
         } else {
@@ -231,8 +265,8 @@ public final class ModeManager {
      * This ensures both monitor instances are in sync after policy changes.
      */
     private static void notifyServiceBlockedAppsChanged(Context context) {
-        Set<String> blockedApps = BreqkPrefs.getBlockedApps(context);
-        Intent intent = new Intent(context, BreqkVpnService.class);
+        Set<String> blockedApps = BreakPrefs.getBlockedApps(context);
+        Intent intent = new Intent(context, BreakVpnService.class);
         intent.setAction("UPDATE_BLOCKED_APPS");
         intent.putStringArrayListExtra("blockedApps", new ArrayList<>(blockedApps));
         try {
@@ -289,6 +323,11 @@ public final class ModeManager {
         }
     }
 
+    /** Minutes from now until the given epoch-millis trigger (for debug logging). */
+    private static long minutesFromNow(long triggerAtMillis) {
+        return (triggerAtMillis - System.currentTimeMillis()) / 60000L;
+    }
+
     /**
      * Calculates the next occurrence of a time string "HH:mm" from now.
      * If the time has already passed today, returns tomorrow's time.
@@ -319,7 +358,7 @@ public final class ModeManager {
      */
     private static boolean isTodayInSchedule(Context context, String modeId) {
         try {
-            JSONObject modes = BreqkPrefs.getModes(context);
+            JSONObject modes = BreakPrefs.getModes(context);
             if (!modes.has(modeId)) return false;
             JSONObject mode = modes.getJSONObject(modeId);
             if (!mode.has("schedule") || mode.isNull("schedule")) return true; // no schedule = always

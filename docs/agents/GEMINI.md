@@ -1,6 +1,6 @@
 # GEMINI.md
 
-**Breqk** is a React Native Android app that blocks distracting apps via a mandatory delay overlay and monitors Instagram Reels/YouTube Shorts via accessibility service.
+**Break** is a React Native Android app that blocks distracting apps via a mandatory delay overlay and monitors Instagram Reels/YouTube Shorts via accessibility service.
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ npm test               # Tests
 2. **MainActivity** → **App.tsx** — Checks permissions, routes to PermissionsScreen or Home
 3. **MyVpnService** — Foreground service, owns AppUsageMonitor instance for background monitoring
 
-### Core Native Modules (`android/app/src/main/java/com/breqk/`)
+### Core Native Modules (`android/app/src/main/java/com/Break/`)
 
 | Module | Purpose |
 |--------|---------|
@@ -28,7 +28,7 @@ npm test               # Tests
 | **AppUsageMonitor** | 1s polling loop via UsageStatsManager, shows overlay when blocked app detected |
 | **MyVpnService** | Foreground service persistence; syncs blocked apps via SharedPreferences intent dispatch |
 | **ReelsInterventionService** | AccessibilityService monitoring Reels/Shorts scrolls; shows intervention popup |
-| **BreqkPrefs** | Centralized SharedPreferences helper + per-app policy resolution |
+| **BreakPrefs** | Centralized SharedPreferences helper + per-app policy resolution |
 | **ModeManager** | Mode lifecycle (Study Mode, Bedtime, custom) with schedule support via AlarmManager |
 
 ### React Native Components (`components/`)
@@ -37,7 +37,7 @@ Home, Customize, PermissionsScreen, BlockerInterstitial, Browser, Progress, TopB
 
 ### Key SharedPreferences Keys
 
-`blocked_apps`, `monitoring_enabled`, `delay_message`, `delay_time_seconds`, `scroll_threshold`, `scroll_allowance_minutes`, `scroll_window_minutes`, `app_policies` (JSON), `breqk_modes` (JSON), `active_mode`
+`blocked_apps`, `monitoring_enabled`, `delay_message`, `delay_time_seconds`, `scroll_threshold`, `scroll_allowance_minutes`, `scroll_window_minutes`, `app_policies` (JSON), `Break_modes` (JSON), `active_mode`
 
 ### Critical Gotchas
 

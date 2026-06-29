@@ -1,4 +1,4 @@
-package com.breqk.monitor;
+package com.Break.monitor;
 
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;

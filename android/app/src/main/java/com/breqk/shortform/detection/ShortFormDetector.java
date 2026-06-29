@@ -1,4 +1,4 @@
-package com.breqk.shortform.detection;
+package com.Break.shortform.detection;
 
 import android.view.accessibility.AccessibilityNodeInfo;
 

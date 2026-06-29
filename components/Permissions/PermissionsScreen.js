@@ -1,22 +1,29 @@
 /**
  * PermissionsScreen.js
  * ─────────────────────────────────────────────────────────────────────────────
- * 6-screen onboarding flow (Tether light design system):
- *   0 — Welcome          ("Stay Intentional")
- *   1 — Usage Access     (requestPermissions → PACKAGE_USAGE_STATS)
- *   2 — Overlay          (requestOverlayPermission → SYSTEM_ALERT_WINDOW)
- *   3 — VPN Background   (requestVpnPermission → BIND_VPN_SERVICE)
- *   4 — Uninstall Guard  (activateDeviceAdmin → DevicePolicyManager)
- *   5 — Success          ("You're All Set")
+ * Break first-run onboarding — 10 screens, implemented from the
+ * "Break Onboarding" handoff design (claude.ai/design):
  *
- * When the user returns from Android Settings (AppState change), the screen
- * auto-advances if the relevant permission has been granted.
- * The VPN screen auto-advances on any app-return (no programmatic check).
- * The Device Admin screen checks checkPermissions().deviceAdmin on return.
+ *   0 — Welcome              ("Stay intentional")
+ *   1 — Apps to manage       (multi-select, smart defaults)
+ *   2 — Intercept message    (presets + write-your-own, live preview)
+ *   3 — Per-app breath        (on/off + 5/15/30s per selected app)
+ *   4 — Scroll limits         (Reels/Shorts threshold + per-hour allowance)
+ *   5 — Permission · Accessibility       (required, no skip)
+ *   6 — Permission · Usage Access        (required, no skip)
+ *   7 — Permission · Display Over Apps   (required, no skip)
+ *   8 — Prevent deletion     (optional opt-in, skippable)
+ *   9 — Done                 ("You're all set")
  *
- * DEV bypass for Device Admin (ADB):
- *   adb shell dpm remove-active-admin com.breqk/.BreqkDeviceAdminReceiver
- *   adb uninstall com.breqk
+ * Friction is removed via pre-selected apps, reversible choices, and a single
+ * step-counter. The three permission screens are mandatory: there is no skip,
+ * and each only advances once the permission is actually granted (verified on
+ * foreground return). Privacy is reassured on every permission screen and the
+ * final summary — Break collects no data at all.
+ *
+ * Selections are persisted and monitoring is started in `handleComplete()`.
+ * The `onComplete` contract is unchanged from the previous implementation, so
+ * App.tsx integration needs no edits.
  *
  * Logging prefix: [PermissionsScreen]
  */
@@ -25,627 +32,745 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
-  TouchableOpacity,
+  ScrollView,
+  TextInput,
   AppState,
   NativeModules,
   SafeAreaView,
   Animated,
+  TouchableOpacity,
 } from 'react-native';
-import Svg, { Path, Circle, Rect, Polyline } from 'react-native-svg';
+import { ShieldIcon, CheckIcon } from './onboarding/icons';
+import {
+  PillButton,
+  Eyebrow,
+  StepHeader,
+  ProgressDots,
+  ReassuranceCard,
+  AppSelectRow,
+  Monogram,
+  Toggle,
+  Segmented,
+} from './onboarding/components';
+import {
+  T,
+  ONBOARDING_APPS,
+  DEFAULT_SELECTED,
+  MESSAGE_PRESETS,
+  BREATH_DURATIONS,
+  DEFAULT_BREATH,
+  BREATH_FALLBACK,
+  SCROLL_THRESHOLD_OPTIONS,
+  DEFAULT_SCROLL_THRESHOLD,
+  SCROLL_ALLOWANCE_OPTIONS,
+  DEFAULT_SCROLL_ALLOWANCE,
+  SCROLL_WINDOW_MINUTES,
+} from './onboarding/theme';
+import { PERMISSION_STEPS } from './permissionSteps';
+import { styles, strongStyle } from './PermissionsScreen.styles';
 
 const { VPNModule, SettingsModule } = NativeModules;
 
-// ─── Tether Light Palette ─────────────────────────────────────────────────────
-// Matches design/tokens.ts `light` block for easy cross-reference.
-const L = {
-  bg: '#F8F8F6',
-  charcoal: '#1A1A1A',
-  muted: '#6B6B6B',
-  placeholder: '#D1D5DB',
-  ctaBg: '#1A1A1A',
-  ctaText: '#FFFFFF',
-  dotActive: '#1A1A1A',
-  dotInactive: '#D1D5DB',
-};
+const TOTAL_STEPS = 10;
+const FIRST_PERMISSION_STEP = 5;
+// Optional deletion-prevention opt-in, shown after the required permissions
+// (it relies on the accessibility service granted at the permission steps) and
+// before Done.
+const PROTECT_STEP = 8;
+// Setup step that collects short-form scroll guardrails (threshold + budget),
+// shown after the per-app breath step and before the permission screens.
+const SCROLL_STEP = 4;
 
-const TOTAL_SCREENS = 6; // indices 0-5
+/**
+ * Merge native permission checks into a single map. checkPermissions() returns
+ * { usage, overlay } and, on builds with the native accessibility addition,
+ * { accessibility }. We fall back to SettingsModule.isContentFilterServiceEnabled
+ * for the accessibility flag so the flow works against older native builds too.
+ *
+ * @returns {Promise<{usage:boolean, overlay:boolean, accessibility:boolean}>}
+ */
+async function checkAllPermissions() {
+  const perms = await VPNModule.checkPermissions();
+  let accessibility = perms.accessibility;
+  if (typeof accessibility !== 'boolean') {
+    accessibility = await new Promise(resolve => {
+      try {
+        SettingsModule.isContentFilterServiceEnabled(enabled =>
+          resolve(!!enabled),
+        );
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+  return { usage: !!perms.usage, overlay: !!perms.overlay, accessibility };
+}
 
-// ─── Inline SVG Icons ─────────────────────────────────────────────────────────
-// Each icon is a React component sized 64×64, using charcoal stroke,
-// with strokeWidth=1.2 to match the light aesthetic.
+/** Promise wrapper around the callback-style SettingsModule.getActiveMode. */
+function getActiveModeId() {
+  return new Promise(resolve => {
+    try {
+      SettingsModule.getActiveMode(resolve);
+    } catch (e) {
+      resolve('');
+    }
+  });
+}
 
-const ShieldIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    <Circle cx={12} cy={11} r={2} />
-  </Svg>
-);
+/** Promise wrapper that parses the modes JSON string into an object. */
+function getModesObject() {
+  return new Promise(resolve => {
+    try {
+      SettingsModule.getModes(json => {
+        try {
+          resolve(json ? JSON.parse(json) : {});
+        } catch (e) {
+          resolve({});
+        }
+      });
+    } catch (e) {
+      resolve({});
+    }
+  });
+}
 
-const EyeIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-    <Circle cx={12} cy={12} r={3} />
-  </Svg>
-);
-
-const LayersIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Polyline points="12,2 2,7 12,12 22,7 12,2" />
-    <Polyline points="2,17 12,22 22,17" />
-    <Polyline points="2,12 12,17 22,12" />
-  </Svg>
-);
-
-const LockIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Rect x={3} y={11} width={18} height={11} rx={2} ry={2} />
-    <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
-  </Svg>
-);
-
-// Shield with a lock inside — used for the Device Admin (uninstall guard) screen
-const ShieldLockIcon = () => (
-  <Svg
-    width={64}
-    height={64}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    <Rect x={9} y={11} width={6} height={5} rx={1} />
-    <Path d="M10 11V9a2 2 0 0 1 4 0v2" />
-  </Svg>
-);
-
-const CheckCircleIcon = () => (
-  <Svg
-    width={96}
-    height={96}
-    fill="none"
-    stroke={L.charcoal}
-    strokeWidth={1.2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    viewBox="0 0 24 24"
-  >
-    <Path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-    <Polyline points="22,4 12,14.01 9,11.01" />
-  </Svg>
-);
-
-// ─── Screen Definitions ───────────────────────────────────────────────────────
-// `permKey` — key in VPNModule.checkPermissions() result (null = no check available)
-// `callPermission` — function to open system permission dialog (null = no dialog)
-
-const SCREENS = [
-  {
-    type: 'welcome', // no illustration box; charcoal shield icon
-    Icon: ShieldIcon,
-    headline: 'Stay Intentional',
-    subtitle:
-      'Breqk helps you reclaim your time by pausing mindless scrolling.',
-    primaryLabel: 'Next',
-    permKey: null,
-    callPermission: null,
-  },
-  {
-    type: 'permission', // gray illustration box
-    Icon: EyeIcon,
-    headline: 'Allow Usage Access',
-    subtitle:
-      'To detect when distracting apps are opened, we need permission to read which app is in the foreground.',
-    primaryLabel: 'Grant Permission',
-    permKey: 'usage',
-    callPermission: () => VPNModule.requestPermissions(),
-  },
-  {
-    type: 'permission',
-    Icon: LayersIcon,
-    headline: 'Show Pause Screen',
-    subtitle:
-      "We'll display a brief pause before opening a blocked app. This requires draw-over-apps permission.",
-    primaryLabel: 'Grant Permission',
-    permKey: 'overlay',
-    callPermission: () => VPNModule.requestOverlayPermission(),
-  },
-  {
-    type: 'permission',
-    Icon: LockIcon,
-    headline: 'Enable Background Guard',
-    subtitle:
-      'A VPN binding keeps the app alive in the background so monitoring works even when the screen is off.',
-    primaryLabel: 'Grant Permission',
-    permKey: null, // checkPermissions() doesn't expose VPN — auto-advance on return
-    callPermission: () => VPNModule.requestVpnPermission(),
-  },
-  {
-    // Screen 4 — Device Admin (uninstall protection)
-    // permKey 'deviceAdmin' is checked by checkPermissions() on app return.
-    // Skippable: committed users activate it; others can proceed without it.
-    type: 'permission',
-    Icon: ShieldLockIcon,
-    headline: 'Protect Your Commitment',
-    subtitle:
-      'Prevent impulsive deletion. Activating Device Admin means you\u2019ll need to go through an extra step before uninstalling Breqk.',
-    primaryLabel: 'Activate Protection',
-    permKey: 'deviceAdmin',
-    callPermission: () => VPNModule.activateDeviceAdmin(),
-    // Rendered as an "Optional" pill above the headline so users understand
-    // this step is different from the three hard requirements above it.
-    optional: true,
-  },
-  {
-    type: 'success', // no box; large check icon
-    Icon: CheckCircleIcon,
-    headline: "You're All Set",
-    subtitle:
-      'Breqk is now active. Customize your experience anytime in settings.',
-    primaryLabel: 'Go to Home',
-    permKey: null,
-    callPermission: null,
-  },
-];
-
-// ─── Component ────────────────────────────────────────────────────────────────
 export default function PermissionsScreen({ onComplete }) {
-  const [screenIndex, setScreenIndex] = useState(0);
+  const [step, setStep] = useState(0);
+  const [selectedApps, setSelectedApps] = useState(DEFAULT_SELECTED);
+  const [message, setMessage] = useState(MESSAGE_PRESETS[0]);
+  const [customMode, setCustomMode] = useState(false);
+  const [customText, setCustomText] = useState('');
+  const [breath, setBreath] = useState(() => ({ ...DEFAULT_BREATH }));
+  const [scrollThreshold, setScrollThreshold] = useState(
+    DEFAULT_SCROLL_THRESHOLD,
+  );
+  const [scrollAllowance, setScrollAllowance] = useState(
+    DEFAULT_SCROLL_ALLOWANCE,
+  );
+  const [protectEnabled, setProtectEnabled] = useState(false);
+
   const appStateRef = useRef(AppState.currentState);
-  // Track whether user visited the VPN screen (no callback from system; auto-advance)
-  const vpnVisited = useRef(false);
-
-  // Entrance animation for each screen transition
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(20)).current;
+  const slideAnim = useRef(new Animated.Value(16)).current;
 
-  const animateIn = () => {
+  // ── Entrance animation on each step change ─────────────────────────────────
+  useEffect(() => {
     fadeAnim.setValue(0);
-    slideAnim.setValue(20);
+    slideAnim.setValue(16);
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 500,
+        duration: 360,
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 500,
+        duration: 360,
         useNativeDriver: true,
       }),
     ]).start();
-  };
+  }, [step, fadeAnim, slideAnim]);
 
-  // ── Navigation helpers ────────────────────────────────────────────────────
-
-  const advanceTo = index => {
-    console.log('[PermissionsScreen] advancing to screen', index);
-    if (index >= TOTAL_SCREENS) {
-      handleAllGranted();
-      return;
-    }
-    setScreenIndex(index);
-    // animateIn fires via useEffect below
-  };
-
-  /** Called when returning to foreground — re-check permissions and advance if granted. */
-  const checkAndAdvance = async currentIndex => {
-    console.log('[PermissionsScreen] checkAndAdvance on screen', currentIndex);
-    try {
-      const screen = SCREENS[currentIndex];
-
-      // VPN screen has no programmatic check — just advance on any return
-      if (
-        screen.type === 'permission' &&
-        screen.permKey === null &&
-        vpnVisited.current
-      ) {
-        console.log('[PermissionsScreen] VPN screen — app returned, advancing');
-        vpnVisited.current = false;
-        advanceTo(currentIndex + 1);
+  // ── Auto-advance permission steps once the permission is actually granted ──
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async nextState => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      appStateRef.current = nextState;
+      if (!(wasBackground && nextState === 'active')) {
         return;
       }
-
-      // For other permission screens, check if it was actually granted
-      if (screen.permKey) {
-        const perms = await VPNModule.checkPermissions();
+      if (
+        step < FIRST_PERMISSION_STEP ||
+        step >= FIRST_PERMISSION_STEP + PERMISSION_STEPS.length
+      ) {
+        return;
+      }
+      const config = PERMISSION_STEPS[step - FIRST_PERMISSION_STEP];
+      try {
+        const perms = await checkAllPermissions();
         console.log(
-          '[PermissionsScreen] permissions check result:',
+          '[PermissionsScreen] foreground re-check:',
           JSON.stringify(perms),
         );
-        if (perms[screen.permKey]) {
+        if (perms[config.permKey]) {
           console.log(
-            '[PermissionsScreen] permission granted:',
-            screen.permKey,
+            '[PermissionsScreen] granted:',
+            config.permKey,
+            '→ advancing',
           );
-          advanceTo(currentIndex + 1);
+          setStep(s => s + 1);
+        }
+      } catch (e) {
+        console.warn('[PermissionsScreen] permission re-check failed:', e);
+      }
+    });
+    return () => sub.remove();
+  }, [step]);
+
+  // ── State helpers ──────────────────────────────────────────────────────────
+  const toggleApp = pkg => {
+    setSelectedApps(prev => {
+      if (prev.includes(pkg)) {
+        return prev.filter(p => p !== pkg);
+      }
+      // Seed a breath default for newly selected apps that lack one.
+      setBreath(b => (b[pkg] ? b : { ...b, [pkg]: { ...BREATH_FALLBACK } }));
+      return [...prev, pkg];
+    });
+  };
+
+  const setBreathOn = (pkg, on) =>
+    setBreath(b => ({ ...b, [pkg]: { ...(b[pkg] || BREATH_FALLBACK), on } }));
+  const setBreathSecs = (pkg, secs) =>
+    setBreath(b => ({
+      ...b,
+      [pkg]: { ...(b[pkg] || BREATH_FALLBACK), secs, on: true },
+    }));
+
+  const chooseMessage = preset => {
+    setCustomMode(false);
+    setMessage(preset);
+  };
+  const enableCustom = () => {
+    setCustomMode(true);
+    setMessage(customText);
+  };
+  const onCustomChange = text => {
+    setCustomText(text);
+    setMessage(text);
+  };
+
+  const next = () => setStep(s => Math.min(s + 1, TOTAL_STEPS - 1));
+  const back = () => setStep(s => Math.max(s - 1, 0));
+
+  // ── Permission CTA — open the relevant system settings screen ──────────────
+  const requestPermission = async config => {
+    try {
+      console.log('[PermissionsScreen] requesting permission:', config.permKey);
+      await config.request();
+    } catch (e) {
+      console.warn('[PermissionsScreen] permission request failed:', e);
+    }
+  };
+
+  // ── Build per-app policies from the onboarding selections ──────────────────
+  // The app is governed by `app_policies` + the active mode's policy_overrides
+  // (see BreakPrefs.isFeatureEnabled / syncBlockedAppsFromPolicies). Writing only
+  // the legacy blocked_apps set — as the previous implementation did — left the
+  // user's app picks invisible to the Home screen and the runtime monitor, and a
+  // later policy sync would overwrite them. We therefore translate every choice
+  // into the policy model here.
+  //
+  //   app_open_intercept ← the per-app "breath" toggle (overlay on app open)
+  //   reels_detection / scroll_budget / free_break ← on for every managed app
+  //
+  // Deselected apps are written with all features off so the seeded first-run
+  // defaults (Instagram/YouTube/TikTok) don't keep managing an app the user
+  // opted out of.
+  const buildOnboardingPolicies = () => {
+    const policies = {};
+    const apply = pkg => {
+      const selected = selectedApps.includes(pkg);
+      const cfg = breath[pkg] || BREATH_FALLBACK;
+      policies[pkg] = {
+        app_open_intercept: selected && cfg.on,
+        reels_detection: selected,
+        scroll_budget: selected,
+        free_break: selected,
+      };
+    };
+    // Every app the onboarding offered (so deselected defaults are turned off)…
+    ONBOARDING_APPS.forEach(app => apply(app.pkg));
+    // …plus any app the user added that isn't in the offered list.
+    selectedApps.forEach(pkg => {
+      if (!policies[pkg]) {
+        apply(pkg);
+      }
+    });
+    return policies;
+  };
+
+  // ── Persist everything and start monitoring ────────────────────────────────
+  const handleComplete = async () => {
+    console.log('[PermissionsScreen] handleComplete — persisting selections');
+    const finalMessage = (message || '').trim() || MESSAGE_PRESETS[0];
+    try {
+      await VPNModule.setDelayMessage(finalMessage);
+
+      // Per-app overlay copy + breath length (read by getEffectiveDelaySecs).
+      for (const pkg of selectedApps) {
+        const cfg = breath[pkg] || BREATH_FALLBACK;
+        const delaySecs = cfg.on ? cfg.secs : 0;
+        // popupDelayMin left at 0 — breath pause only, no follow-up popup.
+        await SettingsModule.setAppInterceptSettings(
+          pkg,
+          finalMessage,
+          delaySecs,
+          0,
+        );
+      }
+
+      // Drive the policy model so the selections actually govern the app.
+      const policies = buildOnboardingPolicies();
+      await SettingsModule.saveAppPolicies(JSON.stringify(policies));
+      console.log(
+        '[PermissionsScreen] saved app_policies:',
+        JSON.stringify(policies),
+      );
+
+      // The Default mode is auto-activated on first run; its policy_overrides
+      // win over base policy. Mirror the onboarding policies into the active
+      // mode and re-activate it so blocked_apps resyncs from the user's choices.
+      const activeId = await getActiveModeId();
+      if (activeId) {
+        const modes = await getModesObject();
+        if (modes[activeId]) {
+          modes[activeId].policy_overrides = {
+            ...(modes[activeId].policy_overrides || {}),
+            ...policies,
+          };
+          SettingsModule.saveModes(JSON.stringify(modes));
+          await VPNModule.activateMode(activeId);
+          console.log(
+            '[PermissionsScreen] mirrored policies into active mode:',
+            activeId,
+          );
         }
       }
-    } catch (e) {
-      console.warn('[PermissionsScreen] checkAndAdvance error:', e);
-    }
-  };
 
-  // ── Primary button handler ────────────────────────────────────────────────
-
-  const handlePrimary = async () => {
-    const screen = SCREENS[screenIndex];
-    console.log(
-      '[PermissionsScreen] primary tapped — screen',
-      screenIndex,
-      screen.type,
-    );
-
-    if (screen.type === 'welcome') {
-      advanceTo(1);
-      return;
-    }
-    if (screen.type === 'success') {
-      handleAllGranted();
-      return;
-    }
-
-    // Permission screen: open system dialog
-    if (screen.permKey === null) {
-      // VPN — mark visited before leaving so AppState handler can advance
-      vpnVisited.current = true;
-    }
-    try {
-      const result = await screen.callPermission();
+      // Short-form scroll guardrails (native clamps the values defensively).
+      SettingsModule.saveScrollThreshold(scrollThreshold);
+      SettingsModule.saveScrollBudget(scrollAllowance, SCROLL_WINDOW_MINUTES);
       console.log(
-        '[PermissionsScreen] callPermission resolved for screen',
-        screenIndex,
-        'result:',
-        result,
+        '[PermissionsScreen] saved scroll limits: threshold=',
+        scrollThreshold,
+        'allowance=',
+        scrollAllowance,
+        'window=',
+        SCROLL_WINDOW_MINUTES,
       );
-      // If the native method returns true it means the permission was already granted
-      // (e.g. Device Admin was already active). Advance immediately rather than waiting
-      // for an AppState change that will never come.
-      if (result === true && screen.permKey) {
-        console.log(
-          '[PermissionsScreen] already granted — advancing immediately',
-        );
-        advanceTo(screenIndex + 1);
-      }
-    } catch (e) {
-      console.warn('[PermissionsScreen] callPermission rejected:', e);
-    }
-  };
 
-  // ── Start monitoring when all permissions are done ────────────────────────
-
-  const handleAllGranted = async () => {
-    console.log(
-      '[PermissionsScreen] handleAllGranted — loading saved blocked apps',
-    );
-    try {
-      const savedApps = await new Promise(resolve => {
-        SettingsModule.getBlockedApps(apps => resolve(apps));
-      });
-      const blockedList =
-        savedApps && savedApps.length > 0
-          ? savedApps
-          : ['com.instagram.android', 'com.google.android.youtube'];
-
-      await VPNModule.setBlockedApps(blockedList);
       await VPNModule.startMonitoring();
       SettingsModule.saveMonitoringEnabled(true);
-      console.log('[PermissionsScreen] monitoring started successfully');
+      SettingsModule.saveUninstallLockEnabled(protectEnabled);
+      console.log(
+        '[PermissionsScreen] setup persisted, monitoring started, deletion-prevention=',
+        protectEnabled,
+      );
     } catch (e) {
-      console.warn('[PermissionsScreen] auto-start failed (non-fatal):', e);
+      console.warn('[PermissionsScreen] persist/start failed (non-fatal):', e);
     }
     onComplete();
   };
 
-  // ── Effects ───────────────────────────────────────────────────────────────
+  // ── Per-step renderers ─────────────────────────────────────────────────────
+  const renderWelcome = () => (
+    <View style={styles.centered}>
+      <ShieldIcon size={56} color={T.ink} strokeWidth={1.4} />
+      <Text style={styles.welcomeTitle}>Stay intentional</Text>
+      <Text style={styles.welcomeBody}>
+        Break helps you reclaim your time by pausing mindless scrolling.
+      </Text>
+      <View style={styles.welcomeFooter}>
+        <ProgressDots total={5} active={0} />
+        <PillButton label="Get started" onPress={next} />
+      </View>
+    </View>
+  );
 
-  // Animate in on mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    animateIn();
-  }, []);
+  const renderApps = () => (
+    <View style={styles.flex}>
+      <StepHeader onBack={back} stepLabel="Step 1 of 4" />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollBody}
+      >
+        <Text style={styles.h2}>What pulls you in?</Text>
+        <Text style={styles.p}>
+          We picked a few for you. Tap to change — nothing is permanent.
+        </Text>
+        <View style={styles.appList}>
+          {ONBOARDING_APPS.map(app => (
+            <AppSelectRow
+              key={app.pkg}
+              app={app}
+              selected={selectedApps.includes(app.pkg)}
+              onToggle={() => toggleApp(app.pkg)}
+            />
+          ))}
+        </View>
+        <Text style={styles.addAnother}>+ Add another app</Text>
+      </ScrollView>
+      <View style={styles.footerBordered}>
+        <PillButton
+          label={`Continue · ${selectedApps.length} selected`}
+          onPress={next}
+          disabled={selectedApps.length === 0}
+        />
+      </View>
+    </View>
+  );
 
-  // Animate in whenever screenIndex changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    animateIn();
-  }, [screenIndex]);
+  const renderMessage = () => (
+    <View style={styles.flex}>
+      <StepHeader onBack={back} stepLabel="Step 2 of 4" />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollBody}
+      >
+        <Text style={styles.h2}>What should we say?</Text>
+        <Text style={styles.p}>Shown the moment you open a managed app.</Text>
 
-  // Listen for app foreground return → check permissions
-  // Re-subscribe when screenIndex changes so the closure captures the latest value.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', nextState => {
-      const wasBackground = appStateRef.current.match(/inactive|background/);
-      if (wasBackground && nextState === 'active') {
-        console.log(
-          '[PermissionsScreen] app foregrounded — checking permissions',
-        );
-        checkAndAdvance(screenIndex);
-      }
-      appStateRef.current = nextState;
-    });
-    return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenIndex]);
-
-  // ── Render ────────────────────────────────────────────────────────────────
-
-  const screen = SCREENS[screenIndex];
-  const { Icon } = screen;
-
-  return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
-        {/* ── Animated top section (illustration + text) ─────────────── */}
-        <Animated.View
-          style={[
-            styles.topSection,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
-        >
-          {/* Illustration area — varies by screen type */}
-          {screen.type === 'permission' ? (
-            // Gray rounded illustration placeholder (stitch screen 5 style)
-            <View style={styles.illustrationBox}>
-              <Icon />
-            </View>
-          ) : (
-            // Welcome + Success: no box, just the icon
-            <View style={styles.iconWrapper}>
-              <Icon />
-            </View>
-          )}
-
-          {/* Optional pill — only on skippable, non-critical screens */}
-          {screen.optional && (
-            <View style={styles.optionalPill}>
-              <Text style={styles.optionalPillText}>OPTIONAL</Text>
-            </View>
-          )}
-
-          {/* Headline */}
-          <Text
-            style={[
-              styles.headline,
-              screen.type === 'welcome' && styles.headlineLight,
-            ]}
-          >
-            {screen.headline}
+        <View style={styles.previewCard}>
+          <Text style={styles.previewLabel}>Preview</Text>
+          <Text style={styles.previewMessage}>
+            {message || 'Is this intentional?'}
           </Text>
+        </View>
 
-          {/* Subtitle */}
-          <Text style={styles.subtitle}>{screen.subtitle}</Text>
-        </Animated.View>
-
-        {/* ── Flexible spacer ────────────────────────────────────────── */}
-        <View style={styles.spacer} />
-
-        {/* ── Bottom section (dots + buttons) ────────────────────────── */}
-        <View style={styles.bottomSection}>
-          {/* Pagination dots (5 total) */}
-          <View style={styles.dotsRow}>
-            {Array.from({ length: TOTAL_SCREENS }).map((_, i) => (
-              <View
-                key={i}
+        <View style={styles.messageList}>
+          {MESSAGE_PRESETS.map(preset => {
+            const active = !customMode && message === preset;
+            return (
+              <TouchableOpacity
+                key={preset}
                 style={[
-                  styles.dot,
-                  i === screenIndex ? styles.dotActive : styles.dotInactive,
+                  styles.messageOption,
+                  active && styles.messageOptionActive,
                 ]}
-              />
-            ))}
-          </View>
+                onPress={() => chooseMessage(preset)}
+                activeOpacity={0.7}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+              >
+                <Text
+                  style={[
+                    styles.messageText,
+                    !active && styles.messageTextMuted,
+                  ]}
+                >
+                  {preset}
+                </Text>
+                {active ? (
+                  <View style={styles.messageCheck}>
+                    <CheckIcon
+                      size={10}
+                      color={T.iconOnInk}
+                      strokeWidth={3.5}
+                    />
+                  </View>
+                ) : null}
+              </TouchableOpacity>
+            );
+          })}
 
-          {/* Primary CTA */}
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={handlePrimary}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel={screen.primaryLabel}
-          >
-            <Text style={styles.primaryButtonText}>{screen.primaryLabel}</Text>
-          </TouchableOpacity>
-
-          {/* Skip (only for permission screens that have a checkable permKey) */}
-          {screen.type === 'permission' && screen.permKey !== null && (
+          {customMode ? (
+            <TextInput
+              style={styles.customInput}
+              value={customText}
+              onChangeText={onCustomChange}
+              placeholder="Write your own"
+              placeholderTextColor={T.label}
+              autoFocus
+              maxLength={80}
+            />
+          ) : (
             <TouchableOpacity
-              style={styles.skipButton}
-              onPress={() => {
-                console.log('[PermissionsScreen] skipped screen', screenIndex);
-                advanceTo(screenIndex + 1);
-              }}
-              activeOpacity={0.6}
-              accessibilityRole="button"
-              accessibilityLabel="Skip for now"
+              style={styles.customOption}
+              onPress={enableCustom}
+              activeOpacity={0.7}
             >
-              <Text style={styles.skipButtonText}>Skip for now</Text>
+              <Text style={styles.customOptionText}>+ Write your own</Text>
             </TouchableOpacity>
           )}
         </View>
+      </ScrollView>
+      <View style={styles.footer}>
+        <PillButton label="Continue" onPress={next} />
       </View>
+    </View>
+  );
+
+  const renderBreath = () => (
+    <View style={styles.flex}>
+      <StepHeader onBack={back} stepLabel="Step 3 of 4" />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollBody}
+      >
+        <Text style={styles.h2}>Add a breath</Text>
+        <Text style={styles.p}>
+          Turn a pause on per app, and choose how long.
+        </Text>
+        <View style={styles.breathList}>
+          {selectedApps.map(pkg => {
+            const app = ONBOARDING_APPS.find(a => a.pkg === pkg) || {
+              label: pkg,
+              monogram: '·',
+            };
+            const cfg = breath[pkg] || BREATH_FALLBACK;
+            return (
+              <View key={pkg} style={styles.breathCard}>
+                <View style={styles.breathHeader}>
+                  <Monogram
+                    text={app.monogram}
+                    active={cfg.on}
+                    size={34}
+                    radius={9}
+                    fontSize={14}
+                  />
+                  <Text
+                    style={[styles.breathName, !cfg.on && styles.breathNameOff]}
+                  >
+                    {app.label}
+                  </Text>
+                  <Toggle
+                    value={cfg.on}
+                    onChange={on => setBreathOn(pkg, on)}
+                    label={`${app.label} breath`}
+                  />
+                </View>
+                {cfg.on ? (
+                  <View style={styles.breathSegment}>
+                    <Segmented
+                      options={BREATH_DURATIONS}
+                      value={cfg.secs}
+                      onChange={secs => setBreathSecs(pkg, secs)}
+                    />
+                  </View>
+                ) : (
+                  <Text style={styles.breathOff}>
+                    Pause off — opens straight away.
+                  </Text>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
+      <View style={styles.footer}>
+        <PillButton label="Continue" onPress={next} />
+      </View>
+    </View>
+  );
+
+  // Step 4 — short-form scroll guardrails. Threshold sets how many consecutive
+  // Reels/Shorts trigger the intervention; allowance caps short-form minutes per
+  // hour (window fixed at SCROLL_WINDOW_MINUTES). Both persist in handleComplete.
+  const renderScrollLimits = () => (
+    <View style={styles.flex}>
+      <StepHeader onBack={back} stepLabel="Step 4 of 4" />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollBody}
+      >
+        <Text style={styles.h2}>Set your limits</Text>
+        <Text style={styles.p}>
+          How much short-form before Break steps in. You can fine-tune these
+          later.
+        </Text>
+
+        <View style={styles.breathCard}>
+          <Text style={styles.breathName}>Scrolls before a nudge</Text>
+          <Text style={styles.p}>
+            After this many Reels or Shorts in a row, a gentle popup appears.
+          </Text>
+          <View style={styles.breathSegment}>
+            <Segmented
+              options={SCROLL_THRESHOLD_OPTIONS}
+              value={scrollThreshold}
+              onChange={setScrollThreshold}
+              format={v => `${v}`}
+            />
+          </View>
+        </View>
+
+        <View style={styles.breathCard}>
+          <Text style={styles.breathName}>Short-form allowance</Text>
+          <Text style={styles.p}>
+            Minutes of Reels/Shorts allowed each hour before they pause.
+          </Text>
+          <View style={styles.breathSegment}>
+            <Segmented
+              options={SCROLL_ALLOWANCE_OPTIONS}
+              value={scrollAllowance}
+              onChange={setScrollAllowance}
+              format={v => `${v} min`}
+            />
+          </View>
+        </View>
+      </ScrollView>
+      <View style={styles.footer}>
+        <PillButton label="Continue" onPress={next} />
+      </View>
+    </View>
+  );
+
+  const renderPermission = () => {
+    const idx = step - FIRST_PERMISSION_STEP;
+    const config = PERMISSION_STEPS[idx];
+    const { Icon } = config;
+    return (
+      <View style={styles.flex}>
+        <View style={styles.permTopRow}>
+          <Eyebrow style={styles.permEyebrow}>Permissions</Eyebrow>
+          <ProgressDots total={PERMISSION_STEPS.length} active={idx} />
+        </View>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollBody}
+        >
+          <View style={styles.permIconTile}>
+            <Icon size={30} color={T.ink} />
+          </View>
+          <Eyebrow style={styles.requiredLabel}>Required to continue</Eyebrow>
+          <Text style={[styles.h2, styles.permHeadline]}>
+            {config.headline}
+          </Text>
+          <Text style={styles.permBody}>{config.body}</Text>
+          <View style={styles.permReassure}>
+            <ReassuranceCard>{config.reassurance}</ReassuranceCard>
+          </View>
+        </ScrollView>
+        <View style={styles.footer}>
+          <PillButton
+            label={config.cta}
+            onPress={() => requestPermission(config)}
+          />
+        </View>
+      </View>
+    );
+  };
+
+  // Optional opt-in — reuses the accessibility service to show a 30s pause when
+  // the user opens Break's uninstall screen. Skippable; persisted in
+  // handleComplete() via SettingsModule.saveUninstallLockEnabled().
+  const renderProtect = () => {
+    const enableAndContinue = () => {
+      console.log('[PermissionsScreen] deletion-prevention enabled');
+      setProtectEnabled(true);
+      next();
+    };
+    const skip = () => {
+      console.log('[PermissionsScreen] deletion-prevention skipped');
+      setProtectEnabled(false);
+      next();
+    };
+    return (
+      <View style={styles.flex}>
+        <View style={styles.permTopRow}>
+          <Eyebrow style={styles.permEyebrow}>One last thing</Eyebrow>
+        </View>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollBody}
+        >
+          <View style={styles.permIconTile}>
+            <ShieldIcon size={30} color={T.ink} strokeWidth={1.7} />
+          </View>
+          <Eyebrow style={styles.requiredLabel}>Optional</Eyebrow>
+          <Text style={[styles.h2, styles.permHeadline]}>
+            Prevent impulse deletion
+          </Text>
+          <Text style={styles.permBody}>
+            If you head to Break's uninstall screen, a full-screen pause appears
+            for 30 seconds with reasons to keep going. It's gentle friction —
+            never a lock, and you can always continue.
+          </Text>
+          <View style={styles.permReassure}>
+            <ReassuranceCard>
+              Uses the accessibility service you just granted — it only watches
+              for that one Settings screen and{' '}
+              <Text style={strongStyle}>collects no data at all</Text>.
+            </ReassuranceCard>
+          </View>
+        </ScrollView>
+        <View style={styles.footer}>
+          <PillButton label="Turn on protection" onPress={enableAndContinue} />
+          <TouchableOpacity
+            style={styles.skipLink}
+            onPress={skip}
+            activeOpacity={0.6}
+            accessibilityRole="button"
+            accessibilityLabel="Not now"
+          >
+            <Text style={styles.skipLinkText}>Not now</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderDone = () => {
+    const breathOnCount = selectedApps.filter(
+      pkg => (breath[pkg] || BREATH_FALLBACK).on,
+    ).length;
+    return (
+      <View style={styles.centered}>
+        <View style={styles.doneCircle}>
+          <CheckIcon size={32} color={T.iconOnInk} strokeWidth={2.4} />
+        </View>
+        <Text style={styles.doneTitle}>You're all set</Text>
+        <Text style={styles.welcomeBody}>
+          All three permissions are on. Break is watching gently in the
+          background — and remembers nothing.
+        </Text>
+        <View style={styles.chipsRow}>
+          <View style={styles.chip}>
+            <View style={styles.chipDot} />
+            <Text style={styles.chipText}>
+              {selectedApps.length} apps managed
+            </Text>
+          </View>
+          {breathOnCount > 0 ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>
+                Breath on · {breathOnCount} apps
+              </Text>
+            </View>
+          ) : null}
+          {protectEnabled ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>Deletion guard on</Text>
+            </View>
+          ) : null}
+          <View style={styles.chip}>
+            <Text style={styles.chipText}>No data collected</Text>
+          </View>
+        </View>
+        <View style={styles.doneFooter}>
+          <PillButton label="Open Break" onPress={handleComplete} />
+        </View>
+      </View>
+    );
+  };
+
+  const renderStep = () => {
+    if (step === 0) return renderWelcome();
+    if (step === 1) return renderApps();
+    if (step === 2) return renderMessage();
+    if (step === 3) return renderBreath();
+    if (step === SCROLL_STEP) return renderScrollLimits();
+    if (
+      step >= FIRST_PERMISSION_STEP &&
+      step < FIRST_PERMISSION_STEP + PERMISSION_STEPS.length
+    ) {
+      return renderPermission();
+    }
+    if (step === PROTECT_STEP) return renderProtect();
+    return renderDone();
+  };
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <Animated.View
+        style={[
+          styles.screen,
+          { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+        ]}
+      >
+        {renderStep()}
+      </Animated.View>
     </SafeAreaView>
   );
 }
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: L.bg,
-  },
-  container: {
-    flex: 1,
-    paddingHorizontal: 32,
-    paddingTop: 48,
-    paddingBottom: 40,
-    alignItems: 'center',
-  },
-
-  // Top animated section
-  topSection: {
-    alignItems: 'center',
-    width: '100%',
-  },
-
-  // Gray rounded illustration box used on permission screens
-  illustrationBox: {
-    width: 220,
-    height: 220,
-    borderRadius: 24,
-    backgroundColor: L.placeholder,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 40,
-    // Subtle shadow to lift the box
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  // Transparent wrapper for welcome / success icons
-  iconWrapper: {
-    width: 120,
-    height: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 40,
-  },
-
-  optionalPill: {
-    backgroundColor: 'rgba(26,26,26,0.06)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 9999,
-    marginBottom: 12,
-  },
-  optionalPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: L.muted,
-    letterSpacing: 1.4,
-  },
-
-  headline: {
-    fontSize: 30,
-    fontWeight: '600',
-    color: L.charcoal,
-    textAlign: 'center',
-    letterSpacing: -0.5,
-    marginBottom: 14,
-  },
-  // Welcome screen uses a lighter, larger headline (stitch screen 4 style)
-  headlineLight: {
-    fontSize: 32,
-    fontWeight: '300',
-  },
-
-  subtitle: {
-    fontSize: 17,
-    color: L.muted,
-    textAlign: 'center',
-    lineHeight: 26,
-    paddingHorizontal: 8,
-  },
-
-  spacer: {
-    flex: 1,
-  },
-
-  // Bottom section
-  bottomSection: {
-    width: '100%',
-    alignItems: 'center',
-    gap: 14,
-  },
-
-  // Pagination dot row
-  dotsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  dotActive: {
-    backgroundColor: L.dotActive,
-  },
-  dotInactive: {
-    backgroundColor: L.dotInactive,
-  },
-
-  // Primary button (pill-shaped, charcoal fill)
-  primaryButton: {
-    backgroundColor: L.ctaBg,
-    borderRadius: 9999,
-    paddingVertical: 18,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-    // Subtle shadow
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  primaryButtonText: {
-    color: L.ctaText,
-    fontSize: 17,
-    fontWeight: '600',
-  },
-
-  // Skip link (text-only, secondary)
-  skipButton: {
-    paddingVertical: 10,
-  },
-  skipButtonText: {
-    color: L.muted,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-});

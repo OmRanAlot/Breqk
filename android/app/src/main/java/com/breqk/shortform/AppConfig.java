@@ -1,9 +1,9 @@
-package com.breqk.shortform;
+package com.Break.shortform;
 
 /**
  * Immutable configuration for a monitored app.
- * Resolved from BreqkPrefs feature flags through AppEventRouter's 5-second config cache.
- * Active mode overrides are applied transparently via BreqkPrefs.isFeatureEnabled().
+ * Resolved from BreakPrefs feature flags through AppEventRouter's 5-second config cache.
+ * Active mode overrides are applied transparently via BreakPrefs.isFeatureEnabled().
  */
 public final class AppConfig {
     /** Package name of the monitored app (e.g. "com.instagram.android"). */

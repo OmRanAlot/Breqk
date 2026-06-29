@@ -1,4 +1,4 @@
-package com.breqk
+package com.Break
 
 /**
  * MainApplication
@@ -17,20 +17,20 @@ import com.facebook.react.ReactNativeHost
 import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.breqk.BuildConfig
-import com.breqk.bridge.BreqkReactPackage
-import com.breqk.bridge.VPNModule
-import com.breqk.bridge.SettingsModule
-import com.breqk.mode.ModeManager
-import com.breqk.monitor.AppUsageMonitor
-import com.breqk.prefs.BreqkPrefs
+import com.Break.BuildConfig
+import com.Break.bridge.BreakReactPackage
+import com.Break.bridge.VPNModule
+import com.Break.bridge.SettingsModule
+import com.Break.mode.ModeManager
+import com.Break.monitor.AppUsageMonitor
+import com.Break.prefs.BreakPrefs
 
 class MainApplication : Application(), ReactApplication {
 
     override val reactNativeHost: ReactNativeHost = object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> {
             val packages = PackageList(this).packages.toMutableList()
-            packages.add(BreqkReactPackage())
+            packages.add(BreakReactPackage())
             return packages
         }   
 
@@ -50,9 +50,9 @@ class MainApplication : Application(), ReactApplication {
         CookieManager.getInstance().setAcceptCookie(true)
 
         // Migrate legacy blocked_apps → per-app policies (runs once, no-op after)
-        BreqkPrefs.migrateIfNeeded(this)
+        BreakPrefs.migrateIfNeeded(this)
         // Create default modes (Study + Bedtime) on first run
-        BreqkPrefs.createDefaultModesIfNeeded(this)
+        BreakPrefs.createDefaultModesIfNeeded(this)
         // Register alarms for any modes with schedules
         ModeManager.reregisterAllAlarms(this)
 

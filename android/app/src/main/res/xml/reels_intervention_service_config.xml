@@ -1,21 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- reels_intervention_service_config.xml
-     Config for ReelsInterventionService.
-     Primarily watches Instagram and YouTube for scroll/reels detection.
-     packageNames is intentionally OMITTED so that TYPE_WINDOW_STATE_CHANGED events
-     from other apps (e.g., the launcher) can be received — this lets the service
-     detect when the user leaves Instagram/YouTube via Home button or app switcher,
-     preventing false-positive budget accumulation on the home screen.
-     The Java code in onAccessibilityEvent() filters non-target packages efficiently.
-     typeViewScrolled required for scroll counting.
-     flagReportViewIds required for findAccessibilityNodeInfosByViewId to return results.
+     Unified config for ReelsInterventionService — handles BOTH:
+       1. Instagram Reels / YouTube Shorts scroll budget (REELS_WATCH)
+       2. Browser URL bar monitoring and adult-domain redirect (BROWSER_WATCH)
+
+     packageNames intentionally OMITTED so TYPE_WINDOW_STATE_CHANGED from all apps is
+     received — lets the service detect when the user leaves Reels via Home/app-switch,
+     AND so that all supported browsers (BrowserBarContentFilter.BROWSER_URL_IDS) are
+     covered without listing each one. The Java code dispatches by package efficiently.
+
+     typeViewScrolled: scroll counting for Reels/Shorts.
+     typeWindowStateChanged: Reels navigation + browser tab changes.
+     typeWindowContentChanged: browser URL bar updates in-place.
+     typeViewTextChanged: user typing in browser omnibar.
+     typeViewFocused: browser omnibar focus change.
+     typeWindowsChanged: multi-window browser URL changes (API 29+).
+     flagReportViewIds: required for findAccessibilityNodeInfosByViewId.
+     flagIncludeNotImportantViews: required for omnibar node discovery in some browsers.
 -->
 <accessibility-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeViewScrolled|typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityEventTypes="typeViewScrolled|typeWindowStateChanged|typeWindowContentChanged|typeViewTextChanged|typeViewFocused|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
-    android:description="@string/app_name"
+    android:description="@string/accessibility_reels_intervention_description"
     android:notificationTimeout="100"
     android:settingsActivity="" />
