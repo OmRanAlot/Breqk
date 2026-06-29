@@ -50,6 +50,14 @@ public final class BreakPrefs {
     public static final String KEY_DELAY_TIME_SECONDS = "delay_time_seconds";
     public static final String KEY_POPUP_DELAY_MINUTES = "popup_delay_minutes";
 
+    // Recurring overlay (per-mode "nag" setting, lives inside a mode's
+    // setting_overrides). When the active mode enables it, the intercept overlay
+    // re-shows on a fixed interval while a mode-intercepted app stays foreground.
+    public static final String KEY_RECURRING_OVERLAY = "recurring_overlay";
+    public static final String KEY_OVERLAY_INTERVAL_SECONDS = "overlay_interval_seconds";
+    /** Default gap between recurring overlay re-shows: 5 seconds. */
+    public static final int DEFAULT_OVERLAY_INTERVAL_SECONDS = 5;
+
     // Scroll threshold (Reels intervention)
     public static final String KEY_SCROLL_THRESHOLD = "scroll_threshold";
 
@@ -95,6 +103,12 @@ public final class BreakPrefs {
     public static final String KEY_ACTIVE_MODE = "active_mode";
     // How the mode was activated: "manual" or "schedule"
     public static final String KEY_ACTIVE_MODE_SOURCE = "active_mode_source";
+    // Global on/off for mode start/end + persistent notifications (default true).
+    // When false, ModeNotifier suppresses every mode-related notification.
+    public static final String KEY_MODE_NOTIFS_ENABLED = "mode_notifs_enabled";
+    // Per-mode setting (inside a mode's setting_overrides): show an ongoing
+    // (non-dismissible) notification the whole time that mode is active.
+    public static final String MODE_PERSISTENT_NOTIFICATION = "persistent_notification";
 
     // ── Feature flag keys (used inside per-app policy objects) ───────────────
     public static final String FEATURE_APP_OPEN_INTERCEPT = "app_open_intercept";
@@ -371,10 +385,23 @@ public final class BreakPrefs {
     }
 
     /**
-     * Per-app delay_secs when configured; otherwise {@link #getGlobalDelaySecs}.
+     * Effective overlay countdown ("Forced Pause Duration") for an app.
+     *
+     * Precedence (most specific wins): active-mode setting_override →
+     * per-app intercept delay_secs → global default. The mode override is checked
+     * FIRST so an enabled mode genuinely overrides base/per-app settings — this is
+     * what makes the mode editor's "Forced Pause Duration" actually take effect.
+     *
      * Used by the delay overlay countdown ring and Continue button timer.
      */
     public static int getEffectiveDelaySecs(Context context, String packageName) {
+        // 1. Active mode wins — modes override base/per-app settings.
+        Integer modeDelay = getModeSettingOverrideInt(context, KEY_DELAY_TIME_SECONDS);
+        if (modeDelay != null) {
+            return clampDelaySecs(modeDelay);
+        }
+
+        // 2. Per-app intercept override.
         try {
             JSONObject all = getInterceptSettingsJson(context);
             if (all.has(packageName)) {
@@ -387,7 +414,39 @@ public final class BreakPrefs {
             Log.e(TAG, "[INTERCEPT_SETTINGS] getEffectiveDelaySecs pkg=" + packageName
                     + ": " + e.getMessage());
         }
+
+        // 3. Global default.
         return getGlobalDelaySecs(context);
+    }
+
+    /**
+     * Effective intercept-overlay message for an app.
+     *
+     * Precedence (most specific wins): active-mode custom message →
+     * per-app intercept message → global delay_message → built-in fallback.
+     */
+    public static String getEffectiveMessage(Context context, String packageName) {
+        // 1. Active mode custom message wins.
+        String modeMsg = getModeSettingOverrideString(context, KEY_DELAY_MESSAGE);
+        if (modeMsg != null) {
+            return modeMsg;
+        }
+
+        // 2. Per-app message.
+        JSONObject perApp = getAppInterceptSettings(context, packageName);
+        String perAppMsg = perApp.optString("message", "");
+        if (perAppMsg != null && !perAppMsg.trim().isEmpty()) {
+            return perAppMsg;
+        }
+
+        // 3. Global delay_message.
+        String global = get(context).getString(KEY_DELAY_MESSAGE, "");
+        if (global != null && !global.trim().isEmpty()) {
+            return global;
+        }
+
+        // 4. Built-in fallback.
+        return "Is this intentional?";
     }
 
     /**
@@ -532,6 +591,37 @@ public final class BreakPrefs {
     }
 
     /**
+     * Whether mode notifications (start/end + persistent) are globally enabled.
+     * Defaults to true so users are informed when a mode auto-switches.
+     */
+    public static boolean isModeNotifsEnabled(Context context) {
+        return get(context).getBoolean(KEY_MODE_NOTIFS_ENABLED, true);
+    }
+
+    /** Sets the global mode-notifications toggle. */
+    public static void setModeNotifsEnabled(Context context, boolean enabled) {
+        get(context).edit().putBoolean(KEY_MODE_NOTIFS_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Whether the given mode opts into an ongoing "active" notification via its
+     * setting_overrides.persistent_notification flag. Defaults to false.
+     */
+    public static boolean isModePersistentNotification(Context context, String modeId) {
+        try {
+            JSONObject modes = getModes(context);
+            if (!modes.has(modeId)) return false;
+            JSONObject mode = modes.getJSONObject(modeId);
+            if (!mode.has("setting_overrides") || mode.isNull("setting_overrides")) return false;
+            JSONObject settings = mode.getJSONObject("setting_overrides");
+            return settings.optBoolean(MODE_PERSISTENT_NOTIFICATION, false);
+        } catch (JSONException e) {
+            Log.w(TAG, "[MODE] isModePersistentNotification error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Returns the feature override value from a specific mode for a specific
      * app+feature.
      * Returns null if the mode doesn't override this feature (caller should fall
@@ -564,6 +654,75 @@ public final class BreakPrefs {
      */
     public static String getActiveMode(Context context) {
         return get(context).getString(KEY_ACTIVE_MODE, "");
+    }
+
+    /**
+     * Returns the active mode's setting_overrides JSONObject, or null when no mode
+     * is active or the active mode declares no overrides.
+     */
+    private static JSONObject getActiveModeSettingOverrides(Context context) {
+        String activeMode = getActiveMode(context);
+        if (activeMode == null || activeMode.isEmpty())
+            return null;
+        try {
+            JSONObject modes = getModes(context);
+            if (!modes.has(activeMode))
+                return null;
+            JSONObject mode = modes.getJSONObject(activeMode);
+            if (!mode.has("setting_overrides") || mode.isNull("setting_overrides"))
+                return null;
+            return mode.getJSONObject("setting_overrides");
+        } catch (JSONException e) {
+            Log.w(TAG, "[MODE] Error reading active mode setting_overrides: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Active mode's int override for {@code key}, or null when absent. Lets callers
+     * distinguish "no override" from a real value (unlike {@link #getEffectiveSettingInt}).
+     */
+    private static Integer getModeSettingOverrideInt(Context context, String key) {
+        JSONObject overrides = getActiveModeSettingOverrides(context);
+        if (overrides == null || !overrides.has(key))
+            return null;
+        try {
+            return overrides.getInt(key);
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Active mode's String override for {@code key}, or null when absent/blank.
+     */
+    private static String getModeSettingOverrideString(Context context, String key) {
+        JSONObject overrides = getActiveModeSettingOverrides(context);
+        if (overrides == null || !overrides.has(key))
+            return null;
+        String value = overrides.optString(key, "");
+        return (value != null && !value.trim().isEmpty()) ? value : null;
+    }
+
+    /**
+     * True when the active mode requests a repeating intervention overlay
+     * (setting_overrides.recurring_overlay). Default false.
+     */
+    public static boolean isRecurringOverlayEnabled(Context context) {
+        JSONObject overrides = getActiveModeSettingOverrides(context);
+        return overrides != null && overrides.optBoolean(KEY_RECURRING_OVERLAY, false);
+    }
+
+    /**
+     * Gap (seconds) between recurring overlay re-shows for the active mode.
+     * Clamped to [1, 300]; falls back to {@link #DEFAULT_OVERLAY_INTERVAL_SECONDS}.
+     */
+    public static int getRecurringOverlayIntervalSecs(Context context) {
+        JSONObject overrides = getActiveModeSettingOverrides(context);
+        int value = overrides != null
+                ? overrides.optInt(KEY_OVERLAY_INTERVAL_SECONDS, DEFAULT_OVERLAY_INTERVAL_SECONDS)
+                : DEFAULT_OVERLAY_INTERVAL_SECONDS;
+        return Math.max(1, Math.min(300, value));
     }
 
     // ── Migration ────────────────────────────────────────────────────────────
@@ -636,7 +795,7 @@ public final class BreakPrefs {
      * the baseline per-app policies so users configure everything through modes.
      */
     // Version key — bump this to force re-creation of default modes on next launch
-    private static final int DEFAULT_MODES_VERSION = 2;
+    private static final int DEFAULT_MODES_VERSION = 3;
     private static final String KEY_DEFAULT_MODES_VERSION = "default_modes_version";
 
     public static void createDefaultModesIfNeeded(Context context) {
@@ -727,7 +886,10 @@ public final class BreakPrefs {
             bedPolicies.put("com.zhiliaoapp.musically", bedTikTok);
             bedtime.put("policy_overrides", bedPolicies);
             JSONObject bedSettings = new JSONObject();
-            bedSettings.put("delay_time_seconds", 20);
+            bedSettings.put("delay_time_seconds", 15);
+            bedSettings.put("delay_message", "It's bedtime. Put the phone down.");
+            bedSettings.put(KEY_RECURRING_OVERLAY, true);
+            bedSettings.put(KEY_OVERLAY_INTERVAL_SECONDS, DEFAULT_OVERLAY_INTERVAL_SECONDS);
             bedtime.put("setting_overrides", bedSettings);
             JSONObject schedule = new JSONObject();
             schedule.put("start_time", "22:00");
@@ -735,6 +897,32 @@ public final class BreakPrefs {
             schedule.put("days", new org.json.JSONArray(new int[] { 0, 1, 2, 3, 4, 5, 6 }));
             bedtime.put("schedule", schedule);
             modes.put("bedtime", bedtime);
+
+            // Testing: a throwaway mode for verifying the schedule timers yourself.
+            // Ships with a near-future schedule (starts ~2 min from now, ends ~2 min
+            // later) so you can watch it auto-switch ON and auto-switch back to
+            // default. Re-arm a fresh window anytime via the editor's "Quick test"
+            // button. Short 5s delay + persistent notification make the timers
+            // obvious while testing.
+            JSONObject testing = new JSONObject();
+            testing.put("name", "Testing");
+            testing.put("icon", "focus");
+            testing.put("color", "#2196F3");
+            JSONObject testPolicies = new JSONObject();
+            JSONObject testIg = new JSONObject();
+            testIg.put(FEATURE_APP_OPEN_INTERCEPT, true);
+            testPolicies.put("com.instagram.android", testIg);
+            testing.put("policy_overrides", testPolicies);
+            JSONObject testSettings = new JSONObject();
+            testSettings.put("delay_time_seconds", 5);
+            testSettings.put(MODE_PERSISTENT_NOTIFICATION, true);
+            testing.put("setting_overrides", testSettings);
+            JSONObject testSchedule = new JSONObject();
+            testSchedule.put("start_time", hhmmFromNow(2));
+            testSchedule.put("end_time", hhmmFromNow(4));
+            testSchedule.put("days", new org.json.JSONArray(new int[] { 0, 1, 2, 3, 4, 5, 6 }));
+            testing.put("schedule", testSchedule);
+            modes.put("testing", testing);
 
             saveModes(context, modes);
 
@@ -748,6 +936,18 @@ public final class BreakPrefs {
         } catch (JSONException e) {
             Log.e(TAG, "[MODE] Failed to create default modes: " + e.getMessage());
         }
+    }
+
+    /**
+     * Returns an "HH:mm" string for {@code minutes} from now (24h clock, wraps at
+     * midnight). Used to seed the Testing mode's near-future schedule.
+     */
+    public static String hhmmFromNow(int minutes) {
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        cal.add(java.util.Calendar.MINUTE, minutes);
+        return String.format(java.util.Locale.US, "%02d:%02d",
+                cal.get(java.util.Calendar.HOUR_OF_DAY),
+                cal.get(java.util.Calendar.MINUTE));
     }
 
     // ── Sync helper ──────────────────────────────────────────────────────────

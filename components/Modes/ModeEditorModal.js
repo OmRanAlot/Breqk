@@ -14,6 +14,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
+import { MANAGED_APPS } from '../managedApps/manifest';
+import { Monogram } from '../Permissions/onboarding/components';
 import { styles, L } from './ModeEditorModal.styles';
 
 if (
@@ -48,16 +50,6 @@ const COLOR_OPTIONS = [
   '#795548',
 ];
 
-const APPS = [
-  { packageName: 'com.instagram.android', label: 'Instagram' },
-  { packageName: 'com.google.android.youtube', label: 'YouTube' },
-];
-
-const FEATS = [
-  { key: 'app_open_intercept', label: 'App Open Intercept' },
-  { key: 'reels_detection', label: 'Reels Detection' },
-];
-
 const BackIcon = ({ color, size }) => (
   <Svg
     width={size}
@@ -88,6 +80,72 @@ const CloseIcon = ({ color, size }) => (
   </Svg>
 );
 
+// ── AM/PM time helpers ──
+// Modes persist schedule times as 24h "HH:mm" so the native ModeManager /
+// AlarmManager stay unchanged. The picker edits a 12h view and converts on
+// every keystroke.
+const parse24 = hhmm => {
+  const [h, m] = (hhmm || '00:00').split(':').map(n => parseInt(n, 10));
+  const hour = Number.isFinite(h) ? h : 0;
+  const minute = Number.isFinite(m) ? m : 0;
+  const period = hour >= 12 ? 'PM' : 'AM';
+  let hour12 = hour % 12;
+  if (hour12 === 0) hour12 = 12;
+  return { hour12, minute, period };
+};
+
+const to24 = (hour12, minute, period) => {
+  let h = hour12 % 12;
+  if (period === 'PM') h += 12;
+  return `${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+};
+
+const clampInt = (val, min, max, fallback) => {
+  const n = parseInt(val, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+};
+
+// Compact 12-hour picker: hour (1–12), minute (00–59), AM/PM toggle. Emits a
+// 24h "HH:mm" string via onChange.
+const TimePicker = ({ value, onChange }) => {
+  const { hour12, minute, period } = parse24(value);
+
+  return (
+    <View style={styles.timePicker}>
+      <TextInput
+        style={styles.timeField}
+        value={String(hour12)}
+        onChangeText={t =>
+          onChange(to24(clampInt(t, 1, 12, hour12), minute, period))
+        }
+        keyboardType="number-pad"
+        maxLength={2}
+        selectTextOnFocus
+      />
+      <Text style={styles.timeColon}>:</Text>
+      <TextInput
+        style={styles.timeField}
+        value={String(minute).padStart(2, '0')}
+        onChangeText={t =>
+          onChange(to24(hour12, clampInt(t, 0, 59, minute), period))
+        }
+        keyboardType="number-pad"
+        maxLength={2}
+        selectTextOnFocus
+      />
+      <TouchableOpacity
+        style={styles.periodToggle}
+        onPress={() =>
+          onChange(to24(hour12, minute, period === 'AM' ? 'PM' : 'AM'))
+        }
+      >
+        <Text style={styles.periodToggleText}>{period}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
 const ModeEditorModal = ({
   visible,
   mode,
@@ -108,6 +166,18 @@ const ModeEditorModal = ({
   const [editDelay, setEditDelay] = useState(
     mode?.setting_overrides?.delay_time_seconds || 15,
   );
+  const [editMessage, setEditMessage] = useState(
+    mode?.setting_overrides?.delay_message || '',
+  );
+  const [recurringOverlay, setRecurringOverlay] = useState(
+    mode?.setting_overrides?.recurring_overlay === true,
+  );
+  const [overlayInterval, setOverlayInterval] = useState(
+    mode?.setting_overrides?.overlay_interval_seconds || 5,
+  );
+  const [persistentNotif, setPersistentNotif] = useState(
+    mode?.setting_overrides?.persistent_notification === true,
+  );
   const [hasSchedule, setHasSchedule] = useState(!!mode?.schedule);
   const [scheduleStart, setScheduleStart] = useState(
     mode?.schedule?.start_time || '22:00',
@@ -126,6 +196,12 @@ const ModeEditorModal = ({
       setEditColor(mode.color || '#FF9800');
       setEditPolicies(mode.policy_overrides || {});
       setEditDelay(mode.setting_overrides?.delay_time_seconds || 15);
+      setEditMessage(mode.setting_overrides?.delay_message || '');
+      setRecurringOverlay(mode.setting_overrides?.recurring_overlay === true);
+      setOverlayInterval(mode.setting_overrides?.overlay_interval_seconds || 5);
+      setPersistentNotif(
+        mode.setting_overrides?.persistent_notification === true,
+      );
       setHasSchedule(!!mode.schedule);
       setScheduleStart(mode.schedule?.start_time || '22:00');
       setScheduleEnd(mode.schedule?.end_time || '07:00');
@@ -136,6 +212,10 @@ const ModeEditorModal = ({
       setEditColor('#FF9800');
       setEditPolicies({});
       setEditDelay(15);
+      setEditMessage('');
+      setRecurringOverlay(false);
+      setOverlayInterval(5);
+      setPersistentNotif(false);
       setHasSchedule(false);
       setScheduleStart('22:00');
       setScheduleEnd('07:00');
@@ -150,6 +230,56 @@ const ModeEditorModal = ({
       updated[pkg] = { ...updated[pkg], [featureKey]: value };
       return updated;
     });
+  };
+
+  // Master "manage this app in this mode" toggle. ON seeds App Open Intercept so
+  // the app is blocked by default; OFF removes the app's entry entirely so it has
+  // no overrides in this mode (excluded). Presence of the pkg key — not its
+  // truthiness — drives whether the per-app feature block is shown, so the user
+  // can keep an app managed with intercept off (e.g. Reels-only, like the Home
+  // "Managed Apps" rows).
+  const toggleAppManaged = (pkg, value) => {
+    setEditPolicies(prev => {
+      const updated = { ...prev };
+      if (value) {
+        updated[pkg] = { ...(updated[pkg] || {}), app_open_intercept: true };
+      } else {
+        delete updated[pkg];
+      }
+      return updated;
+    });
+  };
+
+  // Per-app stepper (e.g. session_post_limit) inside the mode's policy_overrides.
+  // Mirrors AppDetail's adjustPostLimit so both screens write the same key/shape.
+  const adjustModeStepper = (pkg, feature, delta) => {
+    setEditPolicies(prev => {
+      const cur = prev[pkg] || {};
+      const base = typeof cur[feature.key] === 'number' ? cur[feature.key] : 20;
+      const next = Math.max(
+        feature.min,
+        Math.min(feature.max, base + delta * feature.step),
+      );
+      return { ...prev, [pkg]: { ...cur, [feature.key]: next } };
+    });
+  };
+
+  // Arms a near-future test window: enables the schedule, sets start to ~2 min
+  // from now and end ~2 min after that, every day. Lets you watch the mode
+  // auto-switch on and back to default without waiting for a real schedule.
+  const handleQuickTest = () => {
+    const now = new Date();
+    const fmt = d =>
+      `${String(d.getHours()).padStart(2, '0')}:${String(
+        d.getMinutes(),
+      ).padStart(2, '0')}`;
+    const start = new Date(now.getTime() + 2 * 60 * 1000);
+    const end = new Date(now.getTime() + 4 * 60 * 1000);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setHasSchedule(true);
+    setScheduleStart(fmt(start));
+    setScheduleEnd(fmt(end));
+    setScheduleDays([0, 1, 2, 3, 4, 5, 6]);
   };
 
   const toggleDay = dayIndex => {
@@ -170,6 +300,10 @@ const ModeEditorModal = ({
       setting_overrides: {
         ...mode?.setting_overrides,
         delay_time_seconds: editDelay,
+        delay_message: editMessage.trim(),
+        recurring_overlay: recurringOverlay,
+        overlay_interval_seconds: overlayInterval,
+        persistent_notification: persistentNotif,
       },
       schedule: hasSchedule
         ? {
@@ -271,25 +405,101 @@ const ModeEditorModal = ({
             ))}
           </View>
 
-          <Text style={styles.sectionLabel}>APPS & FEATURES</Text>
-          {APPS.map(app => {
-            const appOverrides = editPolicies[app.packageName] || {};
+          <Text style={styles.sectionLabel}>APPS TO BLOCK</Text>
+          <Text style={styles.appsSectionCaption}>
+            Choose which apps this mode manages and which interventions apply.
+          </Text>
+          {MANAGED_APPS.map(app => {
+            const appOverrides = editPolicies[app.pkg] || {};
+            const managed = Object.prototype.hasOwnProperty.call(
+              editPolicies,
+              app.pkg,
+            );
+            const toggleFeatures = app.features.filter(
+              f => f.kind !== 'stepper',
+            );
+            const stepper = app.features.find(f => f.kind === 'stepper');
+
             return (
-              <View key={app.packageName} style={styles.appBlock}>
-                <Text style={styles.appLabel}>{app.label}</Text>
-                {FEATS.map(feat => (
-                  <View key={feat.key} style={styles.featureRow}>
-                    <Text style={styles.featureLabel}>{feat.label}</Text>
-                    <Switch
-                      value={appOverrides[feat.key] === true}
-                      onValueChange={val =>
-                        toggleModeFeature(app.packageName, feat.key, val)
-                      }
-                      trackColor={{ false: '#D6D6D6', true: L.charcoal }}
-                      thumbColor="#FFFFFF"
-                    />
+              <View key={app.pkg} style={styles.appBlock}>
+                <View style={styles.appHeaderRow}>
+                  <Monogram
+                    text={app.monogram}
+                    active={managed}
+                    size={32}
+                    radius={9}
+                    fontSize={13}
+                  />
+                  <Text style={styles.appHeaderLabel}>{app.label}</Text>
+                  <Switch
+                    value={managed}
+                    onValueChange={val => toggleAppManaged(app.pkg, val)}
+                    trackColor={{ false: '#D6D6D6', true: editColor }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {managed && (
+                  <View style={styles.appFeatures}>
+                    {/* App Open Intercept = the literal "block on open" toggle */}
+                    <View style={styles.featureRow}>
+                      <Text style={styles.featureLabel}>
+                        App Open Intercept
+                      </Text>
+                      <Switch
+                        value={appOverrides.app_open_intercept === true}
+                        onValueChange={val =>
+                          toggleModeFeature(app.pkg, 'app_open_intercept', val)
+                        }
+                        trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                        thumbColor="#FFFFFF"
+                      />
+                    </View>
+
+                    {toggleFeatures.map(feat => (
+                      <View key={feat.key} style={styles.featureRow}>
+                        <Text style={styles.featureLabel}>{feat.label}</Text>
+                        <Switch
+                          value={appOverrides[feat.key] === true}
+                          onValueChange={val =>
+                            toggleModeFeature(app.pkg, feat.key, val)
+                          }
+                          trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                          thumbColor="#FFFFFF"
+                        />
+                      </View>
+                    ))}
+
+                    {stepper && (
+                      <View style={styles.featureRow}>
+                        <Text style={styles.featureLabel}>{stepper.label}</Text>
+                        <View style={styles.miniStepper}>
+                          <TouchableOpacity
+                            style={styles.miniStepperBtn}
+                            onPress={() =>
+                              adjustModeStepper(app.pkg, stepper, -1)
+                            }
+                          >
+                            <Text style={styles.miniStepperBtnText}>−</Text>
+                          </TouchableOpacity>
+                          <Text style={styles.miniStepperValue}>
+                            {typeof appOverrides[stepper.key] === 'number'
+                              ? appOverrides[stepper.key]
+                              : 20}
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.miniStepperBtn}
+                            onPress={() =>
+                              adjustModeStepper(app.pkg, stepper, 1)
+                            }
+                          >
+                            <Text style={styles.miniStepperBtnText}>+</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
                   </View>
-                ))}
+                )}
               </View>
             );
           })}
@@ -305,13 +515,95 @@ const ModeEditorModal = ({
             <Text style={styles.delayValue}>{editDelay}s</Text>
             <TouchableOpacity
               style={styles.stepperBtn}
-              onPress={() => setEditDelay(d => Math.min(60, d + 5))}
+              onPress={() => setEditDelay(d => Math.min(120, d + 5))}
             >
               <Text style={styles.stepperBtnText}>+</Text>
             </TouchableOpacity>
           </View>
 
+          <Text style={styles.sectionLabel}>CUSTOM MESSAGE</Text>
+          <TextInput
+            style={styles.messageInput}
+            value={editMessage}
+            onChangeText={setEditMessage}
+            placeholder="Is this intentional?"
+            placeholderTextColor={L.muted}
+            multiline
+            maxLength={140}
+          />
+
+          <Text style={styles.sectionLabel}>RECURRING OVERLAY</Text>
+          <View style={styles.recurringBlock}>
+            <View style={styles.featureRow}>
+              <Text style={styles.featureLabel}>Re-show overlay on a loop</Text>
+              <Switch
+                value={recurringOverlay}
+                onValueChange={setRecurringOverlay}
+                trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+            {recurringOverlay && (
+              <>
+                <View style={styles.intervalRow}>
+                  <Text style={styles.intervalLabel}>Gap between overlays</Text>
+                  <View style={styles.intervalStepper}>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() =>
+                        setOverlayInterval(v => Math.max(1, v - 1))
+                      }
+                    >
+                      <Text style={styles.stepperBtnText}>−</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.intervalValue}>{overlayInterval}s</Text>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() =>
+                        setOverlayInterval(v => Math.min(300, v + 1))
+                      }
+                    >
+                      <Text style={styles.stepperBtnText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <Text style={styles.recurringInfo}>
+                  While this mode is active, the {editDelay}s overlay re-appears
+                  every {overlayInterval}s on your blocked apps until you leave
+                  them.
+                </Text>
+              </>
+            )}
+          </View>
+
+          <Text style={styles.sectionLabel}>NOTIFICATION</Text>
+          <View style={styles.recurringBlock}>
+            <View style={styles.featureRow}>
+              <Text style={styles.featureLabel}>
+                Show notification while active
+              </Text>
+              <Switch
+                value={persistentNotif}
+                onValueChange={setPersistentNotif}
+                trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+            <Text style={styles.recurringInfo}>
+              Keeps an ongoing notification visible the whole time this mode is
+              on. Requires mode notifications to be enabled on the Modes screen.
+            </Text>
+          </View>
+
           <Text style={styles.sectionLabel}>SCHEDULE (optional)</Text>
+          <TouchableOpacity
+            style={styles.quickTestBtn}
+            onPress={handleQuickTest}
+          >
+            <Text style={styles.quickTestBtnText}>
+              ⚡ Quick test (start in 2 min)
+            </Text>
+          </TouchableOpacity>
           {!hasSchedule ? (
             <TouchableOpacity
               style={styles.addScheduleBtn}
@@ -323,25 +615,11 @@ const ModeEditorModal = ({
             <View style={styles.scheduleBlock}>
               <View style={styles.scheduleTimeRow}>
                 <Text style={styles.scheduleTimeLabel}>Starts at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleStart}
-                  onChangeText={setScheduleStart}
-                  placeholder="22:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
+                <TimePicker value={scheduleStart} onChange={setScheduleStart} />
               </View>
               <View style={styles.scheduleTimeRow}>
                 <Text style={styles.scheduleTimeLabel}>Ends at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleEnd}
-                  onChangeText={setScheduleEnd}
-                  placeholder="07:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
+                <TimePicker value={scheduleEnd} onChange={setScheduleEnd} />
               </View>
               <View style={styles.dayPickerRow}>
                 {DAY_LABELS.map((label, idx) => (

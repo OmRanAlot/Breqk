@@ -470,7 +470,11 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         try {
             JSONObject parsed = new JSONObject(jsonString);
             BreakPrefs.saveModes(reactContext, parsed);
-            Log.d(TAG, "[MODE] saveModes saved");
+            // Schedule edits made in the UI must take effect immediately. Without
+            // this, AlarmManager schedules only refreshed on boot / app cold-start,
+            // so a newly edited start/end time was ignored until the next reboot.
+            ModeManager.reregisterAllAlarms(reactContext);
+            Log.d(TAG, "[MODE] saveModes saved + alarms re-registered");
         } catch (Exception e) {
             Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
         }
@@ -516,6 +520,21 @@ public class SettingsModule extends ReactContextBaseJavaModule {
             Log.e(TAG, "[MODE] deactivateMode error: " + e.getMessage());
             promise.reject("MODE_ERROR", e.getMessage());
         }
+    }
+
+    /** Reads the global mode-notifications toggle (default true). */
+    @ReactMethod
+    public void getModeNotifsEnabled(Callback callback) {
+        boolean enabled = BreakPrefs.isModeNotifsEnabled(reactContext);
+        Log.d(TAG, "[MODE] getModeNotifsEnabled → " + enabled);
+        callback.invoke(enabled);
+    }
+
+    /** Sets the global mode-notifications toggle. */
+    @ReactMethod
+    public void setModeNotifsEnabled(boolean enabled) {
+        Log.d(TAG, "[MODE] setModeNotifsEnabled=" + enabled);
+        BreakPrefs.setModeNotifsEnabled(reactContext, enabled);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
