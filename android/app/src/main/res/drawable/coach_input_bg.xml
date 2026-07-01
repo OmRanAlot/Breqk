@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    coach_input_bg.xml
+    ─────────────────────────────────────────────────────────────────────────────
+    Background for the intent / followup EditText in overlay_intent_coach.xml.
+
+    A rounded, slightly-filled field with the same ghost border used elsewhere in
+    the overlay palette (design/tokens.ts):
+      fill    #14FFFFFF  (white 8% — subtle so the field reads as inset)
+      border  #33FFFFFF  (overlayTheme.border — white 20%)
+      radius  14dp
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#14FFFFFF" />
+    <corners android:radius="14dp" />
+    <stroke
+        android:width="1dp"
+        android:color="#33FFFFFF" />
+</shape>

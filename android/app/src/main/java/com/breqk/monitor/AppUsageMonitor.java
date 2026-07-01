@@ -383,7 +383,15 @@ public class AppUsageMonitor {
                         // Check if we should show the overlay
                         // CRITICAL: Check for second popup even if app is in allowedThisSession
                         // allowedThisSession only prevents FIRST popup, not second popup
-                        if (isBlocked && !isOverlayActive) {
+                        //
+                        // [COACH] YouTube launch is owned by the mindful-viewing coach
+                        // (ReelsInterventionService → IntentCoachOverlay): the coach's
+                        // own wait countdown replaces this delay overlay, so suppress the
+                        // delay overlay for YouTube whenever the coach is enabled to avoid
+                        // two overlays stacking on the same launch.
+                        boolean coachOwnsYouTube = "com.google.android.youtube".equals(foregroundApp)
+                                && BreakPrefs.isCoachEnabled(context);
+                        if (isBlocked && !isOverlayActive && !coachOwnsYouTube) {
                             // Get when this app was opened
                             Long appOpenTime = appOpenTimestamps.get(foregroundApp);
                             Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);

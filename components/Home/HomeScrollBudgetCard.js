@@ -7,11 +7,11 @@
  */
 
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { styles, L } from './home.styles';
 import { formatBudgetTime } from '../common/format';
 
-const HomeScrollBudgetCard = ({ budgetStatus }) => {
+const HomeScrollBudgetCard = ({ budgetStatus, onPress }) => {
   if (!budgetStatus) return null;
 
   // Defensive guard: remainingMs=0 with canScroll=true is a stuck 0:00 state.
@@ -26,7 +26,14 @@ const HomeScrollBudgetCard = ({ budgetStatus }) => {
     : 1;
 
   return (
-    <View style={styles.budgetCard}>
+    <TouchableOpacity
+      style={styles.budgetCard}
+      activeOpacity={onPress ? 0.7 : 1}
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel="Scroll Budget settings"
+    >
       <View style={styles.budgetHeader}>
         <Text style={styles.sectionTitle}>Scroll Budget</Text>
         <View style={[styles.budgetDot, { backgroundColor: statusColor }]} />
@@ -49,7 +56,7 @@ const HomeScrollBudgetCard = ({ budgetStatus }) => {
         {budgetStatus.allowanceMinutes}m allowed per{' '}
         {budgetStatus.windowMinutes}m window
       </Text>
-    </View>
+    </TouchableOpacity>
   );
 };
 

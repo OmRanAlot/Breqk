@@ -461,7 +461,7 @@ const Customize = ({ navigation }) => {
               adjustWindow={adjustWindow}
             />
 
-            <InterceptMessageSection
+            {/* <InterceptMessageSection
               interceptMessage={interceptMessage}
               setInterceptMessage={setInterceptMessage}
               handleMessageSubmit={handleMessageSubmit}
@@ -473,7 +473,7 @@ const Customize = ({ navigation }) => {
                 console.log('[Customize] showing preview interstitial');
                 setPreviewVisible(true);
               }}
-            />
+            /> */}
 
             {/* ── Browser Content Filter ───────────────────────────────── */}
             <View style={styles.section}>

@@ -65,6 +65,7 @@ Filter with: `adb logcat -s <TAG>`
 | `CONTENT_FILTER` | `shortform/ContentFilter.java` | Short-form ejection (GLOBAL_ACTION_BACK) for Reels/Shorts/TikTok; debounce |
 | `REELS_WATCH` (via `shortform/detection/YouTubeDetector.java`) | `shortform/detection/YouTubeDetector.java` | YouTube Shorts detection tiers; logs under TAG `REELS_WATCH` with `TIER*`, `[SHORTS_CLASS]`, `[SHORTS_TEXT]`, `[STRICT_DETECT]`, `[ACTION_BTN]` (Tier 3B action-button scan) |
 | `FEED_SCROLL` | `shortform/metrics/HomeFeedScrollMeter.java` (fed by `ReelsInterventionService.meterHomeFeedScroll()`) | **Pure measurement** of Instagram **home-feed** scrolling ONLY (not Reels/Explore/DMs/Stories): per-scroll `[SCROLL]` lines with posts-passed + pixel distance, and a `[SESSION]` summary on leaving the feed. Never triggers an intervention. Isolate with `adb logcat -s FEED_SCROLL`. |
+| `COACH` | `coach/CoachSessionTracker.java`, `coach/IntentCoachOverlay.java` | Mindful viewing coach (YouTube launch gate): session boundary (`[SESSION]`), show-once gate (`[GATE]`), wait→intent overlay phases (`[OVERLAY]`), verdict outcome (`[VERDICT]`), override recording (`[OVERRIDE]`). Verdict logic itself lives in pure `coach/VerdictEngine.java` (no logging). Isolate with `adb logcat -s COACH`. |
 
 ---
 
@@ -712,6 +713,14 @@ adb logcat -s AppUsageMonitor VPNModule BreakVpnService REELS_WATCH > session_lo
 | `settings_lock_enabled` | boolean | `false` | Feature toggle: opt-in Settings Change Lock (`[SETTINGS_LOCK]`). When on, each scope locks after the user edits & leaves it. |
 | `settings_lock_duration_ms` | long | `86400000` (24h) | How long a scope stays read-only after an edit, clamped 24h–7d. Picked in the Customize toggle. |
 | `settings_lock_until` | String (JSON) | `"{}"` | Per-scope unlock instants: `{"global": <epochMs>, "com.pkg": <epochMs>}`. A scope is locked while `enabled && now < its value`. Managed by `SettingsLockManager`. **Never wipe in a reset routine.** |
+| `coach_enabled` | boolean | `true` | Master toggle for the YouTube mindful-viewing coach (launch gate). |
+| `coach_mode` | String | `"balanced"` | Friction level: `chill` / `balanced` / `strict`. Parsed by `com.Break.coach.Mode`. |
+| `coach_session_start` | long | `0` | Epoch ms the current YouTube viewing session began (0 = none). |
+| `coach_videos_watched` | int | `0` | Videos opened in the current session (incremented on player transitions). |
+| `coach_last_yt_foreground` | long | `0` | Epoch ms YouTube was last foreground; a gap > `COACH_SESSION_GAP_MS` (30m) starts a fresh session. |
+| `coach_shown_for_session` | boolean | `false` | True once the coach overlay has run for the current session (show-once gate). |
+| `coach_overrides_today` | int | `0` | Times the user pushed past a probe/challenge today; rolls at midnight via `coach_overrides_date`. |
+| `coach_overrides_date` | String | `""` | `"yyyy-MM-dd"` the override counter belongs to; counter resets when the date changes. |
 
 ---
 
