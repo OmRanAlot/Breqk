@@ -278,8 +278,14 @@ public class AppUsageMonitor {
                         // Reset currentForegroundApp so that when the user returns to a
                         // blocked app it is treated as a fresh open and the overlay re-arms.
                         if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
-                            Log.d(TAG, "[RECENTS_DETECT] foreground null — resetting currentForegroundApp="
+                            Log.d(TAG, "[RECENTS_DETECT] foreground null — clearing session state for "
                                     + currentForegroundApp + " so return-from-recents re-triggers overlay");
+                            // Clear session allowance so the overlay re-arms when the user returns
+                            // from home/recents. Without this, allowedThisSession retains the
+                            // package and suppresses the first-popup check on re-entry.
+                            allowedThisSession.remove(currentForegroundApp);
+                            appOpenTimestamps.remove(currentForegroundApp);
+                            lastPopupShownTimestamps.remove(currentForegroundApp);
                             currentForegroundApp = "";
                         }
                         if (isMonitoring) {
@@ -925,7 +931,13 @@ public class AppUsageMonitor {
             Log.d(TAG, "removeOverlay: breathing animation cancelled");
         }
         if (overlayView != null) {
-            windowManager.removeView(overlayView);
+            try {
+                windowManager.removeView(overlayView);
+            } catch (IllegalArgumentException e) {
+                // View was already detached (e.g. process restart or double-remove).
+                // Log and continue so overlayView is always nulled below.
+                Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
+            }
             overlayView = null;
         }
         isOverlayActive = false;
