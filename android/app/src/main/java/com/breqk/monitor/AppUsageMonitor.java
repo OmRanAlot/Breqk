@@ -11,18 +11,22 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.PixelFormat;
+import android.graphics.Point;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowManager;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.content.SharedPreferences;
@@ -67,6 +71,11 @@ public class AppUsageMonitor {
     private ConcurrentHashMap<String, Long> appDelayTimes = new ConcurrentHashMap<>();
     private WindowManager windowManager;
     private View overlayView;
+    // The view actually added to WindowManager. Equals overlayView in portrait; in
+    // landscape it is a full-screen wrapper holding the counter-rotated overlayView
+    // (see lockOverlayToPortrait). overlayView always remains the inflated content
+    // so findViewById / animators / the null-sentinel checks stay valid.
+    private View overlayWindowRoot;
     private String lastDetectedApp = "";
     private boolean isOverlayActive = false;
     private String lastAppPackage = "";
@@ -390,6 +399,36 @@ public class AppUsageMonitor {
                         // CRITICAL: Check for second popup even if app is in allowedThisSession
                         // allowedThisSession only prevents FIRST popup, not second popup
                         if (isBlocked && !isOverlayActive) {
+                            // ─── Recurring overlay (per-mode "nag") ───
+                            // When the active mode enables recurring_overlay, re-show the
+                            // intercept overlay on a fixed interval measured from the LAST
+                            // dismissal (popupCooldown holds the Continue-tap timestamp). This
+                            // bypasses the normal minute-scale popup delay and POPUP_COOLDOWN_MS
+                            // so e.g. Bedtime can pulse a 15s overlay every 5s while a blocked
+                            // app stays foreground. The initial overlay still comes from the
+                            // first-popup path below; this only handles subsequent re-shows.
+                            boolean recurringShown = false;
+                            if (BreakPrefs.isRecurringOverlayEnabled(context)) {
+                                long intervalMs = BreakPrefs.getRecurringOverlayIntervalSecs(context) * 1000L;
+                                Long lastDismiss = popupCooldown.get(foregroundApp);
+                                boolean recurringDue = lastDismiss != null
+                                        && (now - lastDismiss) >= intervalMs
+                                        && now >= overlayPendingUntil;
+                                if (recurringDue) {
+                                    synchronized (overlayLock) {
+                                        if (overlayView == null) {
+                                            Log.i(TAG, "[RECURRING_OVERLAY] re-showing for " + foregroundApp
+                                                    + " gapMs=" + (now - lastDismiss) + " intervalMs=" + intervalMs);
+                                            lastPopupShownTimestamps.put(foregroundApp, now);
+                                            overlayPendingUntil = now + OVERLAY_DEBOUNCE_MS;
+                                            handleBlockedApp(foregroundApp, appName);
+                                            recurringShown = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!recurringShown) {
                             // Get when this app was opened
                             Long appOpenTime = appOpenTimestamps.get(foregroundApp);
                             Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);
@@ -463,6 +502,7 @@ public class AppUsageMonitor {
                                     }
                                 }
                             }
+                            } // end if (!recurringShown)
                         }
 
                         // If user switches away from an allowed app, remove it from allowed session and
@@ -663,15 +703,18 @@ public class AppUsageMonitor {
             try {
                 Log.i(TAG, "Overlay handler entered for " + appName + " (" + packageName + ")");
 
-                // Clean up old overlay if it exists
-                if (overlayView != null && overlayView.getParent() != null) {
+                // Clean up old overlay if it exists. Remove the window root (which may
+                // be a landscape wrapper around overlayView), not overlayView itself.
+                View oldRoot = overlayWindowRoot != null ? overlayWindowRoot : overlayView;
+                if (oldRoot != null && oldRoot.getParent() != null) {
                     Log.d(TAG, "Removing old overlay view");
                     try {
-                        windowManager.removeView(overlayView);
+                        windowManager.removeView(oldRoot);
                     } catch (Exception e) {
                         Log.e(TAG, "Error removing old overlay", e);
                     }
                 }
+                overlayWindowRoot = null;
 
                 // POPUP_MARKER: native overlay popup entry point (searchable)
                 Log.i(TAG, "POPUP_MARKER showing delay overlay for " + appName + " (" + packageName + ")");
@@ -705,10 +748,10 @@ public class AppUsageMonitor {
                  * Title: use customMessage if the user set one, else the default question.
                  * Continue button: disabled, shows countdown text ("Wait (Xs)").
                  */
-                // Resolve per-app overrides, falling back to global Customize values
+                // Resolve message with mode-aware precedence:
+                // active-mode custom message → per-app message → global → fallback.
                 org.json.JSONObject perAppSettings = BreakPrefs.getAppInterceptSettings(context, packageName);
-                String effectiveMessage = perAppSettings.optString("message", "");
-                if (effectiveMessage.isEmpty()) effectiveMessage = (customMessage != null && !customMessage.isEmpty()) ? customMessage : "Is this intentional?";
+                String effectiveMessage = BreakPrefs.getEffectiveMessage(context, packageName);
                 int effectiveDelaySecs = BreakPrefs.getEffectiveDelaySecs(context, packageName);
                 boolean perAppDelay = BreakPrefs.hasPerAppInterceptSettings(context, packageName)
                         && perAppSettings.has("delay_secs");
@@ -762,7 +805,12 @@ public class AppUsageMonitor {
                 overlayView.setFocusableInTouchMode(true);
                 overlayView.requestFocus();
 
-                windowManager.addView(overlayView, params);
+                // Force portrait if the foreground app (e.g. a long-form video in
+                // fullscreen) put the display in landscape. Returns overlayView
+                // unchanged when already portrait.
+                overlayWindowRoot = lockOverlayToPortrait(overlayView);
+
+                windowManager.addView(overlayWindowRoot, params);
 
                 synchronized (overlayLock) {
                     overlayPendingUntil = 0L;
@@ -820,10 +868,60 @@ public class AppUsageMonitor {
                     isOverlayActive = false;
                     lastAppPackage = "";
                     overlayView = null;
+                    overlayWindowRoot = null;
                 }
             }
         });
         Log.i(TAG, "Overlay shown for " + appName + " (" + packageName + ")[OUTSIDE HANDLER]");
+    }
+
+    /**
+     * Forces the delay overlay to render in portrait regardless of the foreground
+     * app's orientation.
+     *
+     * The overlay window inherits the foreground app's orientation, so a long-form
+     * video watched fullscreen in landscape makes the overlay lay out landscape.
+     * When the display is landscape we wrap the inflated content in a full-screen
+     * container and rotate the content ±90° back to portrait. The portrait-sized
+     * content, centered and rotated, exactly fills the landscape window so the
+     * dimmed backdrop still covers the whole screen.
+     *
+     * @return the view to hand to WindowManager.addView — either {@code content}
+     *         itself (portrait) or a wrapper holding the rotated content (landscape).
+     */
+    private View lockOverlayToPortrait(View content) {
+        Display display = windowManager.getDefaultDisplay();
+        int rotation = display.getRotation();
+
+        // Already portrait (or upside-down portrait) — nothing to rotate.
+        if (rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180) {
+            return content;
+        }
+
+        Point size = new Point();
+        display.getRealSize(size);
+        int screenW = size.x; // landscape: width > height
+        int screenH = size.y;
+
+        // Counter-rotate against the display rotation so content reads upright.
+        // If this lands upside-down on a given device, flip the sign here.
+        float degrees = (rotation == Surface.ROTATION_90) ? -90f : 90f;
+        Log.d(TAG, "lockOverlayToPortrait: display landscape (rotation=" + rotation
+                + "), rotating overlay content by " + degrees + "deg");
+
+        FrameLayout wrapper = new FrameLayout(context);
+
+        // Size the content to PORTRAIT dimensions (swap w/h). Once rotated ±90°
+        // around its center, its bounding box becomes screenW × screenH and fills
+        // the full landscape window.
+        FrameLayout.LayoutParams lp =
+                new FrameLayout.LayoutParams(screenH, screenW);
+        lp.gravity = Gravity.CENTER;
+        content.setLayoutParams(lp);
+        content.setRotation(degrees);
+
+        wrapper.addView(content);
+        return wrapper;
     }
 
     /*
@@ -939,7 +1037,14 @@ public class AppUsageMonitor {
                 Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
             }
             overlayView = null;
+        // Remove the actual window root (a landscape wrapper, or overlayView itself
+        // in portrait) — removing the rotated child would fail, it is not a root.
+        View rootToRemove = overlayWindowRoot != null ? overlayWindowRoot : overlayView;
+        if (rootToRemove != null) {
+            windowManager.removeView(rootToRemove);
         }
+        overlayView = null;
+        overlayWindowRoot = null;
         isOverlayActive = false;
         overlayShownAt = 0L;
         awayFromBlockedAppSince = 0L;

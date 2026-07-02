@@ -63,13 +63,47 @@ const DEFAULT_MODES = {
         reels_detection: true,
       },
     },
-    setting_overrides: { delay_time_seconds: 20 },
+    setting_overrides: {
+      delay_time_seconds: 15,
+      delay_message: "It's bedtime. Put the phone down.",
+      recurring_overlay: true,
+      overlay_interval_seconds: 5,
+    },
     schedule: {
       start_time: '22:00',
       end_time: '07:00',
       days: [0, 1, 2, 3, 4, 5, 6],
     },
   },
+  // Throwaway mode for testing the schedule timers yourself. Use the editor's
+  // "Quick test" button to arm a fresh near-future window, then watch it switch
+  // on and back to default. The native default seeds a near-future schedule on
+  // first install; this JS fallback is only used if native modes are empty.
+  testing: {
+    name: 'Testing',
+    icon: 'focus',
+    color: '#2196F3',
+    enabled: false,
+    policy_overrides: {
+      'com.instagram.android': { app_open_intercept: true },
+    },
+    setting_overrides: { delay_time_seconds: 5, persistent_notification: true },
+    schedule: {
+      start_time: '00:00',
+      end_time: '00:02',
+      days: [0, 1, 2, 3, 4, 5, 6],
+    },
+  },
+};
+
+// Formats a 24h "HH:mm" string as a 12-hour "h:mm AM/PM" label for display.
+const formatTime12 = hhmm => {
+  const [h, m] = (hhmm || '').split(':').map(n => parseInt(n, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return hhmm || '';
+  const period = h >= 12 ? 'PM' : 'AM';
+  let hour12 = h % 12;
+  if (hour12 === 0) hour12 = 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
 };
 
 const BackIcon = ({ color, size }) => (
@@ -111,8 +145,16 @@ const generateModeSummary = mode => {
     parts.push(settings.delay_time_seconds + 's delay');
   }
 
+  if (settings.recurring_overlay) {
+    parts.push('Recurring overlay');
+  }
+
   if (mode.schedule) {
-    parts.push(mode.schedule.start_time + '–' + mode.schedule.end_time);
+    parts.push(
+      formatTime12(mode.schedule.start_time) +
+        '–' +
+        formatTime12(mode.schedule.end_time),
+    );
   } else if (mode.enabled) {
     parts.push('Manual');
   }
@@ -178,6 +220,7 @@ const ModesScreen = ({ navigation }) => {
   const [editingMode, setEditingMode] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [isNewMode, setIsNewMode] = useState(false);
+  const [notifsEnabled, setNotifsEnabled] = useState(true);
 
   const savedOpacity = useRef(new Animated.Value(0)).current;
   const savedTimer = useRef(null);
@@ -206,6 +249,11 @@ const ModesScreen = ({ navigation }) => {
           SettingsModule.getActiveMode(resolve),
         );
         setActiveModeId(activeId || null);
+
+        const notifsOn = await new Promise(resolve =>
+          SettingsModule.getModeNotifsEnabled(resolve),
+        );
+        setNotifsEnabled(notifsOn !== false);
 
         const modesJson = await new Promise(resolve =>
           SettingsModule.getModes(resolve),
@@ -320,20 +368,25 @@ const ModesScreen = ({ navigation }) => {
       console.log('[ModesScreen] saving mode:', modeId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      if (isNewMode) {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      } else {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
+      const updatedModes = { ...modes, [modeId]: updatedMode };
+      setModes(updatedModes);
+      SettingsModule.saveModes(JSON.stringify(updatedModes));
+
+      // If we just edited the ACTIVE mode, re-activate it natively so the new
+      // policy_overrides resync blocked_apps + overlay settings immediately —
+      // the same path AppDetail uses after a per-app edit. Without this the
+      // native monitor keeps the pre-edit blocked set until something else
+      // re-triggers a sync.
+      if (modeId === activeModeId) {
+        Promise.resolve(VPNModule.activateMode(activeModeId)).catch(e =>
+          console.warn('[ModesScreen] re-activate after save failed:', e),
+        );
       }
 
       setModalVisible(false);
       showSaved();
     },
-    [modes, isNewMode, showSaved],
+    [modes, activeModeId, showSaved],
   );
 
   const handleDelete = useCallback(
@@ -348,6 +401,16 @@ const ModesScreen = ({ navigation }) => {
       showSaved();
     },
     [modes, showSaved],
+  );
+
+  const handleToggleNotifs = useCallback(
+    value => {
+      console.log('[ModesScreen] mode notifications →', value);
+      setNotifsEnabled(value);
+      SettingsModule.setModeNotifsEnabled(value);
+      showSaved();
+    },
+    [showSaved],
   );
 
   const handleCloseModal = useCallback(() => {
@@ -420,6 +483,23 @@ const ModesScreen = ({ navigation }) => {
         >
           <Text style={styles.createModeBtnText}>+ Create Mode</Text>
         </TouchableOpacity>
+
+        <Text style={styles.sectionLabel}>NOTIFICATIONS</Text>
+        <View style={styles.notifCard}>
+          <View style={styles.notifCardInfo}>
+            <Text style={styles.notifCardTitle}>Mode notifications</Text>
+            <Text style={styles.notifCardCaption}>
+              Alerts when a mode switches on or off, plus an ongoing badge while
+              modes set to stay-visible (like Bedtime) are active.
+            </Text>
+          </View>
+          <Switch
+            value={notifsEnabled}
+            onValueChange={handleToggleNotifs}
+            trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+            thumbColor="#FFFFFF"
+          />
+        </View>
 
         <View style={styles.infoSection}>
           <Text style={styles.infoTitle}>How modes work</Text>

@@ -146,6 +146,32 @@ export const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#FFFFFF',
   },
+  notifCard: {
+    backgroundColor: L.cardBg,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: L.cardBorder,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  notifCardInfo: {
+    flex: 1,
+  },
+  notifCardTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: L.charcoal,
+  },
+  notifCardCaption: {
+    fontSize: 12,
+    color: L.muted,
+    marginTop: 2,
+    lineHeight: 16,
+  },
   infoSection: {
     marginTop: 32,
     padding: 16,

@@ -38,11 +38,17 @@ public final class ModeNotifier {
     private static final String CHANNEL_ID = "BreakModeAlerts";
     private static final String CHANNEL_NAME = "Mode Alerts";
 
+    // Separate low-importance channel for the persistent "mode is active" badge so
+    // it doesn't buzz like the one-shot start/end alerts.
+    private static final String ONGOING_CHANNEL_ID = "BreakModeOngoing";
+    private static final String ONGOING_CHANNEL_NAME = "Active Mode";
+
     // Prevent instantiation
     private ModeNotifier() {}
 
     /** Posts a notification announcing that a mode has begun. */
     public static void notifyModeStarted(Context context, String modeId) {
+        if (notifsDisabled(context, "notifyModeStarted")) return;
         String name = resolveModeName(context, modeId);
         post(context, modeId,
                 name + " started",
@@ -51,10 +57,63 @@ public final class ModeNotifier {
 
     /** Posts a notification announcing that a mode has ended. */
     public static void notifyModeEnded(Context context, String modeId) {
+        if (notifsDisabled(context, "notifyModeEnded")) return;
         String name = resolveModeName(context, modeId);
         post(context, modeId,
                 name + " ended",
                 name + " is no longer active.");
+    }
+
+    /**
+     * Posts an ongoing (non-dismissible) notification that stays up the whole time
+     * the mode is active. Used by modes that opt into persistent_notification
+     * (e.g. Bedtime). No-op if mode notifications are globally disabled.
+     */
+    public static void showOngoing(Context context, String modeId) {
+        if (notifsDisabled(context, "showOngoing")) return;
+        createOngoingChannelIfNeeded(context);
+
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            Log.w(TAG, "NotificationManager unavailable — cannot show ongoing for '" + modeId + "'");
+            return;
+        }
+
+        String name = resolveModeName(context, modeId);
+        Intent tapIntent = new Intent(context, MainActivity.class);
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            piFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                context, modeId.hashCode(), tapIntent, piFlags);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, ONGOING_CHANNEL_ID)
+                .setContentTitle(name + " active")
+                .setContentText(name + " is on. Tap to manage.")
+                .setSmallIcon(R.drawable.ic_vpn)
+                .setContentIntent(contentIntent)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setPriority(NotificationCompat.PRIORITY_LOW);
+
+        manager.notify(ongoingNotificationId(modeId), builder.build());
+        Log.i(TAG, "Posted ongoing notification for mode '" + modeId + "'");
+    }
+
+    /** Clears the ongoing "mode is active" notification for a mode. */
+    public static void clearOngoing(Context context, String modeId) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        manager.cancel(ongoingNotificationId(modeId));
+        Log.i(TAG, "Cleared ongoing notification for mode '" + modeId + "'");
+    }
+
+    /** Returns true (and logs) when the global mode-notifications toggle is off. */
+    private static boolean notifsDisabled(Context context, String caller) {
+        if (BreakPrefs.isModeNotifsEnabled(context)) return false;
+        Log.d(TAG, "Mode notifications disabled — skipping " + caller);
+        return true;
     }
 
     // =========================================================================
@@ -99,6 +158,21 @@ public final class ModeNotifier {
                 CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT);
         channel.setDescription("Alerts when a focus mode (e.g. Bedtime) begins or ends");
         manager.createNotificationChannel(channel);
+    }
+
+    private static void createOngoingChannelIfNeeded(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        NotificationChannel channel = new NotificationChannel(
+                ONGOING_CHANNEL_ID, ONGOING_CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("Persistent badge shown while a focus mode is active");
+        manager.createNotificationChannel(channel);
+    }
+
+    /** Derives a stable ongoing notification ID, distinct from the start/end one. */
+    private static int ongoingNotificationId(String modeId) {
+        return ("mode_ongoing_" + modeId).hashCode();
     }
 
     /** Resolves a mode's friendly display name, falling back to its id. */

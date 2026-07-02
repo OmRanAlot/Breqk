@@ -79,6 +79,17 @@ const AppDetail = ({ navigation, route }) => {
   const [interceptRepeatMin, setInterceptRepeatMin] = useState(10);
   const [showApplyAllModal, setShowApplyAllModal] = useState(false);
   const interceptSaveTimer = useRef(null);
+  // Holds the latest intercept field values so the unmount flush reads current
+  // state without re-subscribing on every edit. Re-running the flush effect on
+  // each value change caused its cleanup to fire mid-edit with the PREVIOUS
+  // render's values — e.g. selecting "Once per open" would be overwritten by a
+  // stale "repeat / 10 min" save, so the overlay kept re-showing every 10 min.
+  const interceptValuesRef = useRef({
+    message: '',
+    delaySecs: 15,
+    mode: 'repeat',
+    repeatMin: 10,
+  });
 
   useEffect(() => {
     console.log('[AppDetail] loading policy for', packageName);
@@ -188,27 +199,31 @@ const AppDetail = ({ navigation, route }) => {
     [saveInterceptSettings, markSettingsDirty],
   );
 
-  // Flush pending intercept settings on unmount (message / frequency edits)
+  // Keep the ref in sync with the latest intercept field values on every render.
+  // The unmount flush below reads from this ref instead of depending on the
+  // values directly — see interceptValuesRef declaration for why.
+  interceptValuesRef.current = {
+    message: interceptMessage,
+    delaySecs: interceptDelaySecs,
+    mode: interceptFreqMode,
+    repeatMin: interceptRepeatMin,
+  };
+
+  // Flush a pending intercept save ONLY on true unmount. Empty deps means the
+  // cleanup never fires mid-edit, so it can never overwrite a fresh selection
+  // (e.g. "Once per open") with stale values captured from a previous render.
   useEffect(
     () => () => {
       if (interceptSaveTimer.current) {
         clearTimeout(interceptSaveTimer.current);
         interceptSaveTimer.current = null;
-        saveInterceptSettings(
-          interceptMessage,
-          interceptDelaySecs,
-          interceptFreqMode,
-          interceptRepeatMin,
-        );
+        const { message, delaySecs, mode, repeatMin } =
+          interceptValuesRef.current;
+        saveInterceptSettings(message, delaySecs, mode, repeatMin);
       }
     },
-    [
-      saveInterceptSettings,
-      interceptMessage,
-      interceptDelaySecs,
-      interceptFreqMode,
-      interceptRepeatMin,
-    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
 
   const applyInterceptToAll = useCallback(async () => {

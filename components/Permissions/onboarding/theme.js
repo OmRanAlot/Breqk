@@ -73,6 +73,24 @@ export const MESSAGE_PRESETS = [
 export const BREATH_DURATIONS = [5, 15, 30];
 
 /**
+ * "Set your limits" screen — short-form scroll guardrails.
+ *
+ * Threshold: consecutive Reels/Shorts before the intervention popup fires
+ * (native clamps 1–20, default 4). Allowance: minutes of short-form permitted
+ * per rolling window (native clamps 1–30, default 5). The window itself is kept
+ * at the native default of 60 minutes to keep onboarding to two simple choices —
+ * persisted via SettingsModule.saveScrollBudget(allowance, SCROLL_WINDOW_MINUTES).
+ */
+export const SCROLL_THRESHOLD_OPTIONS = [3, 5, 10];
+export const DEFAULT_SCROLL_THRESHOLD = 5;
+
+export const SCROLL_ALLOWANCE_OPTIONS = [5, 10, 15];
+export const DEFAULT_SCROLL_ALLOWANCE = 5;
+
+/** Fixed budget window (minutes) — matches the native default. */
+export const SCROLL_WINDOW_MINUTES = 60;
+
+/**
  * Per-app breath defaults reproduced from the design (Instagram 15s, TikTok
  * 30s, YouTube off). Apps without an explicit default fall back to on/15s when
  * the user selects them.

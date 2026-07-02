@@ -89,7 +89,8 @@
       "Bash(echo \"=== exit: $? \\(1=no matches=dead\\) ===\")",
       "Bash(git commit -q -m 'refactor\\(ui\\): extract styles and sub-components from large JS screens *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "PowerShell(npx eslint components/AppDetail/AppDetail.js)"
     ]
   },
   "enableAllProjectMcpServers": true,

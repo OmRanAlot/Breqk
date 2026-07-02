@@ -24,6 +24,12 @@
 
 ### 🔴 P0 — Launch Blockers (Must fix before any public release)
 
+- [x] **B16: Overnight modes never switch back to default** ✅ 2026-06-28
+  - Files: `android/app/src/main/java/com/breqk/mode/ModeManager.java`, `bridge/SettingsModule.java`
+  - Symptom: Bedtime (22:00–07:00) auto-activated at night but never deactivated in the morning — stuck on, no fallback to default.
+  - Root cause: `registerScheduleAlarms` applied `if (endMillis <= startMillis) endMillis += 24h` after `getNextAlarmTime()` already returned the next future time. When START fired and re-registered, START→tomorrow 22:00, END→tomorrow 07:00, then the adjustment pushed END to the *day after* — so the END alarm never fired the next morning. Compounded by `SettingsModule.saveModes` never re-registering alarms (schedule edits only applied after reboot).
+  - Fix applied: removed the overnight adjustment (register START/END as independent next-future occurrences); `saveModes` now calls `ModeManager.reregisterAllAlarms`. Added a `Testing` mode + editor "Quick test" button to arm a near-future window for verifying the switch-on/switch-back cycle. Added disableable mode notifications (global `mode_notifs_enabled` toggle + per-mode persistent "active" badge).
+
 - [ ] **B15 (PRIORITY 1): YouTube "Lock In" overlay persists on home / long-form after leaving Shorts**
   - Files: `android/app/src/main/java/com/Break/shortform/detection/YouTubeDetector.java`, `ReelsInterventionService.java`, `shortform/budget/BudgetHeartbeat.java`
   - Symptom: With scroll budget exhausted on YouTube only, opening a Short and then leaving it (tap Home tab, open a long-form video, etc.) leaves the "Time is up! Lock In" overlay attached on the YouTube home feed and long-form video player. It never dismisses on its own.
@@ -39,11 +45,10 @@
   - File: `android/app/src/main/java/com/Break/service/BreakVpnService.java`
   - Fix applied: Added null guards for both `intent` and `action` before the switch statement. Service now returns `START_STICKY` cleanly on OS-initiated restarts.
 
-- [ ] **B5: Set real versionCode/versionName**
-  - File: `android/app/build.gradle` (lines 86-87)
+- [x] **B5: Set real versionCode/versionName** ✅ 2026-06-26
+  - File: `android/app/build.gradle` (lines 85-86)
   - Problem: `versionCode 1` and `versionName "1.0"` — Play Store requires incrementing versionCode on every upload.
-  - Fix: Set `versionCode 100` (gives room for patches: 101, 102…) and `versionName "1.0.0"`. Consider a date-based scheme like `versionCode = YYMMDDHH`.
-  - Effort: 15 minutes
+  - Fix applied: Baseline set to `versionCode 100` / `versionName "1.0.0"`. Release convention: increment the patch number of `versionName`, and set `versionCode` to `versionName` with the dots removed (`1.0.0`→100, `1.0.1`→101, … `1.0.9`→109, `1.0.10`→1010, `1.0.11`→1011). versionCode strictly increases on every upload.
 
 - [ ] **B8: Generate release signing keystore**
   - File: `android/app/build.gradle` (line 106)
@@ -367,7 +372,7 @@ Sync mechanism: SharedPreferences.OnSharedPreferenceChangeListener + UPDATE_BLOC
 | B2 | BreakVpnService extends VpnService but never tunnels — Play Store rejection risk | service/BreakVpnService.java | — | [x] FIXED 2026-04-30 |
 | B3 | Dual AppUsageMonitor instances can desync — intermittent overlay failure | bridge/VPNModule.java + service/BreakVpnService.java | 81, 55 | [ ] TODO |
 | B4 | Null action in onStartCommand crashes on OS service restart | service/BreakVpnService.java | — | [x] FIXED 2026-04-30 |
-| B5 | versionCode=1 blocks future Play Store updates | build.gradle | 86-87 | [ ] TODO |
+| B5 | versionCode=1 blocks future Play Store updates | build.gradle | 85-86 | [x] FIXED 2026-06-26 |
 | B8 | Release builds use debug keystore — permanent key lock-in | build.gradle | 106 | [ ] TODO |
 
 ### 🟡 High
