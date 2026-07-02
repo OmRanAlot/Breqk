@@ -580,8 +580,16 @@ const Home = ({ navigation }) => {
           )}
         </View>
 
-        {/* ── Scroll Budget card ─────────────────────────────── */}
-        <HomeScrollBudgetCard budgetStatus={budgetStatus} />
+        {/* ── Scroll Budget card (tap → Customize to edit budget) ─── */}
+        <HomeScrollBudgetCard
+          budgetStatus={budgetStatus}
+          onPress={() => {
+            console.log(
+              '[Home] scroll budget tapped — navigating to Customize',
+            );
+            navigation.navigate('Customize');
+          }}
+        />
 
         {/* ── Free Break card / button ──────────────────────────── */}
         <FreeBreakCard

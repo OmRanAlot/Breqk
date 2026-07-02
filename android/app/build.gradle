@@ -119,4 +119,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Local JVM unit tests (com.Break.coach.* verdict logic — no Android deps).
+    // Run with: ./gradlew :app:testDebugUnitTest
+    testImplementation("junit:junit:4.13.2")
 }
