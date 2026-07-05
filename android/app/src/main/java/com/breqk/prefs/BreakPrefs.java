@@ -140,6 +140,33 @@ public final class BreakPrefs {
     // Browser content filter — whether ReelsInterventionService redirects blocked domains
     public static final String KEY_CONTENT_FILTER_ENABLED = "content_filter_enabled";
 
+    // ── Mindful Viewing Coach (YouTube launch gate) ───────────────────────────
+    // On-device coach: at YouTube launch the user waits the intercept delay, then
+    // types why they're opening the app. A deterministic engine
+    // (com.Break.coach.VerdictEngine) returns approve/probe/challenge; the message
+    // is phrased on-device. These keys hold the coach's config + session state.
+    /** Friction level: "chill" | "balanced" | "strict". Read via {@link Mode}. */
+    public static final String KEY_COACH_MODE = "coach_mode";
+    /** Master toggle for the YouTube viewing coach (default ON). */
+    public static final String KEY_COACH_ENABLED = "coach_enabled";
+    /** Epoch ms when the current YouTube viewing session began (0 = none). */
+    public static final String KEY_COACH_SESSION_START = "coach_session_start";
+    /** Videos opened in the current session (incremented on player transitions). */
+    public static final String KEY_COACH_VIDEOS_WATCHED = "coach_videos_watched";
+    /** Epoch ms YouTube was last seen foreground — drives session boundary. */
+    public static final String KEY_COACH_LAST_YT_FOREGROUND = "coach_last_yt_foreground";
+    /** True once the coach overlay has run for the current session (show-once). */
+    public static final String KEY_COACH_SHOWN_FOR_SESSION = "coach_shown_for_session";
+    /** Times the user pushed past a probe/challenge today (resets at midnight). */
+    public static final String KEY_COACH_OVERRIDES_TODAY = "coach_overrides_today";
+    /** "yyyy-MM-dd" the override counter belongs to; rolls the counter on change. */
+    public static final String KEY_COACH_OVERRIDES_DATE = "coach_overrides_date";
+
+    /** A gap this long with YouTube not foregrounded starts a fresh session. */
+    public static final long COACH_SESSION_GAP_MS = 30L * 60 * 1000;
+    /** Default friction level when the user has not chosen one. */
+    public static final String DEFAULT_COACH_MODE = "balanced";
+
     // ── Uninstall Lock ────────────────────────────────────────────────────────
     // Opt-in 24-hour cooldown before Break can be uninstalled. Plan:
     // .claude/plan/24h-delete-lock.md
@@ -895,6 +922,34 @@ public final class BreakPrefs {
     /** Enables or disables the deletion-prevention lock screen. */
     public static void setUninstallLockEnabled(Context context, boolean enabled) {
         get(context).edit().putBoolean(KEY_UNINSTALL_LOCK_ENABLED, enabled).apply();
+    }
+
+    // ── Mindful Viewing Coach helpers ─────────────────────────────────────────
+
+    /**
+     * Whether the YouTube mindful-viewing coach is enabled. Default true so the
+     * gate is on once the feature ships; the Customize screen can turn it off.
+     */
+    public static boolean isCoachEnabled(Context context) {
+        return get(context).getBoolean(KEY_COACH_ENABLED, true);
+    }
+
+    /** Enables or disables the YouTube viewing coach. */
+    public static void setCoachEnabled(Context context, boolean enabled) {
+        get(context).edit().putBoolean(KEY_COACH_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Raw stored friction level string ("chill"|"balanced"|"strict"). Falls back
+     * to {@link #DEFAULT_COACH_MODE}. Parse with {@code Mode.fromString(...)}.
+     */
+    public static String getCoachMode(Context context) {
+        return get(context).getString(KEY_COACH_MODE, DEFAULT_COACH_MODE);
+    }
+
+    /** Persists the user's chosen friction level (lowercase mode key). */
+    public static void setCoachMode(Context context, String modeKey) {
+        get(context).edit().putString(KEY_COACH_MODE, modeKey).apply();
     }
 
     // Prevent instantiation

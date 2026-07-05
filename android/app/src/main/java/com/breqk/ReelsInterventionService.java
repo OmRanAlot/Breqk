@@ -75,6 +75,7 @@ import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import com.Break.BuildConfig;
 import android.view.Gravity;
@@ -86,6 +87,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
+import com.Break.coach.CoachSessionTracker;
+import com.Break.coach.IntentCoachOverlay;
 import com.Break.prefs.BreakPrefs;
 import com.Break.service.BreakVpnService;
 import com.Break.shortform.AppEventRouter;
@@ -164,6 +167,15 @@ public class ReelsInterventionService extends AccessibilityService {
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
     private UninstallLockOverlay uninstallOverlay;
+
+    // --- Mindful Viewing Coach (YouTube launch gate) ---
+    // The coach shows IntentCoachOverlay (wait → type intent → verdict) the first
+    // time YouTube is foregrounded in a session. coachLastForegroundPackage tracks
+    // the previous *real* foreground package so we only trigger on a genuine
+    // transition INTO YouTube (not YouTube's own internal window changes).
+    private IntentCoachOverlay coachOverlay;
+    private CoachSessionTracker coachTracker;
+    private String coachLastForegroundPackage = "";
 
     // Timestamp of the last Settings tree scan (debounce).
     private long lastUninstallCheckMs = 0;
@@ -265,6 +277,8 @@ public class ReelsInterventionService extends AccessibilityService {
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
+        coachOverlay = new IntentCoachOverlay(this, mainHandler);
+        coachTracker = new CoachSessionTracker(this);
         budgetState       = new BudgetState(this);
         budgetState.load(BreakPrefs.get(this));
 
@@ -401,6 +415,11 @@ public class ReelsInterventionService extends AccessibilityService {
         if (eventRouter != null) {
             eventRouter.onAccessibilityEvent(event);
         }
+
+        // ── Mindful Viewing Coach: YouTube launch gate ────────────────────────────
+        // Runs before any early-return branches below so a genuine launch into
+        // YouTube is always caught. Cheap: fast-exits for non-STATE_CHANGED events.
+        maybeTriggerYouTubeCoach(packageName, event);
 
         // --- App-switch detection (defense in depth for false-positive fix) ---
         // When the user is in Reels and a DIFFERENT app comes to foreground
@@ -602,6 +621,81 @@ public class ReelsInterventionService extends AccessibilityService {
         }
         super.onDestroy();
         Log.d(TAG, "onDestroy: browser deferred callbacks cancelled, uninstall overlay dismissed");
+    }
+
+    // =========================================================================
+    // Mindful Viewing Coach — YouTube launch gate
+    // =========================================================================
+
+    /**
+     * Detects a genuine launch / return into YouTube and, on the first such
+     * transition of a session, shows {@link IntentCoachOverlay} (wait → type
+     * intent → verdict).
+     *
+     * Only TYPE_WINDOW_STATE_CHANGED events are considered. Transient windows are
+     * ignored so they never become the "previous foreground" package and never
+     * mask a real launch:
+     *   - our own overlay window (pkg == this app),
+     *   - framework-class windows (android.view/widget.*),
+     *   - known system overlays (IME / keyboard, status bar, …).
+     *
+     * The coach is shown at most once per session via
+     * {@link CoachSessionTracker#shouldShowCoach(Context)} /
+     * {@link CoachSessionTracker#markCoachShown()}; a new session begins only after
+     * YouTube has been absent longer than {@code COACH_SESSION_GAP_MS}.
+     *
+     * Logging: TAG REELS_WATCH, prefix [COACH]. (Session/overlay internals log
+     * under TAG COACH from the coach package.)
+     */
+    private void maybeTriggerYouTubeCoach(String packageName, AccessibilityEvent event) {
+        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            return;
+        }
+        if (coachTracker == null || !BreakPrefs.isCoachEnabled(this)) {
+            return;
+        }
+
+        // Ignore transient windows so the previous real foreground package is kept.
+        String className = event.getClassName() != null ? event.getClassName().toString() : "";
+        if (packageName.equals(getPackageName())
+                || FrameworkClassFilter.isFrameworkClass(className)
+                || frameworkClassFilter.isSystemOverlayPackage(packageName, this, TAG)) {
+            return;
+        }
+
+        if (!PKG_YOUTUBE.equals(packageName)) {
+            // A real, non-YouTube foreground app — remember it as the launch source.
+            coachLastForegroundPackage = packageName;
+            return;
+        }
+
+        String previousPackage = coachLastForegroundPackage;
+        boolean transitioningIn = !PKG_YOUTUBE.equals(coachLastForegroundPackage);
+        coachLastForegroundPackage = PKG_YOUTUBE;
+        if (!transitioningIn) {
+            // YouTube's own internal window change, not a launch.
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        coachTracker.onYouTubeForeground(now);
+
+        if (coachOverlay != null && coachOverlay.isShowing()) {
+            return;
+        }
+        if (!coachTracker.shouldShowCoach(this)) {
+            return;
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "[COACH] Overlay permission (SYSTEM_ALERT_WINDOW) missing — cannot show YouTube coach");
+            return;
+        }
+
+        Log.i(TAG, "[COACH] YouTube launch detected (from=" + previousPackage
+                + ") — showing intent coach");
+        coachOverlay.show(
+                () -> Log.i(TAG, "[COACH] User satisfied the gate — proceeding into YouTube"),
+                () -> Log.i(TAG, "[COACH] User exited to home from the coach"));
     }
 
     // =========================================================================
