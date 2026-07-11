@@ -161,9 +161,33 @@ public final class BreakPrefs {
     public static final String KEY_COACH_OVERRIDES_TODAY = "coach_overrides_today";
     /** "yyyy-MM-dd" the override counter belongs to; rolls the counter on change. */
     public static final String KEY_COACH_OVERRIDES_DATE = "coach_overrides_date";
+    /** True while the coach overlay is currently attached (read across processes). */
+    public static final String KEY_COACH_OVERLAY_VISIBLE = "coach_overlay_visible";
+    /** Epoch ms the coach overlay was last actually shown — drives the re-show cooldown. */
+    public static final String KEY_COACH_LAST_SHOWN_AT = "coach_last_shown_at";
 
     /** A gap this long with YouTube not foregrounded starts a fresh session. */
     public static final long COACH_SESSION_GAP_MS = 30L * 60 * 1000;
+    /**
+     * Minimum gap since YouTube was last foreground for a WINDOW_STATE_CHANGED event
+     * to count as a genuine (re)launch rather than YouTube's own internal window churn.
+     * YouTube's internal transitions fire back-to-back within a few hundred ms; a real
+     * return from elsewhere (Home, another app, screen off) always exceeds this.
+     */
+    public static final long COACH_RELAUNCH_GAP_MS = 1500L;
+    /**
+     * Minimum time between two coach overlay *shows*, so a single launch that emits
+     * several WINDOW_STATE_CHANGED events cannot double-fire the overlay. Independent
+     * of {@link #COACH_RELAUNCH_GAP_MS}, which decides whether an event is a launch.
+     */
+    public static final long COACH_RESHOW_COOLDOWN_MS = 60_000L;
+    /**
+     * Grace window AppUsageMonitor waits, once YouTube is foreground and blocked, for
+     * the coach to actually show before falling back to the ordinary delay overlay.
+     * Defense in depth: guarantees YouTube is never left with zero interception if the
+     * coach fails to fire.
+     */
+    public static final long COACH_FALLBACK_GRACE_MS = 4000L;
     /** Default friction level when the user has not chosen one. */
     public static final String DEFAULT_COACH_MODE = "balanced";
 
@@ -231,6 +255,39 @@ public final class BreakPrefs {
     public static final long MIN_SETTINGS_LOCK_MS = 24L * 60 * 60 * 1000;
     /** Maximum lock length the duration picker allows: 7 days (1 week). */
     public static final long MAX_SETTINGS_LOCK_MS = 7L * 24 * 60 * 60 * 1000;
+
+    // ── Settings Lock re-arm grace window ──────────────────────────────────────
+    // After a scope's lock expires, a GRACE window opens. If the user changes
+    // nothing in that scope before the grace window ends, the lock re-arms
+    // automatically for the full duration, and the cycle repeats:
+    //   locked(duration) → grace → locked(duration) → grace → …
+    // Editing the scope during grace resets the cycle through the normal
+    // "edit + leave screen" startLock path. grace == 0 means "None": the scope
+    // stays unlocked until the user actually makes a change (pre-cycle behavior).
+    public static final String KEY_SETTINGS_LOCK_GRACE_MS = "settings_lock_grace_ms";
+
+    /** Default grace window before a lock re-arms: 8 hours. */
+    public static final long DEFAULT_SETTINGS_LOCK_GRACE_MS = 8L * 60 * 60 * 1000;
+    /** Maximum grace window the picker allows: 24 hours. */
+    public static final long MAX_SETTINGS_LOCK_GRACE_MS = 24L * 60 * 60 * 1000;
+
+    // ── Content Filter double-safe disable ─────────────────────────────────────
+    // Opt-in second barrier on the browser content filter. When enabled, turning
+    // the filter OFF takes two steps separated by a full settings-lock duration:
+    //   disable #1 → filter STAYS ON, wait (lock duration) → confirm window →
+    //   disable #2 actually flips content_filter_enabled off.
+    // If the confirm window passes with no action, the pending disable is
+    // discarded and the filter stays protected. The confirm window equals the
+    // settings-lock grace window, or CF_INTERNAL_CONFIRM_WINDOW_MS when grace is
+    // "None". See com.Break.lock.ContentFilterGuard.
+    // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing so
+    // would shortcut (or spuriously restart) an active wait.
+    public static final String KEY_CF_DOUBLE_SAFE_ENABLED = "content_filter_double_safe_enabled";
+    public static final String KEY_CF_PENDING_DISABLE_AT = "content_filter_pending_disable_at";
+    public static final String KEY_CF_PENDING_READY_AT = "content_filter_pending_ready_at";
+
+    /** Confirm window when the grace setting is "None": 4 hours. */
+    public static final long CF_INTERNAL_CONFIRM_WINDOW_MS = 4L * 60 * 60 * 1000;
 
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;

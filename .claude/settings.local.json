@@ -93,7 +93,11 @@
       "mcp__code-review-graph__get_architecture_overview_tool",
       "Bash(./gradlew :app:testDebugUnitTest --tests \"com.Break.coach.*\" --console=plain)",
       "Bash(./gradlew :app:compileDebugJavaWithJavac --console=plain)",
-      "Bash(adb devices *)"
+      "Bash(adb devices *)",
+      "PowerShell(npm test *)",
+      "PowerShell(npx jest scheduleWindow lockCycle --silent 2>&1 | Out-String)",
+      "PowerShell(npm run *)",
+      "Bash(./gradlew.bat :app:compileDebugJavaWithJavac --console=plain)"
     ]
   },
   "enableAllProjectMcpServers": true,

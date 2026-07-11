@@ -90,3 +90,82 @@ Made the Home "Scroll Budget" card tappable → navigates to `Customize` so the
 user can edit the budget. `HomeScrollBudgetCard.js` now takes an optional
 `onPress` (wraps the card in `TouchableOpacity`, disabled when no handler);
 `home.js` passes `navigation.navigate('Customize')`. No new log tags/keys.
+
+## Side change (2026-07-08) — test suites repaired
+
+Both test stacks now run green; they are complementary, not either/or:
+
+- **Python** (`tests/static/`, run `python tests/static/run_all.py`) — static
+  audit of manifest↔Java wiring, JS↔Java bridge, prefs hygiene, security.
+  Was broken by the `com/Break` → `com/breqk` directory rename (sources still
+  declare `package com.Break;`). Fixed `_paths.py` (`JAVA_SRC` → `com/breqk`)
+  and `_harness.py:class_name_to_path` (maps logical package `com.Break` onto
+  the on-disk dir). Result: 24 PASS / 0 FAIL / 5 WARN / 2 SKIP.
+- **Jest** (`tests/unit/`, run `npm run test:jest`) — JS logic + App render. package.json
+  had NO jest config: added `preset: react-native`, `setupFiles` →
+  new `jest.setup.js` (mocks VPNModule/SettingsModule via self-populating
+  Proxy + react-native-webview), `transformIgnorePatterns` for RN ecosystem
+  libs, and test/module ignore for the vendored `everything-claude-code/`
+  repo (its 110 non-Jest suites were polluting `npm test`).
+  Result: 3 suites / 34 tests pass in ~4s.
+
+## Side change (2026-07-08) — mode creation UI redesign
+
+Reworked the mode editor (`components/Modes/ModeEditorModal.js`) per user request:
+
+- **SVG icons replace emojis** — new `components/shared/ModeIcons.js`
+  (`ModeIcon` + `MODE_ICON_KEYS`, Feather-style strokes via react-native-svg;
+  same keys as before so saved modes render unchanged). Used by the editor's
+  icon picker/preview and the ModeCard on `ModesScreen.js`.
+- **App Open Intercept is now a box** — added apps listed as rows
+  (Monogram tile + label + remove ✕), centered dashed **+** button opens an
+  inline picker of remaining `MANAGED_APPS` (7 apps, up from the old
+  Instagram/YouTube-only toggles).
+- **Forced pause duration is conditional** — the stepper only renders while
+  at least one app has `app_open_intercept: true`.
+- **Reels Detection limited to Instagram + YouTube** (labels "Reels
+  Detection" / "Shorts Detection", same shared `reels_detection` key).
+- **No alarm permission prompt** — removed `maybePromptExactAlarm` from
+  `ModesScreen.js` (and the now-dead `shouldPromptForExactAlarm` helper +
+  tests from `scheduleWindow.js`). Scheduled modes rely on the native
+  inexact-alarm fallback in `ModeManager.setExactAlarm`; the app never asks
+  for the Android "Alarms & reminders" permission during mode creation.
+- Data model unchanged (`breqk_modes` JSON). New JS log prefix `[ModeEditor]`
+  added to `docs/LOGGING.md` (plus the previously missing `[ModesScreen]`).
+- Verified: `npx jest tests/unit` → 3 suites / 31 tests pass; eslint clean on
+  all touched files.
+
+## Side change (2026-07-11) — fixed inconsistent YouTube launch intercept
+
+Root-caused and fixed per `.claude/plan/youtube-launch-intercept-inconsistent.md`:
+the coach's relaunch detector compared against `coachLastForegroundPackage`, the
+last *real* foreground package — but the Home launcher is deliberately filtered
+out as a system-overlay package (Reels `[STICKY-FIX]`), so leaving YouTube via
+Home never cleared it. Every re-open then looked like an internal window change
+and the coach silently never fired, until some unrelated app happened to be
+opened in between (the "~5 min later" symptom).
+
+- `ReelsInterventionService.maybeTriggerYouTubeCoach()` — rewritten to detect a
+  relaunch via a **time gap** since `coach_last_yt_foreground` (new constant
+  `BreakPrefs.COACH_RELAUNCH_GAP_MS` = 1.5s) instead of the pinned-package
+  heuristic. Removed the now-dead `coachLastForegroundPackage` field.
+- **Cadence changed (decided: Option A)** — coach now fires on **every** genuine
+  relaunch, not once per 30-min session. `CoachSessionTracker.shouldShowCoach()`
+  gates on a short re-show cooldown (`BreakPrefs.COACH_RESHOW_COOLDOWN_MS` = 60s,
+  keyed off new `coach_last_shown_at` pref) instead of the old
+  `coach_shown_for_session` once-only flag (kept for stats only).
+  `COACH_SESSION_GAP_MS` (30m) still governs session stats boundaries only.
+- **Coach-miss fallback (defense in depth)** — `AppUsageMonitor`'s hard
+  suppression of the delay overlay for YouTube (`coachOwnsYouTube`) is now
+  time-boxed via new pref `coach_overlay_visible` (set/cleared by
+  `IntentCoachOverlay.show()/dismiss()`) + `BreakPrefs.COACH_FALLBACK_GRACE_MS`
+  (4s): if the coach never attaches within the grace window, the ordinary delay
+  overlay fires instead of leaving YouTube unintercepted. New log line
+  `AppUsageMonitor` `[COACH_FALLBACK]`.
+- `docs/LOGGING.md` — added `coach_overlay_visible`, `coach_last_shown_at` rows,
+  updated `coach_shown_for_session` description, added `[COACH_FALLBACK]` to the
+  `AppUsageMonitor` row.
+- Not yet done: unit test for the pure relaunch-gap helper (plan's test-plan
+  item 1) and manual on-device repro verification (item 2) — no test harness
+  currently isolates this Java logic from the AccessibilityService; flagging for
+  follow-up rather than fabricating an untested claim.

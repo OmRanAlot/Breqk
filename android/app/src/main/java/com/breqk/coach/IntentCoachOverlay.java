@@ -131,6 +131,12 @@ public final class IntentCoachOverlay {
                 wm.addView(root, params);
                 shownAt = System.currentTimeMillis();
                 tracker.markCoachShown();
+                // Cross-process visibility flag: AppUsageMonitor runs in a different
+                // process and can't call isShowing() directly — it reads this pref
+                // for the coach-miss fallback (see AppUsageMonitor [COACH_FALLBACK]).
+                BreakPrefs.get(context).edit()
+                        .putBoolean(BreakPrefs.KEY_COACH_OVERLAY_VISIBLE, true)
+                        .apply();
 
                 wireButtons();
                 startWaitPhase();
@@ -347,6 +353,9 @@ public final class IntentCoachOverlay {
         final View toRemove = root;
         root = null;
         isShowing = false;
+        BreakPrefs.get(context).edit()
+                .putBoolean(BreakPrefs.KEY_COACH_OVERLAY_VISIBLE, false)
+                .apply();
         mainHandler.post(() -> {
             WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
             if (wm != null && toRemove != null) {

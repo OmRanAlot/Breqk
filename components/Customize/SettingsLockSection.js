@@ -24,31 +24,46 @@ import {
   Modal,
   TouchableOpacity,
 } from 'react-native';
+import InfoCircle from '../shared/InfoCircle';
+import { formatRemaining } from '../shared/lockCycle';
 
 const DURATION_OPTIONS = [24, 48, 72, 168]; // hours
+// Re-arm grace window options (hours). 0 = "None": no auto re-arm — the scope
+// stays unlocked after expiry until the user actually changes something.
+const GRACE_OPTIONS = [0, 4, 8, 12, 24];
 const formatDuration = h => {
   if (h < 48) return `${h}h`;
   if (h < 168) return `${h / 24}d`;
   return '1wk';
 };
+const formatGrace = h => (h === 0 ? 'None' : `${h}h`);
 
 /**
  * @param {{
  *   enabled: boolean,
  *   durationMs: number,
+ *   graceMs: number,
+ *   inGrace: boolean,
+ *   graceRemainingMs: number,
  *   onToggle: (value: boolean) => void,
  *   onPickDuration: (hours: number) => void,
+ *   onPickGrace: (hours: number) => void,
  * }} props
  */
 export default function SettingsLockSection({
   enabled,
   durationMs,
+  graceMs = 0,
+  inGrace = false,
+  graceRemainingMs = 0,
   onToggle,
   onPickDuration,
+  onPickGrace,
   locked = false,
 }) {
   const [confirmVisible, setConfirmVisible] = useState(false);
   const currentHours = Math.round((durationMs || 0) / (60 * 60 * 1000));
+  const currentGraceHours = Math.round((graceMs || 0) / (60 * 60 * 1000));
 
   const handleToggle = value => {
     if (locked) return; // toggle is read-only while a lock is active
@@ -68,7 +83,31 @@ export default function SettingsLockSection({
 
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionLabel}>Settings Change Lock</Text>
+      <View style={styles.sectionLabelRow}>
+        <Text style={styles.sectionLabel}>Settings Change Lock</Text>
+        <InfoCircle title="How the Settings Change Lock works">
+          <Text style={infoStyles.para}>
+            When this is on, changing a settings screen and leaving it makes
+            that screen read-only for your chosen duration (the lock timer).
+          </Text>
+          <Text style={infoStyles.para}>
+            Re-arm cycle: when a lock timer ends, a short grace window opens. If
+            you change nothing before the grace window ends, the lock re-arms
+            automatically for the full duration — and the cycle repeats. Making
+            any change during the grace window simply starts a fresh lock when
+            you leave the screen.
+          </Text>
+          <Text style={infoStyles.para}>
+            Setting the re-arm window to "None" turns the cycle off: after a
+            lock expires, the screen stays editable until you actually change
+            something.
+          </Text>
+          <Text style={infoStyles.para}>
+            Each scope is independent — the global settings and each managed app
+            lock on their own timers.
+          </Text>
+        </InfoCircle>
+      </View>
       <View style={styles.row}>
         <View style={styles.rowText}>
           <Text style={styles.toggleLabel}>Lock settings after changes</Text>
@@ -125,6 +164,46 @@ export default function SettingsLockSection({
         </View>
       )}
 
+      {/* Re-arm grace window picker. "None" disables the auto re-arm cycle. */}
+      {enabled && (
+        <View style={styles.durationRow}>
+          <Text style={styles.durationLabel}>Re-arm after</Text>
+          <View style={[styles.segmented, locked && styles.segmentedDisabled]}>
+            {GRACE_OPTIONS.map(h => {
+              const active = h === currentGraceHours;
+              return (
+                <TouchableOpacity
+                  key={h}
+                  style={[styles.segment, active && styles.segmentActive]}
+                  onPress={() => !locked && onPickGrace && onPickGrace(h)}
+                  disabled={locked}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active, disabled: locked }}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      active && styles.segmentTextActive,
+                    ]}
+                  >
+                    {formatGrace(h)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
+      {/* Live grace status: the lock will re-arm unless something changes. */}
+      {enabled && inGrace && (
+        <Text style={styles.graceNote}>
+          Grace window: the lock re-arms in {formatRemaining(graceRemainingMs)}{' '}
+          unless you change a setting before then.
+        </Text>
+      )}
+
       <Modal
         visible={confirmVisible}
         transparent
@@ -143,6 +222,11 @@ export default function SettingsLockSection({
             <Text style={styles.modalBody}>
               Each scope is separate: locking the global settings won’t lock an
               app’s settings, and vice-versa.
+            </Text>
+            <Text style={styles.modalBody}>
+              {currentGraceHours > 0
+                ? `Re-arm cycle: when a lock ends, you get a ${currentGraceHours}h grace window to make changes. If you change nothing, the lock re-arms automatically and the cycle repeats. Pick “None” to turn the cycle off.`
+                : 'Re-arm cycle is off (“None”): after a lock ends, the screen stays editable until you actually change something.'}
             </Text>
             <Text style={styles.modalWarn}>
               Important: once a screen is locked, this switch locks too — you
@@ -173,15 +257,37 @@ export default function SettingsLockSection({
 }
 
 const INK = '#1A1A1A';
+
+// Shared paragraph style for the InfoCircle modal body.
+const infoStyles = StyleSheet.create({
+  para: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: '#525252',
+    marginBottom: 12,
+  },
+});
+
 const styles = StyleSheet.create({
   section: { marginTop: 8, marginBottom: 28 },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
   sectionLabel: {
     fontSize: 13,
     fontWeight: '700',
     color: INK,
     letterSpacing: 0.3,
-    marginBottom: 12,
     textTransform: 'uppercase',
+  },
+  graceNote: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: '#9a3412',
+    marginTop: 10,
+    fontWeight: '500',
   },
   row: {
     flexDirection: 'row',

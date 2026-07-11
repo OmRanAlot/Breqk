@@ -43,7 +43,7 @@ Filter with: `adb logcat -s <TAG>`
 
 | TAG | File | What it covers |
 |-----|------|----------------|
-| `AppUsageMonitor` | `monitor/AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync |
+| `AppUsageMonitor` | `monitor/AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync. `[COACH_FALLBACK]` — delay-overlay fallback for YouTube when the mindful-viewing coach never appears within `COACH_FALLBACK_GRACE_MS`. |
 | `ScreenTimeTracker` | `monitor/ScreenTimeTracker.java` | Daily screen time totals, per-app usage, unlock count, notification count |
 | `VPNModule` | `bridge/VPNModule.java` | JS↔Android bridge: permissions, monitoring, blocked apps, budget status, wellbeing stats |
 | `VPNModule` + `[FREE_BREAK]` | `bridge/VPNModule.java` | Free break start/end/status — now an inline `[FREE_BREAK]` prefix on TAG `VPNModule` (was the `VPNModule:FreeBreak` sub-tag) |
@@ -551,6 +551,8 @@ JS logs use `console.log('[Prefix] message')` so you can grep Metro output.
 | `[Customize]` | `components/Customize/customize.js` | Settings load/save, toggle states, preview actions, preset selection |
 | `[SettingsLock]` | `components/Customize/useSettingsLock.js`, `SettingsLockGate.js`, `SettingsLockSection.js` | Settings Change Lock UI: state refresh, mark-dirty, exit→startLock, enable/duration changes |
 | `[PermissionsScreen]` | `components/Permissions/PermissionsScreen.js` | Permission request flow, screen advancement |
+| `[ModesScreen]` | `components/Modes/ModesScreen.js` | Modes list: load, activate/deactivate toggle, save/delete |
+| `[ModeEditor]` | `components/Modes/ModeEditorModal.js` | Mode editor: App Open Intercept add/remove app actions |
 | `[BlockerInterstitial]` | `components/BlockerInterstitial/BlockerInterstitial.tsx` | Overlay mount, countdown, button taps, budget-exhausted variant |
 | `[App]` | `App.tsx` | Root navigation, modal state, event listener setup |
 | `[WebView]` | `components/Browser/BrowserScreen.js` | Browser events (DEV builds only) |
@@ -718,9 +720,11 @@ adb logcat -s AppUsageMonitor VPNModule BreakVpnService REELS_WATCH > session_lo
 | `coach_session_start` | long | `0` | Epoch ms the current YouTube viewing session began (0 = none). |
 | `coach_videos_watched` | int | `0` | Videos opened in the current session (incremented on player transitions). |
 | `coach_last_yt_foreground` | long | `0` | Epoch ms YouTube was last foreground; a gap > `COACH_SESSION_GAP_MS` (30m) starts a fresh session. |
-| `coach_shown_for_session` | boolean | `false` | True once the coach overlay has run for the current session (show-once gate). |
+| `coach_shown_for_session` | boolean | `false` | Legacy show-once flag; no longer gates showing the overlay (fixed 2026-07: see `coach_last_shown_at`), still bumps stats on session rollover. |
 | `coach_overrides_today` | int | `0` | Times the user pushed past a probe/challenge today; rolls at midnight via `coach_overrides_date`. |
 | `coach_overrides_date` | String | `""` | `"yyyy-MM-dd"` the override counter belongs to; counter resets when the date changes. |
+| `coach_overlay_visible` | boolean | `false` | True while the coach overlay is currently attached; read cross-process by `AppUsageMonitor` for the coach-miss fallback. Set on show, cleared on dismiss. |
+| `coach_last_shown_at` | long | `0` | Epoch ms the coach overlay was last actually shown. Gates re-shows via `COACH_RESHOW_COOLDOWN_MS` (60s) — replaces the old once-per-session gate so the coach fires on every genuine relaunch. |
 
 ---
 

@@ -8,7 +8,7 @@
 npm start              # Metro bundler (terminal 1)
 npm run android        # Build & deploy (terminal 2)
 npm run lint           # Lint
-npm test               # Tests
+npm test               # Both suites (Jest + static audit)
 ```
 
 ## Architecture

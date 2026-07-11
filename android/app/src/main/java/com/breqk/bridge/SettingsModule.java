@@ -3,6 +3,7 @@ import com.Break.prefs.BreakPrefs;
 import com.Break.mode.ModeManager;
 import com.Break.widget.BreakWidgetProvider;
 import com.Break.monitor.AppUsageMonitor;
+import com.Break.lock.ContentFilterGuard;
 import com.Break.lock.SettingsLockManager;
 
 /*
@@ -446,6 +447,82 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         SettingsLockManager.startLock(reactContext, scope);
     }
 
+    /**
+     * Sets the re-arm grace window in HOURS (0 = "None": no auto re-arm; clamped
+     * to at most 24). When > 0, an expired lock re-arms after this window unless
+     * the user changed something first.
+     */
+    @ReactMethod
+    public void setSettingsLockGrace(int hours) {
+        long ms = (long) hours * 60L * 60L * 1000L;
+        SettingsLockManager.setGraceMs(reactContext, ms);
+        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockGrace hours=" + hours);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Content Filter double-safe guard (see com.Break.lock.ContentFilterGuard)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the guard state as a JSON string:
+     * { doubleSafeEnabled, filterEnabled, state, pendingDisableAt, readyAt,
+     *   confirmWindowMs, confirmEndsAt, now }.
+     */
+    @ReactMethod
+    public void getContentFilterGuardState(Callback callback) {
+        String json = ContentFilterGuard.getStateJson(reactContext);
+        Log.d(TAG, "[CF_GUARD] getContentFilterGuardState → " + json);
+        callback.invoke(json);
+    }
+
+    /**
+     * Enables/disables the double-safe guard. Rejects turning it OFF while a
+     * pending disable is in flight (that would shortcut the wait).
+     */
+    @ReactMethod
+    public void setContentFilterDoubleSafe(boolean enabled, Promise promise) {
+        boolean ok = ContentFilterGuard.setDoubleSafeEnabled(reactContext, enabled);
+        Log.d(TAG, "[CF_GUARD] setContentFilterDoubleSafe=" + enabled + " ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("CF_GUARD_REFUSED",
+                    "Cannot turn off double-safe while a disable is pending");
+        }
+    }
+
+    /** Step 1: request the disable. Starts the full-duration wait; filter stays ON. */
+    @ReactMethod
+    public void requestContentFilterDisable(Promise promise) {
+        boolean ok = ContentFilterGuard.requestDisable(reactContext);
+        Log.d(TAG, "[CF_GUARD] requestContentFilterDisable ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("CF_GUARD_REFUSED", "Disable request not valid in current state");
+        }
+    }
+
+    /** Step 2: confirm the disable inside the confirm window. Flips the filter off. */
+    @ReactMethod
+    public void confirmContentFilterDisable(Promise promise) {
+        boolean ok = ContentFilterGuard.confirmDisable(reactContext);
+        Log.d(TAG, "[CF_GUARD] confirmContentFilterDisable ok=" + ok);
+        if (ok) {
+            promise.resolve(true);
+        } else {
+            promise.reject("CF_GUARD_REFUSED", "Confirm not valid in current state");
+        }
+    }
+
+    /** Cancels an in-flight pending disable (always allowed). */
+    @ReactMethod
+    public void cancelContentFilterDisable(Promise promise) {
+        ContentFilterGuard.cancelDisable(reactContext);
+        Log.d(TAG, "[CF_GUARD] cancelContentFilterDisable");
+        promise.resolve(true);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Mode methods
     // ═══════════════════════════════════════════════════════════════════════════
@@ -462,17 +539,70 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Saves the full modes JSON from React Native.
+     * Saves the full modes JSON from React Native, then reconciles schedules:
+     * cancels/re-registers AlarmManager alarms and activates/deactivates a mode
+     * if a changed schedule window covers (or no longer covers) right now.
+     * Without this, an edited schedule only took effect after an app restart
+     * or reboot — the original "Bedtime never triggers" bug.
      */
     @ReactMethod
     public void saveModes(String jsonString) {
         Log.d(TAG, "[MODE] saveModes called");
         try {
+            JSONObject oldModes = BreakPrefs.getModes(reactContext);
             JSONObject parsed = new JSONObject(jsonString);
             BreakPrefs.saveModes(reactContext, parsed);
+            ModeManager.onModesSaved(reactContext, oldModes);
             Log.d(TAG, "[MODE] saveModes saved");
         } catch (Exception e) {
             Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Resolves true when the app may schedule exact alarms. Always true below
+     * Android 12 (API 31). On Android 14+ the SCHEDULE_EXACT_ALARM permission
+     * is DENIED by default, which makes mode schedules fire late (or seemingly
+     * not at all under Doze) — the UI should prompt the user to grant it.
+     */
+    @ReactMethod
+    public void canScheduleExactAlarms(Promise promise) {
+        try {
+            boolean allowed = true;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                android.app.AlarmManager alarmManager =
+                        (android.app.AlarmManager) reactContext.getSystemService(android.content.Context.ALARM_SERVICE);
+                allowed = alarmManager != null && alarmManager.canScheduleExactAlarms();
+            }
+            Log.d(TAG, "[MODE] canScheduleExactAlarms → " + allowed);
+            promise.resolve(allowed);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] canScheduleExactAlarms error: " + e.getMessage());
+            promise.resolve(false);
+        }
+    }
+
+    /**
+     * Opens the system "Alarms & reminders" screen for this app (Android 12+)
+     * so the user can grant exact-alarm access. No-op on older versions.
+     * When granted, ModeSchedulerReceiver gets
+     * ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED and re-registers.
+     */
+    @ReactMethod
+    public void requestExactAlarmPermission(Promise promise) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                android.content.Intent intent =
+                        new android.content.Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                intent.setData(android.net.Uri.parse("package:" + reactContext.getPackageName()));
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                reactContext.startActivity(intent);
+                Log.i(TAG, "[MODE] Opened exact-alarm permission settings");
+            }
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[MODE] requestExactAlarmPermission error: " + e.getMessage());
+            promise.reject("EXACT_ALARM_ERROR", e.getMessage());
         }
     }
 
@@ -530,7 +660,20 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveContentFilterEnabled(boolean enabled, Promise promise) {
         Log.d(TAG, "[FILTER] saveContentFilterEnabled=" + enabled);
         try {
+            // Defense in depth: while the double-safe guard is on, a DIRECT
+            // disable is refused — the only path off is the two-step guard flow
+            // (requestContentFilterDisable → confirmContentFilterDisable).
+            if (!enabled && !ContentFilterGuard.isDirectDisableAllowed(reactContext)) {
+                Log.w(TAG, "[FILTER] direct disable refused — double-safe guard is on");
+                promise.reject("CF_GUARD_REFUSED",
+                        "Double-safe is on: disable via the two-step flow");
+                return;
+            }
             BreakPrefs.setContentFilterEnabled(reactContext, enabled);
+            // Re-enabling instantly discards any pending two-step disable.
+            if (enabled) {
+                ContentFilterGuard.onFilterEnabled(reactContext);
+            }
             promise.resolve(null);
         } catch (Exception e) {
             Log.e(TAG, "[FILTER] saveContentFilterEnabled error: " + e.getMessage());

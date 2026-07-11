@@ -11,6 +11,10 @@
  *   - Reads native lock state on mount and whenever the screen regains focus.
  *   - Ticks once a second so a countdown stays live AND an expiring lock flips
  *     back to editable without leaving the screen.
+ *   - Re-arm cycle: when a lock expires, a GRACE window opens (graceMs; 0 =
+ *     "None"). If the user changes nothing before it ends, the lock re-arms for
+ *     the full duration and the cycle repeats. Derived live via
+ *     shared/lockCycle.deriveLockCycle — same math as the native layer.
  *   - `markDirty()` records that the user actually changed a protected setting.
  *   - When the user LEAVES the screen (navigation blur, app backgrounded, or
  *     unmount) AND the feature is enabled AND the scope was edited, the native
@@ -25,6 +29,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, NativeModules } from 'react-native';
+import { deriveLockCycle } from '../shared/lockCycle';
 
 const { SettingsModule } = NativeModules;
 
@@ -33,7 +38,9 @@ const EMPTY_STATE = {
   locked: false,
   anyLocked: false,
   lockUntilMs: 0,
+  baseLockUntilMs: 0,
   durationMs: 24 * 60 * 60 * 1000,
+  graceMs: 8 * 60 * 60 * 1000,
 };
 
 /**
@@ -65,7 +72,13 @@ export default function useSettingsLock(scope, navigation) {
             locked: !!parsed.locked,
             anyLocked: !!parsed.anyLocked,
             lockUntilMs: Number(parsed.lockUntil) || 0,
+            baseLockUntilMs: Number(parsed.baseLockUntil) || 0,
             durationMs: Number(parsed.durationMs) || EMPTY_STATE.durationMs,
+            // graceMs may legitimately be 0 ("None"), so don't || past it.
+            graceMs:
+              parsed.graceMs === undefined
+                ? EMPTY_STATE.graceMs
+                : Number(parsed.graceMs) || 0,
           });
         } catch (e) {
           console.warn('[SettingsLock] parse failed:', e?.message || e);
@@ -119,17 +132,37 @@ export default function useSettingsLock(scope, navigation) {
     };
   }, [navigation, maybeStartLock]);
 
-  // Tick so the countdown stays live and an expired lock flips to editable.
+  // Derive the live cycle position (locked / in grace / idle) from the stamped
+  // base timestamp using the same math as the native layer. This flips the UI
+  // at segment boundaries (lock→grace, grace→re-lock) without waiting for a
+  // native refresh.
+  const cycle = deriveLockCycle({
+    nowMs: now,
+    baseLockUntilMs: state.baseLockUntilMs,
+    durationMs: state.durationMs,
+    graceMs: state.graceMs,
+  });
+  const liveLocked = state.enabled && cycle.locked;
+  const liveInGrace = state.enabled && cycle.inGrace;
+  const remainingMs = liveLocked ? cycle.lockUntilMs - now : 0;
+  const graceRemainingMs = liveInGrace ? cycle.graceEndsAtMs - now : 0;
+
+  // Tick while the cycle is active (locked OR grace) so countdowns stay live
+  // and segment transitions render on time.
   useEffect(() => {
-    if (!state.locked) return undefined;
+    if (!liveLocked && !liveInGrace) return undefined;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [state.locked]);
+  }, [liveLocked, liveInGrace]);
 
-  // Derive a live "locked" — flips false the moment the deadline passes, even
-  // before the next native refresh.
-  const liveLocked = state.enabled && now < state.lockUntilMs;
-  const remainingMs = liveLocked ? state.lockUntilMs - now : 0;
+  // Re-sync with native whenever our derived "locked" disagrees with the last
+  // native read (i.e. a segment boundary passed) so anyLocked etc. stay fresh.
+  useEffect(() => {
+    if (liveLocked !== state.locked) {
+      console.log('[SettingsLock] segment boundary crossed → refreshing');
+      refresh();
+    }
+  }, [liveLocked, state.locked, refresh]);
 
   const setEnabled = useCallback(
     async value => {
@@ -157,16 +190,35 @@ export default function useSettingsLock(scope, navigation) {
     [refresh],
   );
 
+  // Grace window (re-arm) length in hours; 0 = "None" (no auto re-arm).
+  const setGraceHours = useCallback(
+    async hours => {
+      try {
+        await SettingsModule.setSettingsLockGrace(hours);
+        console.log('[SettingsLock] setGraceHours →', hours);
+      } catch (e) {
+        console.warn('[SettingsLock] setGrace failed:', e?.message || e);
+      }
+      refresh();
+    },
+    [refresh],
+  );
+
   return {
     enabled: state.enabled,
     locked: liveLocked,
     anyLocked: state.anyLocked,
-    lockUntilMs: state.lockUntilMs,
+    lockUntilMs: cycle.lockUntilMs || state.lockUntilMs,
     durationMs: state.durationMs,
+    graceMs: state.graceMs,
+    inGrace: liveInGrace,
+    graceEndsAtMs: cycle.graceEndsAtMs,
+    graceRemainingMs,
     remainingMs,
     markDirty,
     refresh,
     setEnabled,
     setDurationHours,
+    setGraceHours,
   };
 }
