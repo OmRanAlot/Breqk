@@ -46,13 +46,22 @@ const EMPTY_STATE = {
 /**
  * @param {string} scope            'global' or a package name
  * @param {object} [navigation]     React Navigation prop (optional)
+ * @param {object} [options]
+ * @param {boolean} [options.autoLockOnLeave=true]
+ *        When true (default), the lock (re)starts automatically on the three
+ *        "leaving the screen" signals (blur / background / unmount) — the
+ *        original behaviour used by the global Customize screen. When false,
+ *        leaving never starts the lock; the caller must arm it explicitly via
+ *        the returned `startLock()`. AppDetail passes false so the lock arms on
+ *        an explicit Save instead of on plain exit.
  * @returns {{
  *   enabled: boolean, locked: boolean, lockUntilMs: number, durationMs: number,
- *   remainingMs: number, markDirty: () => void, refresh: () => void,
+ *   remainingMs: number, markDirty: () => void, startLock: () => void, refresh: () => void,
  *   setEnabled: (v: boolean) => Promise<void>, setDurationHours: (h: number) => Promise<void>,
  * }}
  */
-export default function useSettingsLock(scope, navigation) {
+export default function useSettingsLock(scope, navigation, options = {}) {
+  const { autoLockOnLeave = true } = options;
   const [state, setState] = useState(EMPTY_STATE);
   const [now, setNow] = useState(Date.now());
 
@@ -93,17 +102,41 @@ export default function useSettingsLock(scope, navigation) {
     dirtyRef.current = true;
   }, []);
 
-  // Starts the lock if the feature is on and the scope was edited. Called on exit.
+  // Fires the native lock start for this scope and clears the dirty flag.
+  const doStartLock = useCallback(
+    reason => {
+      console.log(
+        '[SettingsLock] ' + reason + ' → starting lock for scope=',
+        scope,
+      );
+      try {
+        SettingsModule.startSettingsLock(scope);
+      } catch (e) {
+        console.warn(
+          '[SettingsLock] startSettingsLock failed:',
+          e?.message || e,
+        );
+      }
+      dirtyRef.current = false;
+    },
+    [scope],
+  );
+
+  // Auto-start on exit: only when enabled, the scope was edited, AND the caller
+  // opted into auto-lock-on-leave. AppDetail opts out and arms via startLock().
   const maybeStartLock = useCallback(() => {
+    if (!autoLockOnLeave) return;
     if (!enabledRef.current || !dirtyRef.current) return;
-    console.log('[SettingsLock] exit → starting lock for scope=', scope);
-    try {
-      SettingsModule.startSettingsLock(scope);
-    } catch (e) {
-      console.warn('[SettingsLock] startSettingsLock failed:', e?.message || e);
-    }
-    dirtyRef.current = false;
-  }, [scope]);
+    doStartLock('exit');
+  }, [autoLockOnLeave, doStartLock]);
+
+  // Explicit arm, e.g. from an AppDetail "Save" action. Arms only when the
+  // feature is enabled; no-op otherwise. Refreshes so the UI flips to locked.
+  const startLock = useCallback(() => {
+    if (!enabledRef.current) return;
+    doStartLock('save');
+    refresh();
+  }, [doStartLock, refresh]);
 
   // Load on mount + on focus return.
   useEffect(() => {
@@ -216,6 +249,7 @@ export default function useSettingsLock(scope, navigation) {
     graceRemainingMs,
     remainingMs,
     markDirty,
+    startLock,
     refresh,
     setEnabled,
     setDurationHours,

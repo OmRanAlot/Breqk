@@ -105,6 +105,13 @@ export const styles = StyleSheet.create({
     marginTop: -6,
     marginBottom: 12,
   },
+  // Same as sectionCaption but sits UNDER its control rather than above it.
+  sectionCaptionBelow: {
+    fontSize: 12,
+    color: L.muted,
+    textAlign: 'center',
+    marginTop: 8,
+  },
   nameInput: {
     fontSize: 16,
     color: L.charcoal,
@@ -272,6 +279,9 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  stepperBtnDisabled: {
+    opacity: 0.35,
+  },
   stepperBtnText: {
     fontSize: 24,
     fontWeight: '300',
@@ -315,15 +325,26 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     color: L.charcoal,
   },
-  scheduleTimeInput: {
-    fontSize: 14,
+  // Tappable time value: clock icon + "10:00 PM" + chevron. Replaced the old
+  // free-text HH:mm input, so it reads as a control rather than a field.
+  scheduleTimeValueGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: L.bg,
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  scheduleTimeValue: {
+    fontSize: 15,
+    fontWeight: '500',
     color: L.charcoal,
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    minWidth: 60,
-    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+    minWidth: 72,
+    textAlign: 'right',
   },
   dayPickerRow: {
     flexDirection: 'row',

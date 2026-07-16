@@ -47,6 +47,15 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     private final ReactApplicationContext reactContext;
     private static final String TAG = "SettingsModule";
 
+    /**
+     * Rejection message returned to JS when a base-settings write is attempted
+     * while a non-default mode owns the settings. The UI blocks these writes
+     * up front; this is the enforcement backstop, so the copy still has to be
+     * user-presentable in case a screen ever surfaces it.
+     */
+    private static final String MODE_GATE_MESSAGE =
+            "A mode is active. Switch to Default mode to change these settings.";
+
     public SettingsModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
@@ -79,6 +88,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveMonitoringEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveMonitoringEnabled called with enabled=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveMonitoringEnabled")) return;
         BreakPrefs.get(reactContext).edit()
                 .putBoolean(BreakPrefs.KEY_MONITORING_ENABLED, enabled)
                 .apply();
@@ -108,6 +118,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveRedirectInstagramToBrowser(boolean value) {
         Log.d(TAG, "[SAVE] saveRedirectInstagramToBrowser called with value=" + value);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveRedirectInstagramToBrowser")) return;
         SharedPreferences prefs = BreakPrefs.get(reactContext);
         prefs.edit().putBoolean(BreakPrefs.KEY_REDIRECT_INSTAGRAM, value).apply();
         Log.d(TAG, "[SAVE] redirect_instagram_to_browser=" + value + " saved");
@@ -137,6 +148,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         // Clamp to sane range before persisting
         int clamped = Math.max(1, Math.min(20, threshold));
         Log.d(TAG, "[SAVE] saveScrollThreshold threshold=" + threshold + " (clamped=" + clamped + ")");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveScrollThreshold")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_SCROLL_THRESHOLD, clamped)
                 .apply();
@@ -168,6 +180,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         int clampedWindow = Math.max(15, Math.min(120, windowMinutes));
         Log.d(TAG, "[SAVE] saveScrollBudget allowance=" + clampedAllowance + "min window="
                 + clampedWindow + "min");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveScrollBudget")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_SCROLL_ALLOWANCE_MINUTES, clampedAllowance)
                 .putInt(BreakPrefs.KEY_SCROLL_WINDOW_MINUTES, clampedWindow)
@@ -198,6 +211,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     public void saveHomeFeedPostLimit(int limit) {
         int clamped = Math.max(5, Math.min(100, limit));
         Log.d(TAG, "[SAVE] saveHomeFeedPostLimit limit=" + limit + " (clamped=" + clamped + ")");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveHomeFeedPostLimit")) return;
         BreakPrefs.get(reactContext).edit()
                 .putInt(BreakPrefs.KEY_HOME_FEED_POST_LIMIT, clamped)
                 .apply();
@@ -223,6 +237,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveFreeBreakEnabled(boolean enabled) {
         Log.d(TAG, "[SAVE] saveFreeBreakEnabled called with enabled=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveFreeBreakEnabled")) return;
         BreakPrefs.get(reactContext).edit()
                 .putBoolean(BreakPrefs.KEY_FREE_BREAK_ENABLED, enabled)
                 .apply();
@@ -311,6 +326,7 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void saveAppPolicies(String jsonString) {
         Log.d(TAG, "[POLICY] saveAppPolicies called");
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "saveAppPolicies")) return;
         try {
             BreakPrefs.get(reactContext).edit()
                     .putString(BreakPrefs.KEY_APP_POLICIES, jsonString)
@@ -333,6 +349,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void setAppFeature(String packageName, String featureKey, boolean enabled, Promise promise) {
         Log.d(TAG, "[POLICY] setAppFeature pkg=" + packageName + " " + featureKey + "=" + enabled);
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAppFeature")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             BreakPrefs.setAppFeature(reactContext, packageName, featureKey, enabled);
             promise.resolve(true);
@@ -371,6 +391,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void setAppInterceptSettings(String packageName, String message, int delaySecs, int popupDelayMin, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAppInterceptSettings")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
             BreakPrefs.setAppInterceptSettings(reactContext, packageName, message, clampedNew, popupDelayMin);
@@ -385,6 +409,10 @@ public class SettingsModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setAllAppsInterceptSettings(String message, int delaySecs, int popupDelayMin, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setAllAppsInterceptSettings")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             int clampedNew = BreakPrefs.clampDelaySecs(delaySecs);
             BreakPrefs.setAllAppsInterceptSettings(reactContext, message, clampedNew, popupDelayMin);
@@ -394,6 +422,44 @@ public class SettingsModule extends ReactContextBaseJavaModule {
         } catch (Exception e) {
             Log.e(TAG, "[INTERCEPT_SETTINGS] setAllAppsInterceptSettings failed: " + e.getMessage());
             promise.reject("SET_ALL_INTERCEPT_SETTINGS_FAILED", e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Mindful Viewing Coach (YouTube typing gate) toggle
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Whether the YouTube typing coach is enabled. When ON, the coach IS YouTube's
+     * App Open Intercept (initial + every-X-min re-fire); when OFF, YouTube gets
+     * the ordinary delay overlay like every other app.
+     */
+    @ReactMethod
+    public void getCoachEnabled(Promise promise) {
+        try {
+            boolean enabled = BreakPrefs.isCoachEnabled(reactContext);
+            Log.d(TAG, "[COACH] getCoachEnabled → " + enabled);
+            promise.resolve(enabled);
+        } catch (Exception e) {
+            Log.e(TAG, "[COACH] getCoachEnabled failed: " + e.getMessage());
+            promise.reject("GET_COACH_ENABLED_FAILED", e.getMessage());
+        }
+    }
+
+    /** Enables/disables the YouTube typing coach. Applied immediately. */
+    @ReactMethod
+    public void setCoachEnabled(boolean enabled, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setCoachEnabled")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
+        try {
+            BreakPrefs.setCoachEnabled(reactContext, enabled);
+            Log.i(TAG, "[COACH] setCoachEnabled → " + enabled);
+            promise.resolve(true);
+        } catch (Exception e) {
+            Log.e(TAG, "[COACH] setCoachEnabled failed: " + e.getMessage());
+            promise.reject("SET_COACH_ENABLED_FAILED", e.getMessage());
         }
     }
 
@@ -730,16 +796,42 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Retrieves the saved forced pause duration from SharedPreferences.
-     * Returns default (15 seconds) if not yet set.
+     * Retrieves the forced pause duration currently IN FORCE — the active mode's
+     * setting_override when it has one, otherwise the saved base value. The
+     * Customize slider must show what the app is actually doing, not a base value
+     * the mode is masking.
      */
     @ReactMethod
     public void getDelayTime(Callback callback) {
         Log.d(TAG, "[GET] getDelayTime called");
-        SharedPreferences prefs = BreakPrefs.get(reactContext);
-        int seconds = prefs.getInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, 15);
-        Log.d(TAG, "[GET] delay_time_seconds=" + seconds);
+        int seconds = BreakPrefs.getEffectiveSettingInt(reactContext,
+                BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
+        Log.d(TAG, "[GET] delay_time_seconds (effective)=" + seconds);
         callback.invoke(seconds);
+    }
+
+    // ── Default-mode gate ─────────────────────────────────────────────────────
+
+    /**
+     * Reports whether the base settings screens (Customize, AppDetail) may be
+     * edited right now. False whenever a non-default mode is active: that mode
+     * owns the app's behaviour, so editing the base underneath would be a silent
+     * no-op the user could not see.
+     *
+     * The JS layer calls this to render the read-only banner; the native setters
+     * enforce the same rule independently, so a stale UI can never write.
+     *
+     * Callback: (editable: boolean, activeModeId: String)
+     *
+     * Logging: [MODE_GATE]
+     */
+    @ReactMethod
+    public void getBaseSettingsEditable(Callback callback) {
+        boolean editable = BreakPrefs.isBaseSettingsEditable(reactContext);
+        String activeMode = BreakPrefs.getActiveMode(reactContext);
+        Log.d(TAG, "[MODE_GATE] getBaseSettingsEditable → " + editable
+                + " (activeMode='" + activeMode + "')");
+        callback.invoke(editable, activeMode);
     }
 
 }

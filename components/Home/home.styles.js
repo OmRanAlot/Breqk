@@ -97,6 +97,59 @@ export const styles = StyleSheet.create({
     color: L.muted,
   },
 
+  // ── Active mode banner ────────────────────────────────────────────────────
+  // Deliberately louder than the status strip above: an active mode overrides
+  // every setting in the app and freezes the settings screens, so it cannot be a
+  // quiet one-liner. Accent colours come from the mode itself at render time.
+  activeModeCard: {
+    flexDirection: 'row',
+    backgroundColor: L.cardBg,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  activeModeRail: {
+    width: 4,
+  },
+  activeModeContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 10,
+  },
+  activeModeIconTile: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activeModeTitleGroup: {
+    flex: 1,
+    gap: 2,
+  },
+  activeModeTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  activeModeSubline: {
+    fontSize: 12,
+    color: L.muted,
+  },
+  activeModeEndBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 9,
+    borderWidth: 1,
+  },
+  activeModeEndBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
   // ── Scroll ────────────────────────────────────────────────────────────────
   scrollView: {
     flex: 1,

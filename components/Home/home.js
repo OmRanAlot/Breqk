@@ -37,8 +37,13 @@ import useDigitalWellbeing from './useDigitalWellbeing';
 import ManagedAppsList from './ManagedAppsList';
 import HomeScrollBudgetCard from './HomeScrollBudgetCard';
 import FreeBreakCard from './FreeBreakCard';
+import ActiveModeBanner from './ActiveModeBanner';
+import { MANAGED_APPS } from '../managedApps/manifest';
 import { styles, L } from './home.styles';
 import { formatTime, formatCount } from '../common/format';
+
+/** The always-on baseline mode — never surfaced as "a mode is active". */
+const DEFAULT_MODE_ID = 'default';
 
 const { VPNModule, SettingsModule } = NativeModules;
 const appBlockerEmitter = new NativeEventEmitter(VPNModule);
@@ -134,7 +139,12 @@ const Home = ({ navigation }) => {
   // ── App policies + active mode (loaded from SharedPreferences) ───────────
   // appPolicies shape: { [pkg]: { app_open_intercept, reels_detection } }
   const [appPolicies, setAppPolicies] = useState({});
-  const [activeModeName, setActiveModeName] = useState(null);
+  // The active mode's full JSON (name, color, icon, schedule), or null when the
+  // baseline "default" mode is active — see loadActiveMode.
+  const [activeMode, setActiveMode] = useState(null);
+  // Forced-pause duration currently in force, resolved through the active mode's
+  // setting_overrides. Shown in the banner so the mode's effect is legible.
+  const [effectiveDelaySecs, setEffectiveDelaySecs] = useState(null);
 
   // ── Centralized settings loader ────────────────────────────────────────────
   // Loads app policies, active mode name, and triggers free break poll.
@@ -184,23 +194,51 @@ const Home = ({ navigation }) => {
     });
   }, []);
 
+  /**
+   * Loads the active mode as a full object (name, colour, icon, schedule) plus
+   * the forced-pause duration currently in force, so the banner can say what the
+   * mode is actually DOING — not just that something is on.
+   *
+   * The "default" mode is treated as no mode: it is the always-on baseline the
+   * user never deliberately entered, and the native layer suppresses its
+   * start/end notifications for the same reason.
+   */
   const loadActiveMode = useCallback(() => {
     SettingsModule.getActiveMode(modeId => {
-      if (!modeId) {
-        setActiveModeName(null);
+      if (!modeId || modeId === DEFAULT_MODE_ID) {
+        setActiveMode(null);
         return;
       }
       SettingsModule.getModes(json => {
         try {
           const modes = json ? JSON.parse(json) : {};
-          setActiveModeName(modes[modeId]?.name || null);
+          setActiveMode(modes[modeId] || null);
         } catch (e) {
           console.warn('[Home] parse modes failed:', e);
-          setActiveModeName(null);
+          setActiveMode(null);
         }
       });
+      // Effective (mode-resolved) pause duration — see BreakPrefs.getDelayTime.
+      SettingsModule.getDelayTime(secs => setEffectiveDelaySecs(secs));
     });
   }, []);
+
+  /**
+   * Ends the active mode. Native falls back to Default, which also re-opens the
+   * Customize / AppDetail screens for editing (see shared/useDefaultModeGate).
+   */
+  const handleEndMode = useCallback(async () => {
+    console.log('[Home] ending active mode → falling back to Default');
+    try {
+      await VPNModule.deactivateMode();
+      // Re-read both: the mode is gone, and the effective per-app policies it was
+      // overriding revert to the base ones shown in the Managed Apps list.
+      loadPolicies();
+      loadActiveMode();
+    } catch (e) {
+      console.warn('[Home] deactivateMode failed:', e);
+    }
+  }, [loadPolicies, loadActiveMode]);
 
   const reloadAll = useCallback(() => {
     console.log('[Home] reloadAll triggered');
@@ -237,6 +275,14 @@ const Home = ({ navigation }) => {
   const anyReelsOn = Object.values(appPolicies).some(
     p => p?.reels_detection === true,
   );
+
+  // Derived: display names of the apps currently being intercepted. appPolicies
+  // is already the EFFECTIVE policy (base + active mode overrides layered in
+  // loadPolicies), so this reflects what the mode is really doing.
+  const interceptedLabels = Object.keys(appPolicies)
+    .filter(pkg => appPolicies[pkg]?.app_open_intercept === true)
+    .map(pkg => MANAGED_APPS.find(a => a.pkg === pkg)?.label)
+    .filter(Boolean);
 
   // ── Scroll budget status (polled every 5s) ───────────────────────────────
   // Reads from SharedPreferences via VPNModule so the displayed status reflects
@@ -522,9 +568,11 @@ const Home = ({ navigation }) => {
         </View>
       </View>
 
-      {/* ── Status strip: monitoring + active mode ──────────────────── */}
-      {/* Gives the user an at-a-glance answer to "is the app actually doing
-                    anything right now?" without opening Customize or Modes. */}
+      {/* ── Status strip: monitoring ────────────────────────────────── */}
+      {/* Answers "is the app actually doing anything right now?" at a glance.
+          The active mode USED to be a second item here — a one-liner far too
+          quiet for something that overrides every setting and freezes the
+          settings screens. It now gets its own card below. */}
       <View style={styles.statusStrip}>
         <View style={styles.statusItem}>
           <View
@@ -539,14 +587,6 @@ const Home = ({ navigation }) => {
             {isMonitoring ? 'Monitoring on' : 'Monitoring off'}
           </Text>
         </View>
-        {activeModeName && (
-          <>
-            <Text style={styles.statusDivider}>·</Text>
-            <Text style={styles.statusText} numberOfLines={1}>
-              {activeModeName} mode
-            </Text>
-          </>
-        )}
       </View>
 
       {/* ── Main scrollable content ─────────────────────────────────── */}
@@ -555,6 +595,18 @@ const Home = ({ navigation }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── Active mode banner ────────────────────────────────── */}
+        {/* Also the escape hatch: while a mode is on, Customize and AppDetail are
+            read-only, and End is how the user gets back to Default to edit. */}
+        {activeMode && (
+          <ActiveModeBanner
+            mode={activeMode}
+            delaySecs={effectiveDelaySecs}
+            interceptedLabels={interceptedLabels}
+            onEnd={handleEndMode}
+          />
+        )}
+
         {/* ── Summary stat cards ────────────────────────────────── */}
         <View style={styles.statsRow}>
           <StatCard

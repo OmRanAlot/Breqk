@@ -272,6 +272,12 @@ export const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 8,
   },
+  // Applied to any control group frozen because a non-default mode owns the
+  // settings (see shared/useDefaultModeGate). Greys the group out so the
+  // read-only state is visible, not merely unresponsive.
+  sectionDisabled: {
+    opacity: 0.4,
+  },
   stepperGroup: {
     flexDirection: 'row',
     alignItems: 'center',

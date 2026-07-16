@@ -87,8 +87,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.Break.coach.CoachSessionTracker;
-import com.Break.coach.IntentCoachOverlay;
+import com.Break.coach.YouTubeCoachGate;
 import com.Break.prefs.BreakPrefs;
 import com.Break.service.BreakVpnService;
 import com.Break.shortform.AppEventRouter;
@@ -168,12 +167,10 @@ public class ReelsInterventionService extends AccessibilityService {
     private InterventionOverlay interventionOverlay;
     private UninstallLockOverlay uninstallOverlay;
 
-    // --- Mindful Viewing Coach (YouTube launch gate) ---
-    // The coach shows IntentCoachOverlay (wait → type intent → verdict) on every
-    // genuine YouTube relaunch, detected via a time-gap against the persisted
-    // last-YouTube-foreground timestamp (see maybeTriggerYouTubeCoach()).
-    private IntentCoachOverlay coachOverlay;
-    private CoachSessionTracker coachTracker;
+    // --- Mindful Viewing Coach (YouTube typing gate) ---
+    // All trigger logic (launch gate + every-X-min re-fire) lives in
+    // YouTubeCoachGate; this service just forwards events to it.
+    private YouTubeCoachGate coachGate;
 
     // Timestamp of the last Settings tree scan (debounce).
     private long lastUninstallCheckMs = 0;
@@ -275,8 +272,7 @@ public class ReelsInterventionService extends AccessibilityService {
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
-        coachOverlay = new IntentCoachOverlay(this, mainHandler);
-        coachTracker = new CoachSessionTracker(this);
+        coachGate = new YouTubeCoachGate(this, mainHandler, frameworkClassFilter, TAG);
         budgetState       = new BudgetState(this);
         budgetState.load(BreakPrefs.get(this));
 
@@ -414,10 +410,13 @@ public class ReelsInterventionService extends AccessibilityService {
             eventRouter.onAccessibilityEvent(event);
         }
 
-        // ── Mindful Viewing Coach: YouTube launch gate ────────────────────────────
+        // ── Mindful Viewing Coach: YouTube launch gate + X-minute re-fire ─────────
         // Runs before any early-return branches below so a genuine launch into
-        // YouTube is always caught. Cheap: fast-exits for non-STATE_CHANGED events.
-        maybeTriggerYouTubeCoach(packageName, event);
+        // YouTube is always caught. Cheap: fast-exits for non-YouTube packages and
+        // irrelevant event types. All gating logic lives in YouTubeCoachGate.
+        if (coachGate != null) {
+            coachGate.onAccessibilityEvent(packageName, event);
+        }
 
         // --- App-switch detection (defense in depth for false-positive fix) ---
         // When the user is in Reels and a DIFFERENT app comes to foreground
@@ -619,101 +618,6 @@ public class ReelsInterventionService extends AccessibilityService {
         }
         super.onDestroy();
         Log.d(TAG, "onDestroy: browser deferred callbacks cancelled, uninstall overlay dismissed");
-    }
-
-    // =========================================================================
-    // Mindful Viewing Coach — YouTube launch gate
-    // =========================================================================
-
-    /**
-     * Detects a genuine launch / return into YouTube and shows
-     * {@link IntentCoachOverlay} (wait → type intent → verdict).
-     *
-     * Only TYPE_WINDOW_STATE_CHANGED events for the YouTube package are considered.
-     * Transient windows (our own overlay, framework-class windows, known system
-     * overlays like IME/status bar) are ignored entirely — they carry no launch
-     * signal either way.
-     *
-     * <h3>Relaunch detection (time-gap, not pinned-package)</h3>
-     * Previously this compared against {@code coachLastForegroundPackage}, the last
-     * *real* foreground package seen. That heuristic silently broke for YouTube
-     * specifically: leaving YouTube via the Home button fires a launcher
-     * WINDOW_STATE_CHANGED event, but the launcher is deliberately filtered out as a
-     * system-overlay package (the Reels [STICKY-FIX] — see FrameworkClassFilter) so
-     * {@code coachLastForegroundPackage} was never cleared. Every re-open of YouTube
-     * after Home then looked like an internal window change and the coach never
-     * fired — until some other real app happened to be opened in between.
-     *
-     * Fix: derive "is this a relaunch?" from the persisted last-YouTube-foreground
-     * timestamp instead of the launcher event. YouTube's own internal window
-     * changes fire back-to-back within a few hundred ms; a gap of
-     * {@link BreakPrefs#COACH_RELAUNCH_GAP_MS} (1.5s) or more since YouTube was last
-     * foreground cleanly marks a genuine return from elsewhere, independent of
-     * whether we ever observed the intervening launcher/app event.
-     *
-     * <h3>Cadence</h3>
-     * The coach now fires on every genuine relaunch (not once per 30-min session);
-     * {@link CoachSessionTracker#shouldShowCoach(Context)} applies only a short
-     * re-show cooldown ({@code COACH_RESHOW_COOLDOWN_MS}) to prevent a single
-     * launch's multiple STATE_CHANGED events from double-showing the overlay.
-     *
-     * Logging: TAG REELS_WATCH, prefix [COACH]. (Session/overlay internals log
-     * under TAG COACH from the coach package.)
-     */
-    private void maybeTriggerYouTubeCoach(String packageName, AccessibilityEvent event) {
-        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            return;
-        }
-        if (coachTracker == null || !BreakPrefs.isCoachEnabled(this)) {
-            return;
-        }
-        if (!PKG_YOUTUBE.equals(packageName)) {
-            return;
-        }
-
-        // Ignore transient windows — our own overlay, framework-class windows, and
-        // known system overlays never represent a real YouTube navigation.
-        String className = event.getClassName() != null ? event.getClassName().toString() : "";
-        if (packageName.equals(getPackageName())
-                || FrameworkClassFilter.isFrameworkClass(className)
-                || frameworkClassFilter.isSystemOverlayPackage(packageName, this, TAG)) {
-            return;
-        }
-
-        long now = System.currentTimeMillis();
-        SharedPreferences prefs = BreakPrefs.get(this);
-        long lastYtForeground = prefs.getLong(BreakPrefs.KEY_COACH_LAST_YT_FOREGROUND, 0);
-        long gap = lastYtForeground == 0 ? Long.MAX_VALUE : now - lastYtForeground;
-        boolean isRelaunch = gap >= BreakPrefs.COACH_RELAUNCH_GAP_MS;
-
-        // Always refresh the timestamp / roll the session boundary — keeps session
-        // stats (video counts, session minutes) correct regardless of the relaunch
-        // decision below.
-        coachTracker.onYouTubeForeground(now);
-
-        Log.d(TAG, "[COACH] YouTube STATE_CHANGED gap=" + (lastYtForeground == 0 ? "n/a" : gap + "ms")
-                + " isRelaunch=" + isRelaunch);
-        if (!isRelaunch) {
-            // YouTube's own internal window change, not a launch.
-            return;
-        }
-
-        if (coachOverlay != null && coachOverlay.isShowing()) {
-            Log.d(TAG, "[COACH] Relaunch detected but overlay already showing — skip");
-            return;
-        }
-        if (!coachTracker.shouldShowCoach(this)) {
-            return;
-        }
-        if (!Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "[COACH] Overlay permission (SYSTEM_ALERT_WINDOW) missing — cannot show YouTube coach");
-            return;
-        }
-
-        Log.i(TAG, "[COACH] YouTube relaunch detected (gap=" + gap + "ms) — showing intent coach");
-        coachOverlay.show(
-                () -> Log.i(TAG, "[COACH] User satisfied the gate — proceeding into YouTube"),
-                () -> Log.i(TAG, "[COACH] User exited to home from the coach"));
     }
 
     // =========================================================================

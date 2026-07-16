@@ -43,7 +43,7 @@ Filter with: `adb logcat -s <TAG>`
 
 | TAG | File | What it covers |
 |-----|------|----------------|
-| `AppUsageMonitor` | `monitor/AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync. `[COACH_FALLBACK]` — delay-overlay fallback for YouTube when the mindful-viewing coach never appears within `COACH_FALLBACK_GRACE_MS`. |
+| `AppUsageMonitor` | `monitor/AppUsageMonitor.java` | App detection loop, overlay show/dismiss, cooldown, scroll budget read-only sync. `[SESSION_REARM]` — ends an app session on sustained null foreground so the intercept re-arms on next open; preserved while our own overlay owns the screen (see `isOwnInterceptionOwning`). |
 | `ScreenTimeTracker` | `monitor/ScreenTimeTracker.java` | Daily screen time totals, per-app usage, unlock count, notification count |
 | `VPNModule` | `bridge/VPNModule.java` | JS↔Android bridge: permissions, monitoring, blocked apps, budget status, wellbeing stats |
 | `VPNModule` + `[FREE_BREAK]` | `bridge/VPNModule.java` | Free break start/end/status — now an inline `[FREE_BREAK]` prefix on TAG `VPNModule` (was the `VPNModule:FreeBreak` sub-tag) |
@@ -65,7 +65,13 @@ Filter with: `adb logcat -s <TAG>`
 | `CONTENT_FILTER` | `shortform/ContentFilter.java` | Short-form ejection (GLOBAL_ACTION_BACK) for Reels/Shorts/TikTok; debounce |
 | `REELS_WATCH` (via `shortform/detection/YouTubeDetector.java`) | `shortform/detection/YouTubeDetector.java` | YouTube Shorts detection tiers; logs under TAG `REELS_WATCH` with `TIER*`, `[SHORTS_CLASS]`, `[SHORTS_TEXT]`, `[STRICT_DETECT]`, `[ACTION_BTN]` (Tier 3B action-button scan) |
 | `FEED_SCROLL` | `shortform/metrics/HomeFeedScrollMeter.java` (fed by `ReelsInterventionService.meterHomeFeedScroll()`) | **Pure measurement** of Instagram **home-feed** scrolling ONLY (not Reels/Explore/DMs/Stories): per-scroll `[SCROLL]` lines with posts-passed + pixel distance, and a `[SESSION]` summary on leaving the feed. Never triggers an intervention. Isolate with `adb logcat -s FEED_SCROLL`. |
-| `COACH` | `coach/CoachSessionTracker.java`, `coach/IntentCoachOverlay.java` | Mindful viewing coach (YouTube launch gate): session boundary (`[SESSION]`), show-once gate (`[GATE]`), wait→intent overlay phases (`[OVERLAY]`), verdict outcome (`[VERDICT]`), override recording (`[OVERRIDE]`). Verdict logic itself lives in pure `coach/VerdictEngine.java` (no logging). Isolate with `adb logcat -s COACH`. |
+| `COACH` | `coach/CoachSessionTracker.java`, `coach/IntentCoachOverlay.java` | Mindful viewing coach (YouTube typing gate): session boundary (`[SESSION]`), show-once gate (`[GATE]`), wait→intent overlay phases (`[OVERLAY]`), verdict outcome (`[VERDICT]`), override recording (`[OVERRIDE]`). Verdict logic itself lives in pure `coach/VerdictEngine.java` (no logging). Isolate with `adb logcat -s COACH`. |
+| `REELS_WATCH` (via `coach/YouTubeCoachGate.java`) | `coach/YouTubeCoachGate.java` | Coach TRIGGER logic (extracted from `ReelsInterventionService`): launch-gate decisions (`[COACH]` — relaunch gap, intercept-style precedence) and every-X-min re-fire while the user stays in YouTube (`[COACH_REFIRE]`). Filter: `adb logcat -s REELS_WATCH \| findstr COACH`. |
+| `AppUsageMonitor` (coach suppression) | `monitor/AppUsageMonitor.java` | `[COACH_OWNS]` — typing coach enabled → YouTube's delay overlay suppressed (coach IS the intercept style; the two surfaces never stack). |
+| `SettingsModule` (coach toggle) | `bridge/SettingsModule.java` | `[COACH]` — `getCoachEnabled` / `setCoachEnabled` bridge calls from the AppDetail Typing Coach toggle. |
+| `BreakPrefs` + `SettingsModule` + `VPNModule` (mode gate) | `prefs/BreakPrefs.java`, `bridge/SettingsModule.java`, `bridge/VPNModule.java` | `[MODE_GATE]` — base settings (Customize + AppDetail) are writable ONLY in Default mode. `BreakPrefs.assertBaseSettingsEditable()` logs every BLOCKED write with the offending operation + the active mode; `SettingsModule.getBaseSettingsEditable()` logs what the JS gate was told. Blocked Promise-based setters reject with code `MODE_ACTIVE`. Filter: `adb logcat \| findstr MODE_GATE`. |
+| `AppUsageMonitor` (mode settings reload) | `monitor/AppUsageMonitor.java` | `[RELOAD]` — cached delay/popup/budget values re-read after a mode transition (dispatched via `BreakVpnService`'s `UPDATE_BLOCKED_APPS`). Confirms the new mode's `setting_overrides` actually reached the live monitor. |
+| `UsageStatsQuery` | `monitor/UsageStatsQuery.java` | UsageStatsManager query errors (app usage time, total screen time, top apps). Extracted from `AppUsageMonitor` for the file-size limit. Fails soft — errors here surface as 0 / empty list rather than a crash. |
 
 ---
 
@@ -550,9 +556,11 @@ JS logs use `console.log('[Prefix] message')` so you can grep Metro output.
 | `[useDigitalWellbeing]` | `components/Home/useDigitalWellbeing.js` | Cache hits/misses, fetch duration, raw stat values, top apps count |
 | `[Customize]` | `components/Customize/customize.js` | Settings load/save, toggle states, preview actions, preset selection |
 | `[SettingsLock]` | `components/Customize/useSettingsLock.js`, `SettingsLockGate.js`, `SettingsLockSection.js` | Settings Change Lock UI: state refresh, mark-dirty, exit→startLock, enable/duration changes |
+| `[ModeGate]` | `components/shared/useDefaultModeGate.js`, `components/shared/ModeGateBanner.js` | Default-mode gate: base settings are editable only in Default mode. Logs each gate check (`editable=… activeMode='…'`) and the user's confirmed switch back to Default. Pairs with the native `[MODE_GATE]` tag, which logs the writes it blocks. |
 | `[PermissionsScreen]` | `components/Permissions/PermissionsScreen.js` | Permission request flow, screen advancement |
 | `[ModesScreen]` | `components/Modes/ModesScreen.js` | Modes list: load, activate/deactivate toggle, save/delete |
-| `[ModeEditor]` | `components/Modes/ModeEditorModal.js` | Mode editor: App Open Intercept add/remove app actions |
+| `[ModeEditor]` | `components/Modes/ModeEditorModal.js` | Mode editor: App Open Intercept add/remove app actions, unsaved-changes discard guard |
+| `[TimePicker]` | `components/shared/TimePickerSheet.js` | Schedule time picker sheet: confirmed time (logged as the stored 24h `HH:mm`) |
 | `[BlockerInterstitial]` | `components/BlockerInterstitial/BlockerInterstitial.tsx` | Overlay mount, countdown, button taps, budget-exhausted variant |
 | `[App]` | `App.tsx` | Root navigation, modal state, event listener setup |
 | `[WebView]` | `components/Browser/BrowserScreen.js` | Browser events (DEV builds only) |
@@ -724,7 +732,7 @@ adb logcat -s AppUsageMonitor VPNModule BreakVpnService REELS_WATCH > session_lo
 | `coach_overrides_today` | int | `0` | Times the user pushed past a probe/challenge today; rolls at midnight via `coach_overrides_date`. |
 | `coach_overrides_date` | String | `""` | `"yyyy-MM-dd"` the override counter belongs to; counter resets when the date changes. |
 | `coach_overlay_visible` | boolean | `false` | True while the coach overlay is currently attached; read cross-process by `AppUsageMonitor` for the coach-miss fallback. Set on show, cleared on dismiss. |
-| `coach_last_shown_at` | long | `0` | Epoch ms the coach overlay was last actually shown. Gates re-shows via `COACH_RESHOW_COOLDOWN_MS` (60s) — replaces the old once-per-session gate so the coach fires on every genuine relaunch. |
+| `coach_last_shown_at` | long | `0` | Epoch ms the coach overlay was last actually shown. Gates re-shows via `COACH_RESHOW_COOLDOWN_MS` (60s) — replaces the old once-per-session gate so the coach fires on every genuine relaunch. Also drives the every-X-min re-fire while the user stays in YouTube (X = the per-app `popup_delay_min` "Re-show overlay" setting; once-per-open sentinel disables re-fire). |
 
 ---
 

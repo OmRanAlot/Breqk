@@ -6,13 +6,19 @@
  * (only visible while intercept has at least one app), Reels Detection
  * (Instagram + YouTube only), and an optional schedule.
  *
+ * Schedule times are picked with the shared TimePickerSheet and displayed as
+ * 12-hour AM/PM, but still STORED as 24h "HH:mm" — the native ModeManager
+ * parses that format, so the persisted shape must not change.
+ *
+ * Closing with unsaved edits prompts before discarding (see `isDirty`).
+ *
  * Data model is unchanged: policy_overrides[pkg] = { app_open_intercept,
  * reels_detection }, setting_overrides.delay_time_seconds, schedule.
  *
  * Logging prefix: [ModeEditor]
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -21,15 +27,18 @@ import {
   TextInput,
   ScrollView,
   Modal,
+  Alert,
   LayoutAnimation,
   Platform,
   UIManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Path, Circle } from 'react-native-svg';
 import ModeIcon, { MODE_ICON_KEYS } from '../shared/ModeIcons';
 import { MANAGED_APPS } from '../managedApps/manifest';
 import { Monogram } from '../Permissions/onboarding/components';
+import TimePickerSheet from '../shared/TimePickerSheet';
+import { formatTime12h } from '../shared/scheduleWindow';
 import { styles, L } from './ModeEditorModal.styles';
 
 if (
@@ -40,6 +49,30 @@ if (
 }
 
 const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+// Forced pause duration: multiples of DELAY_STEP only, so the stepper can never
+// land on an off-grid value like 1s or 6s.
+const DELAY_STEP = 5;
+const DELAY_MIN = 5;
+const DELAY_MAX = 60;
+const DEFAULT_DELAY = 15;
+
+/**
+ * Snaps a stored delay onto the DELAY_STEP grid and into [MIN, MAX]. Modes saved
+ * before the 5s floor existed can hold values the stepper cannot otherwise
+ * reach (the old minimum was 1s), so clamp on load rather than trusting prefs.
+ *
+ * @param {number} seconds
+ * @returns {number}
+ */
+const snapDelay = seconds => {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) {
+    return DEFAULT_DELAY;
+  }
+  const snapped = Math.round(value / DELAY_STEP) * DELAY_STEP;
+  return Math.max(DELAY_MIN, Math.min(DELAY_MAX, snapped));
+};
 
 const COLOR_OPTIONS = [
   '#FF9800',
@@ -98,6 +131,37 @@ const PlusIcon = ({ color, size }) => (
   </Svg>
 );
 
+const ClockIcon = ({ color, size }) => (
+  <Svg
+    width={size}
+    height={size}
+    fill="none"
+    stroke={color}
+    strokeWidth={1.6}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+  >
+    <Circle cx={12} cy={12} r={9} />
+    <Path d="M12 7v5l3 2" />
+  </Svg>
+);
+
+const ChevronRightIcon = ({ color, size }) => (
+  <Svg
+    width={size}
+    height={size}
+    fill="none"
+    stroke={color}
+    strokeWidth={1.8}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    viewBox="0 0 24 24"
+  >
+    <Path d="M9 18l6-6-6-6" />
+  </Svg>
+);
+
 const ModeEditorModal = ({
   visible,
   mode,
@@ -116,7 +180,7 @@ const ModeEditorModal = ({
     mode?.policy_overrides || {},
   );
   const [editDelay, setEditDelay] = useState(
-    mode?.setting_overrides?.delay_time_seconds || 15,
+    snapDelay(mode?.setting_overrides?.delay_time_seconds),
   );
   const [showAppPicker, setShowAppPicker] = useState(false);
   const [hasSchedule, setHasSchedule] = useState(!!mode?.schedule);
@@ -129,30 +193,53 @@ const ModeEditorModal = ({
   const [scheduleDays, setScheduleDays] = useState(
     mode?.schedule?.days || [0, 1, 2, 3, 4, 5, 6],
   );
+  // Which time row the picker sheet is editing: 'start' | 'end' | null.
+  const [pickingTime, setPickingTime] = useState(null);
+
+  // Snapshot of the form as it looked when the modal opened. Compared against
+  // current state to decide whether closing needs a discard confirmation.
+  const initialSnapshot = useRef(null);
 
   useEffect(() => {
-    if (mode) {
-      setEditName(mode.name || 'New Mode');
-      setEditIcon(mode.icon || 'focus');
-      setEditColor(mode.color || '#FF9800');
-      setEditPolicies(mode.policy_overrides || {});
-      setEditDelay(mode.setting_overrides?.delay_time_seconds || 15);
-      setHasSchedule(!!mode.schedule);
-      setScheduleStart(mode.schedule?.start_time || '22:00');
-      setScheduleEnd(mode.schedule?.end_time || '07:00');
-      setScheduleDays(mode.schedule?.days || [0, 1, 2, 3, 4, 5, 6]);
-    } else {
-      setEditName('New Mode');
-      setEditIcon('focus');
-      setEditColor('#FF9800');
-      setEditPolicies({});
-      setEditDelay(15);
-      setHasSchedule(false);
-      setScheduleStart('22:00');
-      setScheduleEnd('07:00');
-      setScheduleDays([0, 1, 2, 3, 4, 5, 6]);
-    }
+    const next = mode
+      ? {
+          name: mode.name || 'New Mode',
+          icon: mode.icon || 'focus',
+          color: mode.color || '#FF9800',
+          policies: mode.policy_overrides || {},
+          delay: snapDelay(mode.setting_overrides?.delay_time_seconds),
+          hasSchedule: !!mode.schedule,
+          start: mode.schedule?.start_time || '22:00',
+          end: mode.schedule?.end_time || '07:00',
+          days: mode.schedule?.days || [0, 1, 2, 3, 4, 5, 6],
+        }
+      : {
+          name: 'New Mode',
+          icon: 'focus',
+          color: '#FF9800',
+          policies: {},
+          delay: DEFAULT_DELAY,
+          hasSchedule: false,
+          start: '22:00',
+          end: '07:00',
+          days: [0, 1, 2, 3, 4, 5, 6],
+        };
+
+    setEditName(next.name);
+    setEditIcon(next.icon);
+    setEditColor(next.color);
+    setEditPolicies(next.policies);
+    setEditDelay(next.delay);
+    setHasSchedule(next.hasSchedule);
+    setScheduleStart(next.start);
+    setScheduleEnd(next.end);
+    setScheduleDays(next.days);
     setShowAppPicker(false);
+    setPickingTime(null);
+
+    // Baseline for the unsaved-changes check. Serialized, because the policies
+    // object and days array are compared by value, not identity.
+    initialSnapshot.current = JSON.stringify(next);
   }, [mode, visible]);
 
   // Apps currently in the intercept box vs. still available in the + picker.
@@ -215,7 +302,58 @@ const ModeEditorModal = ({
           }
         : null,
     };
+    // Re-baseline first so the close that follows a save never sees the form as
+    // dirty and never prompts.
+    initialSnapshot.current = currentSnapshot();
     onSave(modeId, updatedMode);
+  };
+
+  /**
+   * Serializes the live form the same way the open-time baseline was
+   * serialized, so the two can be compared by value.
+   */
+  const currentSnapshot = () =>
+    JSON.stringify({
+      name: editName,
+      icon: editIcon,
+      color: editColor,
+      policies: editPolicies,
+      delay: editDelay,
+      hasSchedule,
+      start: scheduleStart,
+      end: scheduleEnd,
+      days: scheduleDays,
+    });
+
+  const isDirty = () =>
+    initialSnapshot.current !== null &&
+    initialSnapshot.current !== currentSnapshot();
+
+  /**
+   * Close guard. A clean form closes straight away; a dirty one asks first, so
+   * a stray back-gesture or mis-tapped X cannot silently drop the user's edits.
+   */
+  const handleClose = () => {
+    if (!isDirty()) {
+      onClose();
+      return;
+    }
+    console.log('[ModeEditor] close blocked — unsaved changes');
+    Alert.alert(
+      'Discard changes?',
+      'You have unsaved changes to this mode. Leaving now will lose them.',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            console.log('[ModeEditor] changes discarded');
+            onClose();
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -223,13 +361,13 @@ const ModeEditorModal = ({
       visible={visible}
       animationType="slide"
       presentationStyle="pageSheet"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
     >
       <View
         style={[styles.modalContainer, { paddingTop: Math.max(insets.top, 0) }]}
       >
         <View style={styles.modalHeader}>
-          <TouchableOpacity onPress={onClose} style={styles.headerCloseBtn}>
+          <TouchableOpacity onPress={handleClose} style={styles.headerCloseBtn}>
             <CloseIcon color={L.charcoal} size={24} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
@@ -398,19 +536,38 @@ const ModeEditorModal = ({
               <Text style={styles.sectionLabel}>FORCED PAUSE DURATION</Text>
               <View style={styles.delayRow}>
                 <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => setEditDelay(d => Math.max(1, d - 5))}
+                  style={[
+                    styles.stepperBtn,
+                    editDelay <= DELAY_MIN && styles.stepperBtnDisabled,
+                  ]}
+                  disabled={editDelay <= DELAY_MIN}
+                  onPress={() =>
+                    setEditDelay(d => Math.max(DELAY_MIN, d - DELAY_STEP))
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel="Decrease pause duration"
                 >
                   <Text style={styles.stepperBtnText}>−</Text>
                 </TouchableOpacity>
                 <Text style={styles.delayValue}>{editDelay}s</Text>
                 <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => setEditDelay(d => Math.min(60, d + 5))}
+                  style={[
+                    styles.stepperBtn,
+                    editDelay >= DELAY_MAX && styles.stepperBtnDisabled,
+                  ]}
+                  disabled={editDelay >= DELAY_MAX}
+                  onPress={() =>
+                    setEditDelay(d => Math.min(DELAY_MAX, d + DELAY_STEP))
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel="Increase pause duration"
                 >
                   <Text style={styles.stepperBtnText}>+</Text>
                 </TouchableOpacity>
               </View>
+              <Text style={styles.sectionCaptionBelow}>
+                {DELAY_MIN}–{DELAY_MAX} seconds, in {DELAY_STEP}-second steps.
+              </Text>
             </>
           )}
 
@@ -461,28 +618,44 @@ const ModeEditorModal = ({
             </TouchableOpacity>
           ) : (
             <View style={styles.scheduleBlock}>
-              <View style={styles.scheduleTimeRow}>
+              <TouchableOpacity
+                style={styles.scheduleTimeRow}
+                onPress={() => setPickingTime('start')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={`Start time, ${formatTime12h(
+                  scheduleStart,
+                )}. Tap to change.`}
+              >
                 <Text style={styles.scheduleTimeLabel}>Starts at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleStart}
-                  onChangeText={setScheduleStart}
-                  placeholder="22:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
-              </View>
-              <View style={styles.scheduleTimeRow}>
+                <View style={styles.scheduleTimeValueGroup}>
+                  <ClockIcon color={L.muted} size={18} />
+                  <Text style={styles.scheduleTimeValue}>
+                    {formatTime12h(scheduleStart)}
+                  </Text>
+                  <ChevronRightIcon color={L.muted} size={16} />
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.scheduleTimeRow}
+                onPress={() => setPickingTime('end')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={`End time, ${formatTime12h(
+                  scheduleEnd,
+                )}. Tap to change.`}
+              >
                 <Text style={styles.scheduleTimeLabel}>Ends at</Text>
-                <TextInput
-                  style={styles.scheduleTimeInput}
-                  value={scheduleEnd}
-                  onChangeText={setScheduleEnd}
-                  placeholder="07:00"
-                  placeholderTextColor={L.muted}
-                  maxLength={5}
-                />
-              </View>
+                <View style={styles.scheduleTimeValueGroup}>
+                  <ClockIcon color={L.muted} size={18} />
+                  <Text style={styles.scheduleTimeValue}>
+                    {formatTime12h(scheduleEnd)}
+                  </Text>
+                  <ChevronRightIcon color={L.muted} size={16} />
+                </View>
+              </TouchableOpacity>
+
               <View style={styles.dayPickerRow}>
                 {DAY_LABELS.map((label, idx) => (
                   <TouchableOpacity
@@ -519,6 +692,21 @@ const ModeEditorModal = ({
             </TouchableOpacity>
           )}
         </ScrollView>
+
+        <TimePickerSheet
+          visible={pickingTime !== null}
+          title={pickingTime === 'end' ? 'Ends at' : 'Starts at'}
+          value={pickingTime === 'end' ? scheduleEnd : scheduleStart}
+          onConfirm={time => {
+            if (pickingTime === 'end') {
+              setScheduleEnd(time);
+            } else {
+              setScheduleStart(time);
+            }
+            setPickingTime(null);
+          }}
+          onCancel={() => setPickingTime(null)}
+        />
       </View>
     </Modal>
   );

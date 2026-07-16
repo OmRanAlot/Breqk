@@ -9,9 +9,13 @@
  *   • 20-Min Free Break toggle (once per day, scoped to this app)
  *   • "Open in Safe Mode" button (apps with safeModePlatform only)
  *
- * Writes immediately on each toggle via SettingsModule.setAppFeature.
- * For Instagram session_post_limit, also calls saveHomeFeedPostLimit
- * for backwards compatibility with the native ReelsInterventionService.
+ * Save model: MANUAL. Every control edits LOCAL state only and marks the
+ * screen dirty — nothing is written to the native layer until the user taps
+ * "Save changes". Saving persists everything, then arms the per-app Settings
+ * Change Lock for this scope (so no rash follow-up edits). Leaving with unsaved
+ * changes prompts Save / Discard / Keep editing. This replaced an auto-save +
+ * debounce model that raced itself and dropped edits (notably YouTube, whose
+ * only settings live in the intercept box).
  *
  * Logging prefix: [AppDetail]
  */
@@ -23,6 +27,7 @@ import {
   Switch,
   TouchableOpacity,
   ScrollView,
+  Alert,
   NativeModules,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,6 +35,8 @@ import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
 import useSettingsLock from '../Customize/useSettingsLock';
 import SettingsLockGate from '../Customize/SettingsLockGate';
+import useDefaultModeGate from '../shared/useDefaultModeGate';
+import ModeGateBanner from '../shared/ModeGateBanner';
 import { styles, L } from './AppDetail.styles';
 import InterceptCustomization from './InterceptCustomization';
 import ApplyAllModal from './ApplyAllModal';
@@ -61,16 +68,25 @@ const AppDetail = ({ navigation, route }) => {
 
   const appInfo = MANAGED_APPS.find(a => a.pkg === packageName);
 
-  // Settings Change Lock for THIS app's scope (its package name). Editing any
-  // control marks the scope dirty; leaving the screen then starts the lock if the
-  // feature is enabled. Independent of the global scope and other apps.
-  const settingsLock = useSettingsLock(packageName, navigation);
-  const { markDirty: markSettingsDirty } = settingsLock;
+  // Settings Change Lock for THIS app's scope (its package name). We opt OUT of
+  // auto-lock-on-leave: the lock is armed explicitly from handleSave() instead,
+  // so it triggers on an intentional Save rather than on plain exit.
+  const settingsLock = useSettingsLock(packageName, navigation, {
+    autoLockOnLeave: false,
+  });
+
+  // Default-mode gate. Per-app settings belong to Default mode: while another
+  // mode is active, its policy_overrides decide what happens for this app, so
+  // editing the base policy underneath would be a silent no-op. The form is
+  // replaced by an explanatory banner until the user returns to Default.
+  const modeGate = useDefaultModeGate(navigation);
 
   const [policy, setPolicy] = useState({});
   const [postLimit, setPostLimit] = useState(DEFAULT_POST_LIMIT);
-  const [activeModeId, setActiveModeId] = useState(null);
-  const [modes, setModes] = useState({});
+  // NOTE: the active mode / modes JSON are read locally inside the load effect to
+  // layer overrides onto the displayed policy. They are deliberately NOT held in
+  // state any more — the only consumer was the write-into-the-active-mode path in
+  // handleSave, which the Default-mode gate replaced.
 
   // ── Per-app intercept settings ─────────────────────────────────────────────
   const [interceptMessage, setInterceptMessage] = useState('');
@@ -78,7 +94,22 @@ const AppDetail = ({ navigation, route }) => {
   const [interceptFreqMode, setInterceptFreqMode] = useState('repeat'); // 'once' | 'repeat'
   const [interceptRepeatMin, setInterceptRepeatMin] = useState(10);
   const [showApplyAllModal, setShowApplyAllModal] = useState(false);
-  const interceptSaveTimer = useRef(null);
+
+  // ── Typing Coach (YouTube only) ────────────────────────────────────────────
+  // Coach ON → YouTube's intercept is the typing gate (launch + every X min);
+  // coach OFF → the normal delay overlay, like every other app.
+  const isYouTube = packageName === 'com.google.android.youtube';
+  const [coachEnabled, setCoachEnabled] = useState(true);
+
+  // Unsaved-changes tracking. `dirty` drives the Save button + leave prompt;
+  // `dirtyRef` mirrors it so the beforeRemove listener reads the latest value
+  // without re-subscribing every render.
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    setDirty(true);
+  }, []);
 
   useEffect(() => {
     console.log('[AppDetail] loading policy for', packageName);
@@ -87,7 +118,6 @@ const AppDetail = ({ navigation, route }) => {
         const activeId = await new Promise(resolve =>
           SettingsModule.getActiveMode(resolve),
         );
-        setActiveModeId(activeId || null);
 
         const modesJson = await new Promise(resolve =>
           SettingsModule.getModes(resolve),
@@ -96,7 +126,6 @@ const AppDetail = ({ navigation, route }) => {
         try {
           parsedModes = JSON.parse(modesJson || '{}');
         } catch (e) {}
-        setModes(parsedModes);
 
         const policiesJson = await new Promise(resolve =>
           SettingsModule.getAppPolicies(resolve),
@@ -144,72 +173,211 @@ const AppDetail = ({ navigation, route }) => {
         } catch (e) {
           console.warn('[AppDetail] load intercept settings failed:', e);
         }
+
+        // Load the Typing Coach toggle (YouTube only — global native pref).
+        if (isYouTube) {
+          try {
+            const enabled = await SettingsModule.getCoachEnabled();
+            setCoachEnabled(enabled === true);
+          } catch (e) {
+            console.warn('[AppDetail] load coach enabled failed:', e);
+          }
+        }
+
+        // Freshly loaded state is the saved baseline — not dirty.
+        dirtyRef.current = false;
+        setDirty(false);
       } catch (e) {
         console.warn('[AppDetail] load data failed:', e);
       }
     };
     loadData();
-  }, [packageName]);
+  }, [packageName, isYouTube]);
 
-  const saveInterceptSettings = useCallback(
-    async (msg, secs, mode, repeatMin) => {
-      const delayMin = mode === 'once' ? POPUP_DELAY_ONCE_SENTINEL : repeatMin;
-      const roundedSecs = Math.round(secs);
-      try {
-        await SettingsModule.setAppInterceptSettings(
-          packageName,
-          msg,
-          roundedSecs,
-          delayMin,
-        );
-        console.log(
-          '[AppDetail] intercept settings saved pkg=' +
-            packageName +
-            ' secs=' +
-            roundedSecs +
-            ' delayMin=' +
-            delayMin,
-        );
-      } catch (e) {
-        console.warn('[AppDetail] save intercept settings failed:', e);
+  const stepperFeature = appInfo?.features.find(
+    f => f.key === 'session_post_limit',
+  );
+
+  // ── Local-only editors (persistence happens in handleSave) ──────────────────
+
+  const setFeature = useCallback(
+    (key, value) => {
+      console.log(
+        '[AppDetail] edit',
+        packageName,
+        key,
+        '→',
+        value,
+        '(pending)',
+      );
+      setPolicy(prev => ({ ...prev, [key]: value }));
+      markDirty();
+    },
+    [packageName, markDirty],
+  );
+
+  const adjustPostLimit = useCallback(
+    delta => {
+      if (!stepperFeature) {
+        return;
       }
-    },
-    [packageName],
-  );
-
-  const scheduleInterceptSave = useCallback(
-    (msg, secs, mode, repeatMin) => {
-      markSettingsDirty();
-      if (interceptSaveTimer.current) clearTimeout(interceptSaveTimer.current);
-      interceptSaveTimer.current = setTimeout(() => {
-        saveInterceptSettings(msg, secs, mode, repeatMin);
-      }, 1500);
-    },
-    [saveInterceptSettings, markSettingsDirty],
-  );
-
-  // Flush pending intercept settings on unmount (message / frequency edits)
-  useEffect(
-    () => () => {
-      if (interceptSaveTimer.current) {
-        clearTimeout(interceptSaveTimer.current);
-        interceptSaveTimer.current = null;
-        saveInterceptSettings(
-          interceptMessage,
-          interceptDelaySecs,
-          interceptFreqMode,
-          interceptRepeatMin,
+      setPostLimit(prev => {
+        const next = Math.max(
+          stepperFeature.min,
+          Math.min(stepperFeature.max, prev + delta * stepperFeature.step),
         );
-      }
+        console.log('[AppDetail] session_post_limit →', next, '(pending)');
+        return next;
+      });
+      markDirty();
     },
-    [
-      saveInterceptSettings,
-      interceptMessage,
-      interceptDelaySecs,
-      interceptFreqMode,
-      interceptRepeatMin,
-    ],
+    [stepperFeature, markDirty],
   );
+
+  // ── Persist everything, then arm the lock ───────────────────────────────────
+
+  const handleSave = useCallback(async () => {
+    console.log('[AppDetail] saving all settings for', packageName);
+
+    // Defensive: the form is not rendered while a mode is active, so this should
+    // be unreachable. But a mode can activate on a SCHEDULE while the screen is
+    // open, and native would reject every write below with MODE_ACTIVE — fail
+    // loudly here rather than showing a generic "Save failed".
+    if (!modeGate.isEditable) {
+      console.warn(
+        '[AppDetail] save blocked — mode active:',
+        modeGate.activeModeName,
+      );
+      Alert.alert(
+        'Switch to Default mode',
+        `${modeGate.activeModeName} is active and controls ${appInfo.label}'s settings. Switch to Default mode to change them.`,
+      );
+      return false;
+    }
+
+    try {
+      // 1. Base policy — write every key the UI currently holds. Idempotent.
+      const policyEntries = Object.entries(policy);
+      for (const [key, value] of policyEntries) {
+        // setAppFeature is boolean-only on the native side. Non-boolean policy
+        // values (e.g. session_post_limit, a number) are persisted through their
+        // own dedicated calls below — skip them here to avoid a bridge type error.
+        if (typeof value !== 'boolean') {
+          continue;
+        }
+        await SettingsModule.setAppFeature(packageName, key, value);
+      }
+      // NOTE: session_post_limit is a NUMBER and has no per-app native store —
+      // app_policies is a boolean-only map. The only place native reads a post
+      // limit is the global home_feed_post_limit (Instagram), persisted in
+      // step 4 below via saveHomeFeedPostLimit. Do NOT route it through
+      // setAppFeature (boolean-only bridge method) — that throws a type error.
+
+      // 2. (Removed) This used to propagate the edits into the ACTIVE mode's
+      //    policy_overrides. That is gone: base settings are now editable only in
+      //    Default mode, so there is never an active non-default mode to write
+      //    into here. A mode's own overrides are edited in the Modes screen.
+
+      // 3. Sync the global free_break_enabled pref so Home's getFreeBreakStatus()
+      //    (which reads the global pref, not per-app policy) stays in step.
+      if (typeof policy.free_break_enabled === 'boolean') {
+        SettingsModule.saveFreeBreakEnabled(policy.free_break_enabled);
+      }
+
+      // 4. Instagram session_post_limit also feeds the legacy home-feed limit.
+      if (stepperFeature && packageName === 'com.instagram.android') {
+        SettingsModule.saveHomeFeedPostLimit(postLimit);
+      }
+
+      // 5. Per-app intercept settings (message / countdown / re-show frequency).
+      const delayMin =
+        interceptFreqMode === 'once'
+          ? POPUP_DELAY_ONCE_SENTINEL
+          : interceptRepeatMin;
+      await SettingsModule.setAppInterceptSettings(
+        packageName,
+        interceptMessage,
+        Math.round(interceptDelaySecs),
+        delayMin,
+      );
+
+      // 6. Typing Coach toggle (YouTube only). Native reads it live on the next
+      //    launch/tick — no restart needed, but persisted before monitoring kick.
+      if (isYouTube) {
+        await SettingsModule.setCoachEnabled(coachEnabled);
+      }
+
+      // 7. Restart monitoring so an intercept toggle takes effect immediately.
+      if (policy.app_open_intercept === true) {
+        VPNModule.startMonitoring().catch(() => {});
+      }
+
+      console.log('[AppDetail] save complete for', packageName);
+
+      dirtyRef.current = false;
+      setDirty(false);
+
+      // 8. Arm the Settings Change Lock for this scope (no-op if disabled).
+      settingsLock.startLock();
+      return true;
+    } catch (e) {
+      console.error('[AppDetail] save failed:', e);
+      Alert.alert('Save failed', 'Could not save your changes. Try again.');
+      return false;
+    }
+  }, [
+    packageName,
+    appInfo,
+    policy,
+    postLimit,
+    stepperFeature,
+    modeGate,
+    interceptMessage,
+    interceptDelaySecs,
+    interceptFreqMode,
+    interceptRepeatMin,
+    isYouTube,
+    coachEnabled,
+    settingsLock,
+  ]);
+
+  // Warn before leaving with unsaved changes (header back, hardware back, swipe).
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', e => {
+      if (!dirtyRef.current) {
+        return;
+      }
+      e.preventDefault();
+      Alert.alert(
+        'Unsaved changes',
+        'Your changes to ' +
+          (appInfo?.label || 'this app') +
+          " haven't been saved yet.",
+        [
+          { text: 'Keep editing', style: 'cancel', onPress: () => {} },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              dirtyRef.current = false;
+              setDirty(false);
+              navigation.dispatch(e.data.action);
+            },
+          },
+          {
+            text: 'Save',
+            onPress: async () => {
+              const ok = await handleSave();
+              if (ok) {
+                navigation.dispatch(e.data.action);
+              }
+            },
+          },
+        ],
+      );
+    });
+    return unsub;
+  }, [navigation, handleSave, appInfo]);
 
   const applyInterceptToAll = useCallback(async () => {
     const delayMin =
@@ -219,7 +387,7 @@ const AppDetail = ({ navigation, route }) => {
     try {
       await SettingsModule.setAllAppsInterceptSettings(
         interceptMessage,
-        interceptDelaySecs,
+        Math.round(interceptDelaySecs),
         delayMin,
       );
       console.log('[AppDetail] intercept settings applied to all apps');
@@ -232,97 +400,6 @@ const AppDetail = ({ navigation, route }) => {
     interceptFreqMode,
     interceptRepeatMin,
   ]);
-
-  const setFeature = useCallback(
-    async (key, value) => {
-      console.log('[AppDetail] setFeature', packageName, key, '→', value);
-      markSettingsDirty();
-      setPolicy(prev => ({ ...prev, [key]: value }));
-      try {
-        // Update base policy
-        await SettingsModule.setAppFeature(packageName, key, value);
-
-        // If a mode is active, propagate the change so it persists in the mode
-        if (activeModeId && modes[activeModeId]) {
-          const updatedModes = { ...modes };
-          if (!updatedModes[activeModeId].policy_overrides) {
-            updatedModes[activeModeId].policy_overrides = {};
-          }
-          if (!updatedModes[activeModeId].policy_overrides[packageName]) {
-            updatedModes[activeModeId].policy_overrides[packageName] = {};
-          }
-          updatedModes[activeModeId].policy_overrides[packageName][key] = value;
-          setModes(updatedModes);
-          SettingsModule.saveModes(JSON.stringify(updatedModes));
-
-          // Re-trigger activation to sync blocked_apps natively
-          VPNModule.activateMode(activeModeId).catch(() => {});
-        }
-
-        if (key === 'app_open_intercept') {
-          VPNModule.startMonitoring().catch(() => {});
-        }
-        // Sync the global free_break_enabled pref so Home's getFreeBreakStatus()
-        // picks up the change (it reads from the global pref, not per-app policy).
-        if (key === 'free_break_enabled') {
-          SettingsModule.saveFreeBreakEnabled(value);
-        }
-      } catch (e) {
-        console.error('[AppDetail] setAppFeature failed:', e);
-      }
-    },
-    [packageName, activeModeId, modes, markSettingsDirty],
-  );
-
-  const stepperFeature = appInfo?.features.find(
-    f => f.key === 'session_post_limit',
-  );
-
-  const adjustPostLimit = useCallback(
-    delta => {
-      if (!stepperFeature) {
-        return;
-      }
-      const next = Math.max(
-        stepperFeature.min,
-        Math.min(stepperFeature.max, postLimit + delta * stepperFeature.step),
-      );
-      setPostLimit(next);
-      markSettingsDirty();
-      console.log('[AppDetail] session_post_limit →', next);
-      SettingsModule.setAppFeature(packageName, 'session_post_limit', next);
-
-      // If a mode is active, propagate the change so it persists in the mode
-      if (activeModeId && modes[activeModeId]) {
-        const updatedModes = { ...modes };
-        if (!updatedModes[activeModeId].policy_overrides) {
-          updatedModes[activeModeId].policy_overrides = {};
-        }
-        if (!updatedModes[activeModeId].policy_overrides[packageName]) {
-          updatedModes[activeModeId].policy_overrides[packageName] = {};
-        }
-        updatedModes[activeModeId].policy_overrides[packageName][
-          'session_post_limit'
-        ] = next;
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-
-        VPNModule.activateMode(activeModeId).catch(() => {});
-      }
-
-      if (packageName === 'com.instagram.android') {
-        SettingsModule.saveHomeFeedPostLimit(next);
-      }
-    },
-    [
-      packageName,
-      postLimit,
-      stepperFeature,
-      activeModeId,
-      modes,
-      markSettingsDirty,
-    ],
-  );
 
   if (!appInfo) {
     return null;
@@ -354,7 +431,18 @@ const AppDetail = ({ navigation, route }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {settingsLock.locked ? (
+        {!modeGate.isEditable ? (
+          /* A non-default mode owns this app's behaviour. Showing the form would
+             invite edits that native rejects, so it is replaced by the banner —
+             same shape as the settings-lock gate below. */
+          <ModeGateBanner
+            modeName={modeGate.activeModeName}
+            modeColor={modeGate.activeModeColor}
+            modeIcon={modeGate.activeModeIcon}
+            onSwitchToDefault={modeGate.switchToDefault}
+            scopeLabel={`${appInfo.label}'s settings`}
+          />
+        ) : settingsLock.locked ? (
           <SettingsLockGate
             remainingMs={settingsLock.remainingMs}
             scopeLabel={appInfo.label}
@@ -416,9 +504,10 @@ const AppDetail = ({ navigation, route }) => {
                       setInterceptFreqMode={setInterceptFreqMode}
                       interceptRepeatMin={interceptRepeatMin}
                       setInterceptRepeatMin={setInterceptRepeatMin}
-                      interceptSaveTimer={interceptSaveTimer}
-                      scheduleInterceptSave={scheduleInterceptSave}
-                      saveInterceptSettings={saveInterceptSettings}
+                      showCoachToggle={isYouTube}
+                      coachEnabled={coachEnabled}
+                      setCoachEnabled={setCoachEnabled}
+                      onEdit={markDirty}
                       onApplyAll={() => setShowApplyAllModal(true)}
                     />
                   )}
@@ -550,6 +639,38 @@ const AppDetail = ({ navigation, route }) => {
           </>
         )}
       </ScrollView>
+
+      {/* ── Sticky Save bar ──
+          Hidden while either gate is showing: there is no form to save, and a
+          live Save button next to a "switch to Default mode" banner would just
+          invite a write that native rejects. */}
+      {!settingsLock.locked && modeGate.isEditable && (
+        <View
+          style={[
+            styles.saveBar,
+            { paddingBottom: Math.max(insets.bottom, 12) },
+          ]}
+        >
+          <TouchableOpacity
+            style={[styles.saveButton, !dirty && styles.saveButtonDisabled]}
+            onPress={handleSave}
+            disabled={!dirty}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !dirty }}
+            accessibilityLabel={dirty ? 'Save changes' : 'No changes to save'}
+          >
+            <Text
+              style={[
+                styles.saveButtonText,
+                !dirty && styles.saveButtonTextDisabled,
+              ]}
+            >
+              {dirty ? 'Save changes' : 'Saved'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 };

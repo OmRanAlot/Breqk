@@ -8,6 +8,9 @@ import {
   parseTimeToMinutes,
   isInScheduleWindow,
   isDayAllowed,
+  formatTime12h,
+  toTime24h,
+  splitTime12h,
 } from '../../components/shared/scheduleWindow';
 
 const min = (h, m = 0) => h * 60 + m;
@@ -31,6 +34,76 @@ describe('parseTimeToMinutes', () => {
     expect(parseTimeToMinutes('23:00')).toBe(1380);
     expect(parseTimeToMinutes('07:30')).toBe(450);
     expect(parseTimeToMinutes('00:00')).toBe(0);
+  });
+});
+
+describe('formatTime12h', () => {
+  test('formats afternoon and evening times', () => {
+    expect(formatTime12h('22:00')).toBe('10:00 PM');
+    expect(formatTime12h('13:05')).toBe('1:05 PM');
+    expect(formatTime12h('23:59')).toBe('11:59 PM');
+  });
+
+  test('formats morning times', () => {
+    expect(formatTime12h('07:00')).toBe('7:00 AM');
+    expect(formatTime12h('09:30')).toBe('9:30 AM');
+  });
+
+  test('midnight is 12 AM, not 0 AM', () => {
+    expect(formatTime12h('00:00')).toBe('12:00 AM');
+    expect(formatTime12h('00:45')).toBe('12:45 AM');
+  });
+
+  test('noon is 12 PM, not 0 PM', () => {
+    expect(formatTime12h('12:00')).toBe('12:00 PM');
+    expect(formatTime12h('12:30')).toBe('12:30 PM');
+  });
+});
+
+describe('toTime24h', () => {
+  test('builds evening times', () => {
+    expect(toTime24h(10, 0, 'PM')).toBe('22:00');
+    expect(toTime24h(11, 59, 'PM')).toBe('23:59');
+  });
+
+  test('builds morning times, zero-padding the hour', () => {
+    expect(toTime24h(7, 0, 'AM')).toBe('07:00');
+    expect(toTime24h(9, 5, 'AM')).toBe('09:05');
+  });
+
+  test('12 AM is midnight and 12 PM is noon', () => {
+    expect(toTime24h(12, 0, 'AM')).toBe('00:00');
+    expect(toTime24h(12, 0, 'PM')).toBe('12:00');
+  });
+});
+
+describe('splitTime12h', () => {
+  test('splits a stored 24h time into picker columns', () => {
+    expect(splitTime12h('22:15')).toEqual({
+      hours12: 10,
+      minutes: 15,
+      meridiem: 'PM',
+    });
+    expect(splitTime12h('00:00')).toEqual({
+      hours12: 12,
+      minutes: 0,
+      meridiem: 'AM',
+    });
+    expect(splitTime12h('12:00')).toEqual({
+      hours12: 12,
+      minutes: 0,
+      meridiem: 'PM',
+    });
+  });
+});
+
+describe('formatTime12h / toTime24h round trip', () => {
+  test('every hour:00 survives a round trip through the picker columns', () => {
+    for (let hour = 0; hour < 24; hour++) {
+      const stored = `${String(hour).padStart(2, '0')}:00`;
+      const { hours12, minutes, meridiem } = splitTime12h(stored);
+      expect(toTime24h(hours12, minutes, meridiem)).toBe(stored);
+    }
   });
 });
 
