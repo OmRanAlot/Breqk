@@ -11,6 +11,7 @@ import com.facebook.react.ReactActivityDelegate;
 import com.facebook.react.ReactRootView;
 import android.content.Intent;
 import android.os.Bundle;
+import com.Break.mode.ModeManager;
 import com.Break.service.BreakVpnService;
 import com.Break.monitor.ServiceHelper;
 
@@ -28,5 +29,15 @@ public class MainActivity extends ReactActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Alarm-free schedule safety net: reconcile scheduled modes whenever the
+        // user opens the app, so mode state is correct even if an AlarmManager
+        // transition was deferred (Doze / no exact-alarm permission) or lost
+        // (force-stop). Idempotent — only acts on an actual window transition.
+        ModeManager.applyCurrentScheduleState(this);
     }
 }

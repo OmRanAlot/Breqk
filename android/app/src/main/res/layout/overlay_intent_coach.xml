@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    overlay_intent_coach.xml
+    ─────────────────────────────────────────────────────────────────────────────
+    Full-screen native overlay for the YouTube mindful-viewing coach, shown by
+    com.Break.coach.IntentCoachOverlay at YouTube launch.
+
+    Two phases share this single layout; IntentCoachOverlay toggles visibility:
+
+      PHASE 1 — WAIT (wait_group visible, intent_group gone)
+        Reuses the delay_overlay visual language: a circular ring that FILLS over
+        the intercept delay (delay_time_seconds) with a static pause glyph and a
+        "BREATHING SPACE" overline. primaryButton shows "Wait (Xs)" and is disabled
+        until the ring completes.
+
+      PHASE 2 — INTENT (intent_group visible, wait_group gone)
+        The user types WHY they're opening YouTube (intent_input). On submit the
+        verdict engine runs and verdict_message / followup_question / followup_input
+        are revealed for PROBE and CHALLENGE outcomes.
+
+    Palette matches the RN overlay tokens (design/tokens.ts):
+      background  #121212   primary text #E6FFFFFF
+      muted text  #80FFFFFF border       #33FFFFFF
+
+    View IDs used by IntentCoachOverlay.java:
+      title             — phase headline (wait vs. intent vs. verdict)
+      subtitle          — muted secondary line (optional; gone by default)
+      wait_group        — ring + glyph + BREATHING SPACE label (phase 1)
+      countdownRing     — ProgressBar animated 0→max over the wait seconds
+      intent_group      — intent EditText + verdict/followup views (phase 2)
+      intent_input      — "why are you opening YouTube?" text field
+      verdict_message   — coach message after submit (gone until verdict)
+      followup_question — followup prompt for PROBE/CHALLENGE (gone until verdict)
+      followup_input    — answer field for PROBE/CHALLENGE (gone until verdict)
+      backButton        — "Back to Reality" — exits to the home screen
+      primaryButton     — context button: "Wait (Xs)" → "Continue" → "Let's go"
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingStart="32dp"
+        android:paddingEnd="32dp"
+        android:paddingTop="96dp"
+        android:paddingBottom="48dp">
+
+        <!-- Headline. Updated per phase by IntentCoachOverlay. -->
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Take a breath"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#E6FFFFFF"
+            android:textAlignment="center"
+            android:lineSpacingMultiplier="1.3" />
+
+        <!-- Optional muted secondary line. -->
+        <TextView
+            android:id="@+id/subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text=""
+            android:textSize="15sp"
+            android:textColor="#80FFFFFF"
+            android:textAlignment="center"
+            android:lineSpacingMultiplier="1.3"
+            android:visibility="gone" />
+
+        <!-- Spacer: pushes the active phase content toward vertical center. -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- ── PHASE 1: WAIT ──────────────────────────────────────────────── -->
+        <LinearLayout
+            android:id="@+id/wait_group"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <FrameLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content">
+
+                <ProgressBar
+                    android:id="@+id/countdownRing"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="132dp"
+                    android:layout_height="132dp"
+                    android:layout_gravity="center"
+                    android:indeterminate="false"
+                    android:max="10000"
+                    android:progress="0"
+                    android:progressDrawable="@drawable/circular_countdown" />
+
+                <ImageView
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_pause"
+                    android:contentDescription="@null" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:text="BREATHING SPACE"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#80FFFFFF"
+                android:textAlignment="center"
+                android:letterSpacing="0.2" />
+        </LinearLayout>
+
+        <!-- ── PHASE 2: INTENT ────────────────────────────────────────────── -->
+        <LinearLayout
+            android:id="@+id/intent_group"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/intent_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:background="@drawable/coach_input_bg"
+                android:padding="16dp"
+                android:gravity="top|start"
+                android:hint="e.g. finishing the cs229 backprop lecture"
+                android:textColorHint="#66FFFFFF"
+                android:textColor="#E6FFFFFF"
+                android:textSize="16sp"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="3"
+                android:imeOptions="actionDone" />
+
+            <!-- Coach message after the verdict is computed. -->
+            <TextView
+                android:id="@+id/verdict_message"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text=""
+                android:textSize="17sp"
+                android:textColor="#E6FFFFFF"
+                android:textAlignment="center"
+                android:lineSpacingMultiplier="1.3"
+                android:visibility="gone" />
+
+            <!-- Followup prompt for PROBE / CHALLENGE. -->
+            <TextView
+                android:id="@+id/followup_question"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text=""
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#CCFFFFFF"
+                android:textAlignment="center"
+                android:lineSpacingMultiplier="1.3"
+                android:visibility="gone" />
+
+            <!-- Answer field for the followup. -->
+            <EditText
+                android:id="@+id/followup_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:minHeight="56dp"
+                android:background="@drawable/coach_input_bg"
+                android:padding="16dp"
+                android:gravity="top|start"
+                android:hint="Type your answer…"
+                android:textColorHint="#66FFFFFF"
+                android:textColor="#E6FFFFFF"
+                android:textSize="16sp"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="3"
+                android:imeOptions="actionDone"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Spacer: balances the top spacer so content stays centered. -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- backButton: exit to the home screen (always available). -->
+        <Button
+            android:id="@+id/backButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Back to Reality"
+            android:textSize="18sp"
+            android:textColor="#000000"
+            android:textStyle="bold"
+            android:drawableStart="@drawable/ic_back"
+            android:drawablePadding="10dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:background="@drawable/white_pill_button_bg"
+            android:layout_marginBottom="14dp" />
+
+        <!-- primaryButton: phase-dependent action. Disabled during the wait. -->
+        <Button
+            android:id="@+id/primaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="Wait (15s)"
+            android:textSize="15sp"
+            android:textColor="#99FFFFFF"
+            android:drawableStart="@drawable/ic_hourglass"
+            android:drawablePadding="10dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:background="@drawable/ghost_button_bg"
+            android:enabled="false" />
+
+    </LinearLayout>
+
+</FrameLayout>

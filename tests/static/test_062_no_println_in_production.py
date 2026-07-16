@@ -34,7 +34,7 @@ from _paths import PROJECT_ROOT, JAVA_SRC, COMPONENTS_DIR
 
 # ── CONFIG ─────────────────────────────────────────────────────────────
 FILE_ALLOWLIST: set = set()
-TEST_DIRS = {"tests", "__tests__", "test"}
+TEST_DIRS = {"tests", "test"}
 TEST_ID = Path(__file__).stem
 
 

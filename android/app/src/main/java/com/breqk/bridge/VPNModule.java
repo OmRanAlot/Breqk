@@ -79,6 +79,15 @@ public class VPNModule extends ReactContextBaseJavaModule {
     // makes Customize toggles take effect on the live monitor without a restart.
     private SharedPreferences.OnSharedPreferenceChangeListener blockedAppsListener;
 
+    /**
+     * Rejection message returned to JS when a base-settings write is attempted
+     * while a non-default mode owns the settings. See
+     * BreakPrefs.isBaseSettingsEditable — the UI blocks these writes up front and
+     * this is the enforcement backstop.
+     */
+    private static final String MODE_GATE_MESSAGE =
+            "A mode is active. Switch to Default mode to change these settings.";
+
     public VPNModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
@@ -606,6 +615,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setDelayMessage(String message, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setDelayMessage")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             Log.d(TAG, "[SET_MESSAGE] Setting delay message: " + message);
 
@@ -633,6 +646,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setDelayTime(int seconds, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setDelayTime")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             Log.d(TAG, "[SET_DELAY_TIME] Setting delay timer to " + seconds + " seconds");
 
@@ -762,6 +779,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setScrollThreshold(int threshold, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setScrollThreshold")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             Log.d(TAG, "[SET_SCROLL_THRESHOLD] Setting scroll threshold to " + threshold);
             // Clamp to valid range: 1–20
@@ -780,6 +801,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setPopupDelayMinutes(int minutes, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setPopupDelayMinutes")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             Log.d(TAG, "[SET_POPUP_DELAY] Setting popup delay to " + minutes + " minutes");
 
@@ -858,6 +883,10 @@ public class VPNModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void setScrollBudget(int allowanceMinutes, int windowMinutes, Promise promise) {
+        if (!BreakPrefs.assertBaseSettingsEditable(reactContext, "setScrollBudget")) {
+            promise.reject("MODE_ACTIVE", MODE_GATE_MESSAGE);
+            return;
+        }
         try {
             Log.d(TAG, "[setScrollBudget] allowance=" + allowanceMinutes + "min window=" + windowMinutes + "min");
 
