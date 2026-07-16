@@ -55,6 +55,10 @@ class MainApplication : Application(), ReactApplication {
         BreakPrefs.createDefaultModesIfNeeded(this)
         // Register alarms for any modes with schedules
         ModeManager.reregisterAllAlarms(this)
+        // Safety net: activate/deactivate a scheduled mode if we're currently
+        // inside/outside its window (alarms are lost on force-stop, and may
+        // have been missed while the app was dead)
+        ModeManager.applyCurrentScheduleState(this)
 
         loadReactNative(this)
     }

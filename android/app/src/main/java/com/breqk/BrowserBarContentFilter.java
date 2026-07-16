@@ -71,10 +71,11 @@ public final class BrowserBarContentFilter {
     private static final String[] REDIRECT_URL = {
             "https://yt3.ggpht.com/m1oST1H1GY1ZCFmxjmbl7EM6tNtAsa8YA1wx5Z0c4JM7hOSS9_BKlQBa_6eyeQvjq4MxnX0YM7wvK9A=s736-c-fcrop64=1,00001960ffffe69f-rw-nd-v1",
             "https://yt3.ggpht.com/Ik813-X8arGKfGD18QjODweB2YEJ7lUaVmRNVg2qNrzTiaDSmsu7TqmfyamDKnS-6jljjhaYXmxFm_8=s651-c-fcrop64=1,0ec80000f137ffff-rw-nd-v1",
-            "https://yt3.ggpht.com/3t7vqyepr0V-utfbkkstmgtWBrL0lyWdJcoHjX86B2I1y8E6mH8Us9ZHCERUQt8BJ5PVvRZmwXL-0A=s736-c-fcrop64=1,0000197dffffe682-rw-nd-v1",
             "https://yt3.ggpht.com/QI1sYETg0XGjzbkgQ8HEwtejI7KX4t44IxpKjRrFeEi8hLHjMiiCDLB7G2PUciwSDGetWzNgJ7HdAA=s800-c-fcrop64=1,00000000ffffffff-rw-nd-v1",
             "https://yt3.ggpht.com/wYTTW50sfgCQLhjc5pjlKsmZKsm1hYuowdoAE4Z7TMZT7nJTgtFaXFmIaPzqq7l56tdNOrlhn-48rQ=s736-c-fcrop64=1,00000000ffffffff-rw-nd-v1",
-    };
+            "https://i.pinimg.com/736x/68/38/ca/6838ca58711bf98c9488bdbd218850d2.jpg",
+            "https://i.pinimg.com/control1/1200x/b8/a8/59/b8a859bd535b0fe55eddf860a0629a05.jpg",
+        };
 
     private static final long REDIRECT_COOLDOWN_MS = 2000;
     private static long lastRedirectTime = 0;

@@ -75,6 +75,7 @@ import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import com.Break.BuildConfig;
 import android.view.Gravity;
@@ -86,6 +87,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.TextView;
 
+import com.Break.coach.YouTubeCoachGate;
 import com.Break.prefs.BreakPrefs;
 import com.Break.service.BreakVpnService;
 import com.Break.shortform.AppEventRouter;
@@ -164,6 +166,11 @@ public class ReelsInterventionService extends AccessibilityService {
     // --- WindowManager Overlays ---
     private InterventionOverlay interventionOverlay;
     private UninstallLockOverlay uninstallOverlay;
+
+    // --- Mindful Viewing Coach (YouTube typing gate) ---
+    // All trigger logic (launch gate + every-X-min re-fire) lives in
+    // YouTubeCoachGate; this service just forwards events to it.
+    private YouTubeCoachGate coachGate;
 
     // Timestamp of the last Settings tree scan (debounce).
     private long lastUninstallCheckMs = 0;
@@ -265,6 +272,7 @@ public class ReelsInterventionService extends AccessibilityService {
         youtubeDetector   = new YouTubeDetector(this, TAG);
         interventionOverlay = new InterventionOverlay(this, mainHandler);
         uninstallOverlay = new UninstallLockOverlay(this, mainHandler);
+        coachGate = new YouTubeCoachGate(this, mainHandler, frameworkClassFilter, TAG);
         budgetState       = new BudgetState(this);
         budgetState.load(BreakPrefs.get(this));
 
@@ -400,6 +408,14 @@ public class ReelsInterventionService extends AccessibilityService {
         // eventRouter fast-exits for non-monitored packages (O(1) HashSet lookup).
         if (eventRouter != null) {
             eventRouter.onAccessibilityEvent(event);
+        }
+
+        // ── Mindful Viewing Coach: YouTube launch gate + X-minute re-fire ─────────
+        // Runs before any early-return branches below so a genuine launch into
+        // YouTube is always caught. Cheap: fast-exits for non-YouTube packages and
+        // irrelevant event types. All gating logic lives in YouTubeCoachGate.
+        if (coachGate != null) {
+            coachGate.onAccessibilityEvent(packageName, event);
         }
 
         // --- App-switch detection (defense in depth for false-positive fix) ---

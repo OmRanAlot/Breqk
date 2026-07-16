@@ -78,6 +78,9 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="com.Break.ACTION_MODE_START" />
                 <action android:name="com.Break.ACTION_MODE_END" />
+                <!-- Fired when the user grants "Alarms & reminders" (Android 12+),
+                     so pending inexact mode alarms get upgraded to exact ones -->
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
 

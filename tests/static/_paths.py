@@ -8,7 +8,9 @@ from pathlib import Path
 PROJECT_ROOT   = Path(__file__).resolve().parent.parent.parent
 
 ANDROID_SRC    = PROJECT_ROOT / "android" / "app" / "src" / "main"
-JAVA_SRC       = ANDROID_SRC / "java" / "com" / "Break"
+# NOTE: Java sources declare `package com.Break;` but live in the com/breqk
+# directory on disk (folder was renamed; AGP compiles by glob, not dir match).
+JAVA_SRC       = ANDROID_SRC / "java" / "com" / "breqk"
 MANIFEST       = ANDROID_SRC / "AndroidManifest.xml"
 STRINGS_XML    = ANDROID_SRC / "res" / "values" / "strings.xml"
 RES_XML_DIR    = ANDROID_SRC / "res" / "xml"

@@ -153,12 +153,13 @@ public final class ModeManager {
             Log.i(TAG, "[SCHEDULE] Registered START alarm for mode '" + modeId
                     + "' at " + startTime + " (epochMs=" + startMillis + ")");
 
-            // Register end alarm
+            // Register end alarm. getNextAlarmTime() already returns the next
+            // FUTURE occurrence, which is always the correct end boundary — even
+            // for overnight windows. E.g. re-registering at 23:00 for a
+            // 23:00–07:00 schedule: next end = tomorrow 07:00, which lands
+            // before the next start (tomorrow 23:00) and must NOT be pushed
+            // back a day, or the active window would never close.
             long endMillis = getNextAlarmTime(endTime);
-            // If end time is before start time (overnight schedule), ensure end is after start
-            if (endMillis <= startMillis) {
-                endMillis += 24 * 60 * 60 * 1000; // add 24 hours
-            }
             PendingIntent endIntent = createAlarmIntent(context, modeId, ACTION_MODE_END);
             setExactAlarm(alarmManager, endMillis, endIntent);
             Log.i(TAG, "[SCHEDULE] Registered END alarm for mode '" + modeId
@@ -240,8 +241,194 @@ public final class ModeManager {
     }
 
     // =========================================================================
+    // Schedule state reconciliation
+    // =========================================================================
+
+    /**
+     * Called after the modes JSON is persisted (SettingsModule.saveModes).
+     * Reconciles AlarmManager and the active mode with the new data:
+     *   1. Cancels alarms for modes whose schedule was removed or changed
+     *   2. Re-registers alarms for every mode that has a schedule
+     *   3. Deactivates the active schedule-driven mode if its window no longer covers now
+     *   4. Activates a mode whose schedule was added/changed and covers now
+     *
+     * Only modes whose schedule actually CHANGED in this save are auto-activated,
+     * so unrelated saves (e.g. the UI normalising 'enabled' flags on foreground)
+     * never re-activate a mode the user manually turned off mid-window.
+     *
+     * @param context  App context
+     * @param oldModes The modes JSON as it was BEFORE this save
+     */
+    public static void onModesSaved(Context context, JSONObject oldModes) {
+        JSONObject newModes = BreakPrefs.getModes(context);
+        Log.i(TAG, "[SCHEDULE] Modes saved — reconciling alarms and active mode");
+
+        // 1. Cancel alarms for schedules that were removed or changed
+        Set<String> changedScheduleIds = new HashSet<>();
+        Iterator<String> oldKeys = oldModes.keys();
+        while (oldKeys.hasNext()) {
+            String modeId = oldKeys.next();
+            if (!optScheduleString(oldModes, modeId).equals(optScheduleString(newModes, modeId))) {
+                cancelScheduleAlarms(context, modeId);
+            }
+        }
+        // Schedules that are new or changed in the new data (candidates for step 4)
+        Iterator<String> newKeys = newModes.keys();
+        while (newKeys.hasNext()) {
+            String modeId = newKeys.next();
+            String newSchedule = optScheduleString(newModes, modeId);
+            if (!newSchedule.isEmpty() && !newSchedule.equals(optScheduleString(oldModes, modeId))) {
+                changedScheduleIds.add(modeId);
+            }
+        }
+
+        // 2. Re-register alarms for all current schedules
+        reregisterAllAlarms(context);
+
+        // 3. If the active schedule-driven mode lost its window (schedule edited,
+        //    removed, or the mode deleted), fall back to default now.
+        String activeMode = BreakPrefs.getActiveMode(context);
+        String source = getActiveModeSource(context);
+        boolean manualNonDefault = isManualNonDefault(activeMode, source);
+        if ("schedule".equals(source) && !activeMode.isEmpty() && !"default".equals(activeMode)
+                && !isInScheduleWindowNow(context, activeMode)) {
+            Log.i(TAG, "[SCHEDULE] Active mode '" + activeMode + "' no longer in window after save — deactivating");
+            deactivate(context);
+        }
+
+        // 4. If a schedule was just added/changed and its window covers right now,
+        //    activate immediately — don't make the user wait for tomorrow's alarm.
+        //    A manually chosen non-default mode always wins over schedules.
+        if (!manualNonDefault) {
+            for (String modeId : changedScheduleIds) {
+                if (isInScheduleWindowNow(context, modeId)) {
+                    Log.i(TAG, "[SCHEDULE] New/changed schedule for '" + modeId + "' covers now — activating");
+                    activate(context, modeId, "schedule");
+                    break; // only one mode can be active
+                }
+            }
+        }
+    }
+
+    /**
+     * Safety net run at boot and app start: if a scheduled mode's window covers
+     * right now, activate it. Alarms may have been missed while the app was dead
+     * (force-stop clears AlarmManager registrations). Conversely, if the active
+     * mode was schedule-driven and its window is over, deactivate it.
+     * Never stomps a non-default mode the user activated manually.
+     */
+    public static void applyCurrentScheduleState(Context context) {
+        String activeMode = BreakPrefs.getActiveMode(context);
+        String source = getActiveModeSource(context);
+        if (isManualNonDefault(activeMode, source)) {
+            Log.d(TAG, "[SCHEDULE] Manual mode '" + activeMode + "' active — skipping schedule check");
+            return;
+        }
+
+        JSONObject modes = BreakPrefs.getModes(context);
+        Iterator<String> keys = modes.keys();
+        while (keys.hasNext()) {
+            String modeId = keys.next();
+            if (isInScheduleWindowNow(context, modeId)) {
+                if (modeId.equals(activeMode)) {
+                    Log.d(TAG, "[SCHEDULE] Mode '" + modeId + "' already active for its window");
+                } else {
+                    Log.i(TAG, "[SCHEDULE] Mode '" + modeId + "' window covers now — activating");
+                    activate(context, modeId, "schedule");
+                }
+                return; // only one mode can be active
+            }
+        }
+
+        // No window covers now — end a stale schedule-driven mode.
+        if ("schedule".equals(source) && !activeMode.isEmpty() && !"default".equals(activeMode)) {
+            Log.i(TAG, "[SCHEDULE] Active mode '" + activeMode + "' window is over — deactivating");
+            deactivate(context);
+        } else {
+            Log.d(TAG, "[SCHEDULE] No scheduled mode should be active right now");
+        }
+    }
+
+    /**
+     * Returns true if the mode has a schedule whose window covers right now,
+     * honouring the day-of-week filter. For overnight windows (start > end,
+     * e.g. 23:00–07:00) the day filter applies to the day the window STARTED:
+     * at 02:00 Monday, a Sunday-only 23:00–07:00 schedule is still in window.
+     */
+    public static boolean isInScheduleWindowNow(Context context, String modeId) {
+        try {
+            JSONObject modes = BreakPrefs.getModes(context);
+            if (!modes.has(modeId)) return false;
+            JSONObject mode = modes.getJSONObject(modeId);
+            if (!mode.has("schedule") || mode.isNull("schedule")) return false;
+            JSONObject schedule = mode.getJSONObject("schedule");
+
+            Calendar now = Calendar.getInstance();
+            int currentMinutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
+            int startMinutes = parseTimeMinutes(schedule.getString("start_time"));
+            int endMinutes = parseTimeMinutes(schedule.getString("end_time"));
+
+            boolean overnight = startMinutes > endMinutes;
+            boolean inWindow = overnight
+                    ? (currentMinutes >= startMinutes || currentMinutes < endMinutes)
+                    : (currentMinutes >= startMinutes && currentMinutes < endMinutes);
+            if (!inWindow) return false;
+
+            int dayIndex = now.get(Calendar.DAY_OF_WEEK) - 1; // 0=Sun..6=Sat
+            if (overnight && currentMinutes < endMinutes) {
+                dayIndex = (dayIndex + 6) % 7; // post-midnight tail — window started yesterday
+            }
+            return isDayAllowed(schedule, dayIndex);
+        } catch (JSONException e) {
+            Log.w(TAG, "[SCHEDULE] Error checking window for '" + modeId + "': " + e.getMessage());
+            return false;
+        }
+    }
+
+    // =========================================================================
     // Internal helpers
     // =========================================================================
+
+    /** Returns "manual" or "schedule" — how the current active mode was entered. */
+    private static String getActiveModeSource(Context context) {
+        return BreakPrefs.get(context).getString(BreakPrefs.KEY_ACTIVE_MODE_SOURCE, "manual");
+    }
+
+    /** True when a non-default mode was activated by the user (schedules must not stomp it). */
+    private static boolean isManualNonDefault(String activeMode, String source) {
+        return !activeMode.isEmpty() && !"default".equals(activeMode) && "manual".equals(source);
+    }
+
+    /**
+     * Returns the mode's schedule as a JSON string, or "" when the mode or its
+     * schedule is absent. Used to diff schedules across a save.
+     */
+    private static String optScheduleString(JSONObject modes, String modeId) {
+        try {
+            if (!modes.has(modeId)) return "";
+            JSONObject mode = modes.getJSONObject(modeId);
+            if (!mode.has("schedule") || mode.isNull("schedule")) return "";
+            return mode.getJSONObject("schedule").toString();
+        } catch (JSONException e) {
+            return "";
+        }
+    }
+
+    /** Parses "HH:mm" to total minutes from midnight. */
+    private static int parseTimeMinutes(String timeStr) {
+        String[] parts = timeStr.split(":");
+        return Integer.parseInt(parts[0]) * 60 + Integer.parseInt(parts[1]);
+    }
+
+    /** Checks a schedule's optional days array (0=Sun..6=Sat). No array = every day. */
+    private static boolean isDayAllowed(JSONObject schedule, int dayIndex) throws JSONException {
+        if (!schedule.has("days")) return true;
+        JSONArray days = schedule.getJSONArray("days");
+        for (int i = 0; i < days.length(); i++) {
+            if (days.getInt(i) == dayIndex) return true;
+        }
+        return false;
+    }
 
     /**
      * Sends UPDATE_BLOCKED_APPS intent to MyVpnService with the latest blocked_apps set.
@@ -341,16 +528,8 @@ public final class ModeManager {
             JSONObject mode = modes.getJSONObject(modeId);
             if (!mode.has("schedule") || mode.isNull("schedule")) return true; // no schedule = always
             JSONObject schedule = mode.getJSONObject("schedule");
-            if (!schedule.has("days")) return true; // no days filter = every day
-
-            JSONArray days = schedule.getJSONArray("days");
-            int todayCalendar = Calendar.getInstance().get(Calendar.DAY_OF_WEEK); // 1=Sun..7=Sat
-            int todayIndex = todayCalendar - 1; // Convert to 0=Sun..6=Sat
-
-            for (int i = 0; i < days.length(); i++) {
-                if (days.getInt(i) == todayIndex) return true;
-            }
-            return false;
+            int todayIndex = Calendar.getInstance().get(Calendar.DAY_OF_WEEK) - 1; // 0=Sun..6=Sat
+            return isDayAllowed(schedule, todayIndex);
         } catch (JSONException e) {
             Log.w(TAG, "[SCHEDULE] Error checking schedule days: " + e.getMessage());
             return true; // on error, allow activation

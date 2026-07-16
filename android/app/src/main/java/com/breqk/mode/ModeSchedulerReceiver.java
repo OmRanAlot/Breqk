@@ -12,6 +12,7 @@ import com.Break.prefs.BreakPrefs;
  * Filter: adb logcat -s MODE_SCHED
  */
 
+import android.app.AlarmManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -40,7 +41,15 @@ public class ModeSchedulerReceiver extends BroadcastReceiver {
 
                 // Check if a scheduled mode should be active right now
                 // (e.g., device rebooted at 11pm during Bedtime mode's window)
-                checkAndActivateCurrentSchedule(context);
+                ModeManager.applyCurrentScheduleState(context);
+                break;
+
+            case AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED:
+                // User granted "Alarms & reminders" in system settings (Android 12+).
+                // Re-register so pending inexact alarms are upgraded to exact ones.
+                Log.i(TAG, "[PERM] Exact alarm permission granted — re-registering mode alarms");
+                ModeManager.reregisterAllAlarms(context);
+                ModeManager.applyCurrentScheduleState(context);
                 break;
 
             case ModeManager.ACTION_MODE_START:
@@ -69,67 +78,4 @@ public class ModeSchedulerReceiver extends BroadcastReceiver {
         }
     }
 
-    /**
-     * After boot, checks if any scheduled mode should be active right now.
-     * For example, if Bedtime runs 22:00–07:00 and the device boots at 23:00,
-     * Bedtime should be activated immediately.
-     */
-    private void checkAndActivateCurrentSchedule(Context context) {
-        try {
-            org.json.JSONObject modes = BreakPrefs.getModes(context);
-            java.util.Iterator<String> keys = modes.keys();
-            java.util.Calendar now = java.util.Calendar.getInstance();
-            int currentMinutes = now.get(java.util.Calendar.HOUR_OF_DAY) * 60
-                    + now.get(java.util.Calendar.MINUTE);
-            int todayIndex = now.get(java.util.Calendar.DAY_OF_WEEK) - 1; // 0=Sun..6=Sat
-
-            while (keys.hasNext()) {
-                String modeId = keys.next();
-                org.json.JSONObject mode = modes.getJSONObject(modeId);
-                if (!mode.has("schedule") || mode.isNull("schedule")) continue;
-                org.json.JSONObject schedule = mode.getJSONObject("schedule");
-
-                // Check day filter
-                if (schedule.has("days")) {
-                    org.json.JSONArray days = schedule.getJSONArray("days");
-                    boolean todayAllowed = false;
-                    for (int i = 0; i < days.length(); i++) {
-                        if (days.getInt(i) == todayIndex) { todayAllowed = true; break; }
-                    }
-                    if (!todayAllowed) continue;
-                }
-
-                // Parse schedule times
-                String startStr = schedule.getString("start_time");
-                String endStr = schedule.getString("end_time");
-                int startMinutes = parseTimeMinutes(startStr);
-                int endMinutes = parseTimeMinutes(endStr);
-
-                boolean inWindow;
-                if (startMinutes <= endMinutes) {
-                    // Same-day: e.g., 09:00–17:00
-                    inWindow = currentMinutes >= startMinutes && currentMinutes < endMinutes;
-                } else {
-                    // Overnight: e.g., 22:00–07:00
-                    inWindow = currentMinutes >= startMinutes || currentMinutes < endMinutes;
-                }
-
-                if (inWindow) {
-                    Log.i(TAG, "[BOOT] Mode '" + modeId + "' should be active now (schedule "
-                            + startStr + "–" + endStr + ", current=" + currentMinutes + "min)");
-                    ModeManager.activate(context, modeId, "schedule");
-                    return; // Only one mode can be active
-                }
-            }
-            Log.d(TAG, "[BOOT] No scheduled mode should be active right now");
-        } catch (Exception e) {
-            Log.w(TAG, "[BOOT] Error checking current schedule: " + e.getMessage());
-        }
-    }
-
-    /** Parses "HH:mm" to total minutes from midnight. */
-    private int parseTimeMinutes(String timeStr) {
-        String[] parts = timeStr.split(":");
-        return Integer.parseInt(parts[0]) * 60 + Integer.parseInt(parts[1]);
-    }
 }

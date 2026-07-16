@@ -3,12 +3,16 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * The card shown under "App Open Intercept" when it's enabled: overlay message,
  * countdown slider, re-show frequency (once / every X min), and "Apply to all".
- * State + persistence are owned by AppDetail; this is presentational. Extracted
- * from AppDetail.js.
+ * For YouTube it also offers the Typing Coach toggle (showCoachToggle), which
+ * switches the intercept STYLE: coach ON → typing gate fires at launch and at
+ * the re-show frequency below; coach OFF → the normal delay overlay, exactly
+ * like other apps. Purely presentational — it updates local state via the
+ * setters and calls `onEdit()` to mark the parent dirty. Nothing persists here;
+ * AppDetail commits everything on Save.
  */
 
 import React from 'react';
-import { View, Text, TextInput, TouchableOpacity } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Switch } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { styles, L } from './AppDetail.styles';
 
@@ -21,12 +25,36 @@ const InterceptCustomization = ({
   setInterceptFreqMode,
   interceptRepeatMin,
   setInterceptRepeatMin,
-  interceptSaveTimer,
-  scheduleInterceptSave,
-  saveInterceptSettings,
+  showCoachToggle = false,
+  coachEnabled = false,
+  setCoachEnabled = () => {},
+  onEdit,
   onApplyAll,
 }) => (
   <View style={styles.interceptBox}>
+    {/* Typing Coach (YouTube only) — picks the intercept style */}
+    {showCoachToggle && (
+      <View style={[styles.toggleRow, { marginBottom: 10 }]}>
+        <View style={styles.toggleLabelGroup}>
+          <Text style={styles.toggleLabel}>Typing Coach</Text>
+          <Text style={styles.toggleCaption}>
+            Replaces the delay overlay: type why you're opening YouTube — at
+            launch, and again at the re-show frequency below.
+          </Text>
+        </View>
+        <Switch
+          value={coachEnabled}
+          onValueChange={val => {
+            setCoachEnabled(val);
+            onEdit();
+          }}
+          trackColor={{ false: '#D6D6D6', true: L.charcoal }}
+          thumbColor="#FFFFFF"
+          accessibilityLabel="Typing Coach"
+        />
+      </View>
+    )}
+
     {/* Message */}
     <Text style={styles.interceptFieldLabel}>Overlay message</Text>
     <TextInput
@@ -34,12 +62,7 @@ const InterceptCustomization = ({
       value={interceptMessage}
       onChangeText={text => {
         setInterceptMessage(text);
-        scheduleInterceptSave(
-          text,
-          interceptDelaySecs,
-          interceptFreqMode,
-          interceptRepeatMin,
-        );
+        onEdit();
       }}
       placeholder="Take a moment before opening this app…"
       placeholderTextColor={L.muted}
@@ -60,18 +83,8 @@ const InterceptCustomization = ({
       value={interceptDelaySecs}
       onValueChange={v => setInterceptDelaySecs(Math.round(v))}
       onSlidingComplete={v => {
-        const rounded = Math.round(v);
-        setInterceptDelaySecs(rounded);
-        if (interceptSaveTimer.current) {
-          clearTimeout(interceptSaveTimer.current);
-          interceptSaveTimer.current = null;
-        }
-        saveInterceptSettings(
-          interceptMessage,
-          rounded,
-          interceptFreqMode,
-          interceptRepeatMin,
-        );
+        setInterceptDelaySecs(Math.round(v));
+        onEdit();
       }}
       minimumTrackTintColor={L.charcoal}
       maximumTrackTintColor={L.border}
@@ -90,12 +103,7 @@ const InterceptCustomization = ({
         ]}
         onPress={() => {
           setInterceptFreqMode('once');
-          scheduleInterceptSave(
-            interceptMessage,
-            interceptDelaySecs,
-            'once',
-            interceptRepeatMin,
-          );
+          onEdit();
         }}
         activeOpacity={0.75}
       >
@@ -115,12 +123,7 @@ const InterceptCustomization = ({
         ]}
         onPress={() => {
           setInterceptFreqMode('repeat');
-          scheduleInterceptSave(
-            interceptMessage,
-            interceptDelaySecs,
-            'repeat',
-            interceptRepeatMin,
-          );
+          onEdit();
         }}
         activeOpacity={0.75}
       >
@@ -147,15 +150,8 @@ const InterceptCustomization = ({
           maximumValue={60}
           step={1}
           value={interceptRepeatMin}
-          onValueChange={v => {
-            setInterceptRepeatMin(v);
-            scheduleInterceptSave(
-              interceptMessage,
-              interceptDelaySecs,
-              interceptFreqMode,
-              v,
-            );
-          }}
+          onValueChange={v => setInterceptRepeatMin(Math.round(v))}
+          onSlidingComplete={() => onEdit()}
           minimumTrackTintColor={L.charcoal}
           maximumTrackTintColor={L.border}
           thumbTintColor={L.charcoal}

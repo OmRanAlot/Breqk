@@ -71,8 +71,12 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
-  previewIcon: {
-    fontSize: 32,
+  previewIconTile: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   previewName: {
     fontSize: 20,
@@ -93,6 +97,20 @@ export const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: 12,
     marginTop: 20,
+  },
+  sectionCaption: {
+    fontSize: 13,
+    color: L.muted,
+    lineHeight: 18,
+    marginTop: -6,
+    marginBottom: 12,
+  },
+  // Same as sectionCaption but sits UNDER its control rather than above it.
+  sectionCaptionBelow: {
+    fontSize: 12,
+    color: L.muted,
+    textAlign: 'center',
+    marginTop: 8,
   },
   nameInput: {
     fontSize: 16,
@@ -119,9 +137,6 @@ export const styles = StyleSheet.create({
   iconOptionSelected: {
     borderWidth: 2,
   },
-  iconEmoji: {
-    fontSize: 24,
-  },
   colorGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -143,29 +158,105 @@ export const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 4,
   },
-  appBlock: {
+  // ── App Open Intercept box ────────────────────────────────────────────────
+  interceptBox: {
     backgroundColor: L.cardBg,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: L.cardBorder,
     padding: 14,
-    marginBottom: 8,
   },
-  appLabel: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: L.charcoal,
-    marginBottom: 10,
-  },
-  featureRow: {
+  interceptAppRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 12,
     paddingVertical: 6,
   },
-  featureLabel: {
-    fontSize: 14,
+  interceptAppLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
     color: L.charcoal,
+  },
+  interceptRemoveBtn: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  interceptEmptyText: {
+    fontSize: 13,
+    color: L.muted,
+    textAlign: 'center',
+    lineHeight: 18,
+    paddingVertical: 8,
+  },
+  addAppBtn: {
+    alignSelf: 'center',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: L.border,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 8,
+  },
+  appPickerList: {
+    borderTopWidth: 1,
+    borderTopColor: L.border,
+    marginTop: 8,
+    paddingTop: 4,
+  },
+  appPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 8,
+  },
+  appPickerLabel: {
+    flex: 1,
+    fontSize: 15,
+    color: L.charcoal,
+  },
+  appPickerCancel: {
+    fontSize: 13,
+    color: L.muted,
+    textAlign: 'center',
+    paddingVertical: 8,
+  },
+  // ── Reels Detection box ───────────────────────────────────────────────────
+  reelsBox: {
+    backgroundColor: L.cardBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: L.cardBorder,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  reelsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+  },
+  reelsRowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: L.border,
+  },
+  reelsRowInfo: {
+    flex: 1,
+  },
+  reelsRowLabel: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: L.charcoal,
+  },
+  reelsRowFeature: {
+    fontSize: 12,
+    color: L.muted,
+    marginTop: 1,
   },
   delayRow: {
     flexDirection: 'row',
@@ -187,6 +278,9 @@ export const styles = StyleSheet.create({
     borderColor: L.border,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  stepperBtnDisabled: {
+    opacity: 0.35,
   },
   stepperBtnText: {
     fontSize: 24,
@@ -231,15 +325,26 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     color: L.charcoal,
   },
-  scheduleTimeInput: {
-    fontSize: 14,
+  // Tappable time value: clock icon + "10:00 PM" + chevron. Replaced the old
+  // free-text HH:mm input, so it reads as a control rather than a field.
+  scheduleTimeValueGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: L.bg,
+    borderWidth: 1,
+    borderColor: L.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  scheduleTimeValue: {
+    fontSize: 15,
+    fontWeight: '500',
     color: L.charcoal,
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    minWidth: 60,
-    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+    minWidth: 72,
+    textAlign: 'right',
   },
   dayPickerRow: {
     flexDirection: 'row',

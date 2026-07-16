@@ -7,7 +7,9 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "python tests/run_all.py",
+    "test:jest": "jest",
+    "test:static": "python tests/static/run_all.py"
   },
   "dependencies": {
     "@react-native-community/slider": "^4.5.7",
@@ -46,5 +48,25 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "jest": {
+    "preset": "react-native",
+    "setupFiles": [
+      "./jest.setup.js"
+    ],
+    "testMatch": [
+      "<rootDir>/tests/unit/**/*.test.(js|jsx|ts|tsx)",
+      "<rootDir>/tests/unit/**/*.spec.(js|jsx|ts|tsx)"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/everything-claude-code/"
+    ],
+    "transformIgnorePatterns": [
+      "node_modules/(?!(jest-)?react-native|@react-native(-community)?|react-native-.*|@react-navigation)"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/everything-claude-code/"
+    ]
   }
 }

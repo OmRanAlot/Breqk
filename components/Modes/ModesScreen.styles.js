@@ -93,8 +93,12 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  modeIcon: {
-    fontSize: 24,
+  modeIconTile: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modeCardInfo: {
     flex: 1,
