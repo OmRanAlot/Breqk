@@ -1042,7 +1042,13 @@ public class AppUsageMonitor {
             Log.d(TAG, "removeOverlay: breathing animation cancelled");
         }
         if (overlayView != null) {
-            windowManager.removeView(overlayView);
+            try {
+                windowManager.removeView(overlayView);
+            } catch (IllegalArgumentException e) {
+                // View was already detached (e.g. process restart or double-remove).
+                // Log and continue so overlayView is always nulled below.
+                Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
+            }
             overlayView = null;
         }
         isOverlayActive = false;

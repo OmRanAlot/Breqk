@@ -174,7 +174,7 @@ adb logcat -s ScreenTimeTracker | findstr "[COMPREHENSIVE]" OR findstr "[UNLOCK_
 | `[AUTO_DISMISS_CLEAR]` | Popup timestamps cleared for the dismissed package so the intercept re-arms immediately on next open; only emitted by the auto-dismiss path, not by user-initiated Continue/Back |
 | `[SAFETY_DISMISS]` | Overlay auto-dismissed after exceeding max duration (customDelayTimeSeconds + 30s failsafe) |
 | `[HOME_DISMISS]` | Overlay force-dismissed via the fast path (DISMISS_OVERLAY intent from ReelsInterventionService → BreakVpnService → AppUsageMonitor), before the 1s polling tick fires |
-| `[RECENTS_DETECT]` | Foreground returned null (user is in recents / between apps); `currentForegroundApp` reset to `""` so returning to a blocked app is treated as a fresh open and the overlay re-arms |
+| `[RECENTS_DETECT]` | Foreground returned null (user is in recents / between apps); `allowedThisSession`, `appOpenTimestamps`, and `lastPopupShownTimestamps` are cleared for the departing app, and `currentForegroundApp` is reset to `""` — ensures returning to a blocked app re-arms the overlay (fixes home→blocked-app suppression bug) |
 | `[OVERLAY_PERSIST]` | User is in recents/launcher while overlay is active; overlay stays visible indefinitely instead of being dismissed (grace timer reset to 0). Overlay only dismisses when user switches to a different non-system app or exceeds safety timeout |
 | `[FG_DETECT]` | Enhanced foreground detection — background transitions, launcher resolution |
 

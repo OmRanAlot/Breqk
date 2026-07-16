@@ -24,14 +24,12 @@ import {
   TouchableOpacity,
   ScrollView,
   NativeModules,
-  Modal,
   Animated,
   AppState,
   Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
-import BlockerInterstitial from '../BlockerInterstitial/BlockerInterstitial';
 import useDebouncedSaver from './useDebouncedSaver';
 import {
   deriveBudgetStatus,
@@ -46,7 +44,6 @@ import ModeGateBanner from '../shared/ModeGateBanner';
 import InfoCircle from '../shared/InfoCircle';
 import { formatRemaining, GUARD_STATES } from '../shared/lockCycle';
 import ScrollBudgetSection from './ScrollBudgetSection';
-import InterceptMessageSection from './InterceptMessageSection';
 import DeletionInfoModal from './DeletionInfoModal';
 import { styles, L } from './customize.styles';
 
@@ -103,16 +100,6 @@ const Customize = ({ navigation }) => {
   const [scrollAllowance, setScrollAllowance] = useState(5);
   const [scrollWindow, setScrollWindow] = useState(60);
   const [budgetStatus, setBudgetStatus] = useState(null);
-
-  // ── Intercept message + delay ─────────────────────────────────────────────
-  const [interceptMessage, setInterceptMessage] = useState(
-    'Is this intentional?',
-  );
-  const [pauseDuration, setPauseDuration] = useState(5);
-  const [sliderValue, setSliderValue] = useState(5);
-
-  // ── Preview modal ─────────────────────────────────────────────────────────
-  const [previewVisible, setPreviewVisible] = useState(false);
 
   // ── "Saved" toast ─────────────────────────────────────────────────────────
   // Two states:
@@ -217,19 +204,6 @@ const Customize = ({ navigation }) => {
         });
       });
       console.log('[Customize] scroll budget loaded');
-
-      // Load intercept message from native
-      SettingsModule.getDelayMessage(message => {
-        setInterceptMessage(message);
-        console.log('[Customize] delay_message=', message);
-      });
-
-      // Load pause duration from native
-      SettingsModule.getDelayTime(seconds => {
-        setPauseDuration(seconds);
-        setSliderValue(seconds);
-        console.log('[Customize] delay_time_seconds=', seconds);
-      });
 
       // Load content filter state
       SettingsModule.getContentFilterEnabled(enabled => {
@@ -352,32 +326,6 @@ const Customize = ({ navigation }) => {
     const interval = setInterval(poll, 5000);
     return () => clearInterval(interval);
   }, []);
-
-  // ── Intercept message + delay handlers ───────────────────────────────────
-
-  const handleSliderChange = value => setSliderValue(Math.round(value));
-  const handleSliderComplete = async value => {
-    const rounded = Math.round(value);
-    setPauseDuration(rounded);
-    setSliderValue(rounded);
-    console.log('[Customize] pause duration →', rounded);
-    try {
-      await VPNModule.setDelayTime(rounded);
-      showSaved();
-    } catch (e) {
-      console.warn('[Customize] setDelayTime error:', e);
-    }
-  };
-
-  const handleMessageSubmit = async () => {
-    console.log('[Customize] saving intercept message:', interceptMessage);
-    try {
-      await VPNModule.setDelayMessage(interceptMessage);
-      showSaved();
-    } catch (e) {
-      console.warn('[Customize] setDelayMessage error:', e);
-    }
-  };
 
   // ── Content filter handler ────────────────────────────────────────────────
 
@@ -534,7 +482,6 @@ const Customize = ({ navigation }) => {
                 setPreviewVisible(true);
               }}
             /> */}
-
             {/* ── Browser Content Filter ───────────────────────────────── */}
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>Browser Safety</Text>
@@ -761,26 +708,6 @@ const Customize = ({ navigation }) => {
       >
         <Text style={styles.savedToastText}>{savedLabel}</Text>
       </Animated.View>
-
-      {/* ── Preview modal ────────────────────────────────────────────── */}
-      <Modal
-        visible={previewVisible}
-        transparent
-        animationType="none"
-        onRequestClose={() => setPreviewVisible(false)}
-      >
-        <BlockerInterstitial
-          duration={pauseDuration}
-          onComplete={() => {
-            console.log('[Customize] preview completed');
-            setPreviewVisible(false);
-          }}
-          onForceClose={() => {
-            console.log('[Customize] preview force-closed');
-            setPreviewVisible(false);
-          }}
-        />
-      </Modal>
 
       {/* ── Deletion-prevention info modal ───────────────────────────── */}
       <DeletionInfoModal
