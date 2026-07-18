@@ -20,9 +20,8 @@ import org.json.JSONObject;
  *
  *   - PENDING_WAIT: the filter STAYS ACTIVE. The wait equals the settings-lock
  *     duration (default 24h) captured at request time as {@code readyAt}.
- *   - CONFIRM_WINDOW: the user may confirm the final disable. Its length equals
- *     the settings-lock grace window, or {@link BreakPrefs#CF_INTERNAL_CONFIRM_WINDOW_MS}
- *     (4h) when grace is "None" (0).
+ *   - CONFIRM_WINDOW: the user may confirm the final disable. Its length is
+ *     always {@link BreakPrefs#CF_INTERNAL_CONFIRM_WINDOW_MS} (4h).
  *   - If the confirm window passes untouched, the pending disable is DISCARDED
  *     (lazily, on the next read) and the filter returns to PROTECTED — the first
  *     barrier re-instates itself automatically.
@@ -96,12 +95,10 @@ public final class ContentFilterGuard {
     }
 
     /**
-     * Confirm-window length right now: the settings-lock grace window, or the 4h
-     * internal fallback when grace is "None".
+     * Confirm-window length: always {@link BreakPrefs#CF_INTERNAL_CONFIRM_WINDOW_MS} (4h).
      */
     public static long getConfirmWindowMs(Context context) {
-        long grace = SettingsLockManager.getGraceMs(context);
-        return grace > 0 ? grace : BreakPrefs.CF_INTERNAL_CONFIRM_WINDOW_MS;
+        return BreakPrefs.CF_INTERNAL_CONFIRM_WINDOW_MS;
     }
 
     // ── State machine ──────────────────────────────────────────────────────────

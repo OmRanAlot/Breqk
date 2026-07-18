@@ -13,23 +13,17 @@ import {
 
 const HOUR = 60 * 60 * 1000;
 const DURATION = 24 * HOUR; // lock segment
-const GRACE = 8 * HOUR; // grace segment
 const BASE = 1_780_000_000_000; // stamped lockUntil (end of first lock)
 
 describe('deriveLockCycle', () => {
   test('returns idle state when never locked (base = 0)', () => {
-    // Arrange
-    const args = {
+    const result = deriveLockCycle({
       nowMs: BASE,
       baseLockUntilMs: 0,
       durationMs: DURATION,
-      graceMs: GRACE,
-    };
+      graceMs: 0,
+    });
 
-    // Act
-    const result = deriveLockCycle(args);
-
-    // Assert
     expect(result).toEqual({
       locked: false,
       lockUntilMs: 0,
@@ -43,7 +37,7 @@ describe('deriveLockCycle', () => {
       nowMs: BASE - 1,
       baseLockUntilMs: BASE,
       durationMs: DURATION,
-      graceMs: GRACE,
+      graceMs: 0,
     });
 
     expect(result.locked).toBe(true);
@@ -51,7 +45,23 @@ describe('deriveLockCycle', () => {
     expect(result.inGrace).toBe(false);
   });
 
-  test('stays unlocked forever after expiry when grace is None (0)', () => {
+  test('becomes unlocked immediately once the lock expires', () => {
+    const result = deriveLockCycle({
+      nowMs: BASE,
+      baseLockUntilMs: BASE,
+      durationMs: DURATION,
+      graceMs: 0,
+    });
+
+    expect(result).toEqual({
+      locked: false,
+      lockUntilMs: 0,
+      inGrace: false,
+      graceEndsAtMs: 0,
+    });
+  });
+
+  test('stays unlocked forever after expiry regardless of how much time passes', () => {
     const result = deriveLockCycle({
       nowMs: BASE + 500 * HOUR,
       baseLockUntilMs: BASE,
@@ -67,86 +77,42 @@ describe('deriveLockCycle', () => {
     });
   });
 
-  test('enters grace immediately after the first lock expires', () => {
+  test('ignores graceMs even when a non-zero value is passed (re-arm removed)', () => {
+    // Even if legacy code passes a non-zero graceMs, expiry still means unlocked.
     const result = deriveLockCycle({
       nowMs: BASE + 1,
       baseLockUntilMs: BASE,
       durationMs: DURATION,
-      graceMs: GRACE,
+      graceMs: 8 * HOUR,
     });
 
     expect(result.locked).toBe(false);
-    expect(result.inGrace).toBe(true);
-    expect(result.graceEndsAtMs).toBe(BASE + GRACE);
-  });
-
-  test('re-arms the lock when the grace window ends', () => {
-    const result = deriveLockCycle({
-      nowMs: BASE + GRACE, // first instant past grace
-      baseLockUntilMs: BASE,
-      durationMs: DURATION,
-      graceMs: GRACE,
-    });
-
-    expect(result.locked).toBe(true);
-    expect(result.lockUntilMs).toBe(BASE + GRACE + DURATION);
     expect(result.inGrace).toBe(false);
+    expect(result.graceEndsAtMs).toBe(0);
   });
 
-  test('lands in the correct segment after multiple full cycles elapsed', () => {
-    // Arrange: 3 full cycles + 2h into the 4th cycle's grace window.
-    const cycle = GRACE + DURATION;
-    const nowMs = BASE + 3 * cycle + 2 * HOUR;
-
-    // Act
+  test('boundary: one ms before expiry is still locked', () => {
     const result = deriveLockCycle({
-      nowMs,
+      nowMs: BASE - 1,
       baseLockUntilMs: BASE,
       durationMs: DURATION,
-      graceMs: GRACE,
-    });
-
-    // Assert: in grace, ending at the 4th cycle's grace boundary.
-    expect(result.inGrace).toBe(true);
-    expect(result.graceEndsAtMs).toBe(BASE + 3 * cycle + GRACE);
-  });
-
-  test('lands in a re-armed lock segment mid-cycle after many cycles', () => {
-    const cycle = GRACE + DURATION;
-    const nowMs = BASE + 5 * cycle + GRACE + 10 * HOUR; // inside 6th lock
-
-    const result = deriveLockCycle({
-      nowMs,
-      baseLockUntilMs: BASE,
-      durationMs: DURATION,
-      graceMs: GRACE,
+      graceMs: 0,
     });
 
     expect(result.locked).toBe(true);
-    expect(result.lockUntilMs).toBe(BASE + 6 * cycle);
-  });
-
-  test('boundary: exact grace start instant counts as grace, not lock', () => {
-    const result = deriveLockCycle({
-      nowMs: BASE, // pos = 0 < graceMs
-      baseLockUntilMs: BASE,
-      durationMs: DURATION,
-      graceMs: GRACE,
-    });
-
-    expect(result.inGrace).toBe(true);
-    expect(result.locked).toBe(false);
+    expect(result.lockUntilMs).toBe(BASE);
   });
 });
 
 describe('deriveGuardState', () => {
   const READY = BASE + DURATION;
+  const CONFIRM_WINDOW = CF_INTERNAL_CONFIRM_WINDOW_MS;
   const baseArgs = {
     doubleSafeEnabled: true,
     filterEnabled: true,
     pendingDisableAtMs: BASE,
     readyAtMs: READY,
-    confirmWindowMs: GRACE,
+    confirmWindowMs: CONFIRM_WINDOW,
   };
 
   test('reports DISABLED when the filter itself is off', () => {
@@ -185,7 +151,7 @@ describe('deriveGuardState', () => {
 
     expect(result.state).toBe(GUARD_STATES.PENDING_WAIT);
     expect(result.readyAtMs).toBe(READY);
-    expect(result.confirmEndsAtMs).toBe(READY + GRACE);
+    expect(result.confirmEndsAtMs).toBe(READY + CONFIRM_WINDOW);
   });
 
   test('opens CONFIRM_WINDOW the instant the wait ends', () => {
@@ -195,30 +161,26 @@ describe('deriveGuardState', () => {
   });
 
   test('auto re-instates PROTECTED once the confirm window lapses', () => {
-    const result = deriveGuardState({ ...baseArgs, nowMs: READY + GRACE });
+    const result = deriveGuardState({
+      ...baseArgs,
+      nowMs: READY + CONFIRM_WINDOW,
+    });
 
     expect(result.state).toBe(GUARD_STATES.PROTECTED);
     expect(result.readyAtMs).toBe(0);
     expect(result.confirmEndsAtMs).toBe(0);
   });
 
-  test('4h internal fallback drives the confirm window when grace is None', () => {
-    // Arrange: the bridge sends confirmWindowMs = 4h when grace is 0.
-    const args = {
-      ...baseArgs,
-      confirmWindowMs: CF_INTERNAL_CONFIRM_WINDOW_MS,
-    };
-
-    // Act + Assert: open just before the 4h mark, re-instated at 4h.
+  test('4h internal confirm window: open just before expiry, closed at boundary', () => {
     expect(
       deriveGuardState({
-        ...args,
+        ...baseArgs,
         nowMs: READY + CF_INTERNAL_CONFIRM_WINDOW_MS - 1,
       }).state,
     ).toBe(GUARD_STATES.CONFIRM_WINDOW);
     expect(
       deriveGuardState({
-        ...args,
+        ...baseArgs,
         nowMs: READY + CF_INTERNAL_CONFIRM_WINDOW_MS,
       }).state,
     ).toBe(GUARD_STATES.PROTECTED);

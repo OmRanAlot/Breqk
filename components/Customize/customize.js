@@ -1,4 +1,4 @@
-/**
+﻿/**
  * customize.js — Customize Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Settings screen layout:
@@ -527,9 +527,7 @@ const Customize = ({ navigation }) => {
                       <Text style={styles.infoPara}>
                         If you let the confirm window pass without confirming,
                         the pending disable is discarded and full protection
-                        re-instates automatically. The confirm window matches
-                        your re-arm grace setting, or 4 hours if that is set to
-                        “None”.
+                        re-instates automatically. The confirm window is 4 hours.
                       </Text>
                       <Text style={styles.infoPara}>
                         You can cancel a pending disable at any time, and
@@ -587,9 +585,6 @@ const Customize = ({ navigation }) => {
             <SettingsLockSection
               enabled={settingsLock.enabled}
               durationMs={settingsLock.durationMs}
-              graceMs={settingsLock.graceMs}
-              inGrace={settingsLock.inGrace}
-              graceRemainingMs={settingsLock.graceRemainingMs}
               locked={settingsLock.anyLocked}
               onToggle={value => {
                 settingsLock.setEnabled(value);
@@ -599,10 +594,6 @@ const Customize = ({ navigation }) => {
               }}
               onPickDuration={hours => {
                 settingsLock.setDurationHours(hours);
-                markSettingsDirty();
-              }}
-              onPickGrace={hours => {
-                settingsLock.setGraceHours(hours);
                 markSettingsDirty();
               }}
             />
