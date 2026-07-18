@@ -7,7 +7,8 @@
  * Mirrors the "Prevent deletion" pattern: flipping the toggle ON first opens a
  * confirmation modal explaining the commitment; turning it OFF is direct (so the
  * feature keeps the same easy-exit discretion as deletion prevention). When on,
- * a duration picker lets the user choose how long each scope stays locked.
+ * a duration picker lets the user choose how long each scope stays locked after
+ * an edit.
  *
  * This control is intentionally NOT gated by the lock and changing it does NOT
  * start a lock — so the user can always disable the feature.
@@ -25,45 +26,32 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import InfoCircle from '../shared/InfoCircle';
-import { formatRemaining } from '../shared/lockCycle';
 
 const DURATION_OPTIONS = [24, 48, 72, 168]; // hours
-// Re-arm grace window options (hours). 0 = "None": no auto re-arm — the scope
-// stays unlocked after expiry until the user actually changes something.
-const GRACE_OPTIONS = [0, 4, 8, 12, 24];
 const formatDuration = h => {
   if (h < 48) return `${h}h`;
   if (h < 168) return `${h / 24}d`;
   return '1wk';
 };
-const formatGrace = h => (h === 0 ? 'None' : `${h}h`);
 
 /**
  * @param {{
  *   enabled: boolean,
  *   durationMs: number,
- *   graceMs: number,
- *   inGrace: boolean,
- *   graceRemainingMs: number,
  *   onToggle: (value: boolean) => void,
  *   onPickDuration: (hours: number) => void,
- *   onPickGrace: (hours: number) => void,
+ *   locked?: boolean,
  * }} props
  */
 export default function SettingsLockSection({
   enabled,
   durationMs,
-  graceMs = 0,
-  inGrace = false,
-  graceRemainingMs = 0,
   onToggle,
   onPickDuration,
-  onPickGrace,
   locked = false,
 }) {
   const [confirmVisible, setConfirmVisible] = useState(false);
   const currentHours = Math.round((durationMs || 0) / (60 * 60 * 1000));
-  const currentGraceHours = Math.round((graceMs || 0) / (60 * 60 * 1000));
 
   const handleToggle = value => {
     if (locked) return; // toggle is read-only while a lock is active
@@ -91,16 +79,8 @@ export default function SettingsLockSection({
             that screen read-only for your chosen duration (the lock timer).
           </Text>
           <Text style={infoStyles.para}>
-            Re-arm cycle: when a lock timer ends, a short grace window opens. If
-            you change nothing before the grace window ends, the lock re-arms
-            automatically for the full duration — and the cycle repeats. Making
-            any change during the grace window simply starts a fresh lock when
-            you leave the screen.
-          </Text>
-          <Text style={infoStyles.para}>
-            Setting the re-arm window to "None" turns the cycle off: after a
-            lock expires, the screen stays editable until you actually change
-            something.
+            Once the timer expires the screen is freely editable again — it only
+            re-locks after you actually make another change and leave.
           </Text>
           <Text style={infoStyles.para}>
             Each scope is independent — the global settings and each managed app
@@ -164,46 +144,6 @@ export default function SettingsLockSection({
         </View>
       )}
 
-      {/* Re-arm grace window picker. "None" disables the auto re-arm cycle. */}
-      {enabled && (
-        <View style={styles.durationRow}>
-          <Text style={styles.durationLabel}>Re-arm after</Text>
-          <View style={[styles.segmented, locked && styles.segmentedDisabled]}>
-            {GRACE_OPTIONS.map(h => {
-              const active = h === currentGraceHours;
-              return (
-                <TouchableOpacity
-                  key={h}
-                  style={[styles.segment, active && styles.segmentActive]}
-                  onPress={() => !locked && onPickGrace && onPickGrace(h)}
-                  disabled={locked}
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active, disabled: locked }}
-                >
-                  <Text
-                    style={[
-                      styles.segmentText,
-                      active && styles.segmentTextActive,
-                    ]}
-                  >
-                    {formatGrace(h)}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      )}
-
-      {/* Live grace status: the lock will re-arm unless something changes. */}
-      {enabled && inGrace && (
-        <Text style={styles.graceNote}>
-          Grace window: the lock re-arms in {formatRemaining(graceRemainingMs)}{' '}
-          unless you change a setting before then.
-        </Text>
-      )}
-
       <Modal
         visible={confirmVisible}
         transparent
@@ -216,21 +156,20 @@ export default function SettingsLockSection({
             <Text style={styles.modalBody}>
               Whenever you change a screen and leave it, that screen becomes
               read-only for {formatDuration(currentHours || 24)} before you can
-              change it again. This adds a deliberate pause so you can’t
+              change it again. This adds a deliberate pause so you can't
               instantly loosen your own limits on impulse.
             </Text>
             <Text style={styles.modalBody}>
-              Each scope is separate: locking the global settings won’t lock an
-              app’s settings, and vice-versa.
+              Each scope is separate: locking the global settings won't lock an
+              app's settings, and vice-versa.
             </Text>
             <Text style={styles.modalBody}>
-              {currentGraceHours > 0
-                ? `Re-arm cycle: when a lock ends, you get a ${currentGraceHours}h grace window to make changes. If you change nothing, the lock re-arms automatically and the cycle repeats. Pick “None” to turn the cycle off.`
-                : 'Re-arm cycle is off (“None”): after a lock ends, the screen stays editable until you actually change something.'}
+              Once the timer expires the screen is freely editable again — it
+              only re-locks after you make another change and leave.
             </Text>
             <Text style={styles.modalWarn}>
               Important: once a screen is locked, this switch locks too — you
-              can’t turn the feature off until that screen’s timer ends. That’s
+              can't turn the feature off until that screen's timer ends. That's
               what makes it a real commitment.
             </Text>
             <View style={styles.modalButtons}>
@@ -281,13 +220,6 @@ const styles = StyleSheet.create({
     color: INK,
     letterSpacing: 0.3,
     textTransform: 'uppercase',
-  },
-  graceNote: {
-    fontSize: 12.5,
-    lineHeight: 18,
-    color: '#9a3412',
-    marginTop: 10,
-    fontWeight: '500',
   },
   row: {
     flexDirection: 'row',

@@ -12,7 +12,9 @@
  */
 
 import React from 'react';
-import { View, Text, TextInput, TouchableOpacity, Switch } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity } from 'react-native';
+// Switch kept available for Typing Coach revive — re-add to this import when uncommenting the toggle.
+// import { View, Text, TextInput, TouchableOpacity, Switch } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { styles, L } from './AppDetail.styles';
 
@@ -32,7 +34,7 @@ const InterceptCustomization = ({
   onApplyAll,
 }) => (
   <View style={styles.interceptBox}>
-    {/* Typing Coach (YouTube only) — picks the intercept style */}
+    {/* TEMP: Typing Coach toggle hidden — revive later with BreakPrefs.isCoachEnabled.
     {showCoachToggle && (
       <View style={[styles.toggleRow, { marginBottom: 10 }]}>
         <View style={styles.toggleLabelGroup}>
@@ -54,6 +56,7 @@ const InterceptCustomization = ({
         />
       </View>
     )}
+    */}
 
     {/* Message */}
     <Text style={styles.interceptFieldLabel}>Overlay message</Text>

@@ -26,15 +26,8 @@ import java.util.Iterator;
  *   - Scopes are INDEPENDENT: locking "global" never affects a per-app scope, and
  *     vice-versa. One toggle ({@code enabled}) governs whether locking happens at all.
  *
- * Re-arm cycle (grace window):
- *   When a lock expires, a GRACE window (user-set, default 8h; 0 = "None") opens.
- *   If the user changes nothing before the grace ends, the lock RE-ARMS for the
- *   full duration, and the cycle repeats indefinitely from the same stamped base:
- *     stamped lockUntil → [grace][locked][grace][locked]…
- *   Editing during grace restarts the cycle via the normal startLock path (a new
- *   base timestamp). grace == 0 disables re-arming: once expired, the scope stays
- *   unlocked until the next edit (the original behavior). All of this is derived
- *   at READ TIME from the single stored timestamp — see {@link #computeCycle}.
+ * Once a lock expires the scope stays unlocked until the user makes another change
+ * and leaves the screen — there is no auto re-arm cycle.
  *
  * There is no AlarmManager / notification: the lock is a pure read-time check, so
  * expiry needs no wakeup — the next time the screen reads {@link #isLocked} after
@@ -95,37 +88,25 @@ public final class SettingsLockManager {
         return ms;
     }
 
-    // ── Grace window (re-arm cycle) ────────────────────────────────────────────
+    // ── Grace window (legacy / no-op) ─────────────────────────────────────────
 
     /**
-     * Grace window in ms, clamped to [0, 24h]. 0 means "None" — no auto re-arm.
-     * Defaults to 8h.
+     * Always returns 0 — re-arm is removed. Kept so the bridge method
+     * {@code setSettingsLockGrace} can remain a safe no-op for any cached JS.
      */
     public static long getGraceMs(Context context) {
-        long stored = BreakPrefs.get(context)
-                .getLong(BreakPrefs.KEY_SETTINGS_LOCK_GRACE_MS, BreakPrefs.DEFAULT_SETTINGS_LOCK_GRACE_MS);
-        return clampGrace(stored);
+        return 0L;
     }
 
-    /** Persists the grace window (clamped). Applies to cycle math immediately. */
+    /** No-op. Re-arm is removed; grace is always 0. */
     public static void setGraceMs(Context context, long ms) {
-        long clamped = clampGrace(ms);
-        BreakPrefs.get(context).edit()
-                .putLong(BreakPrefs.KEY_SETTINGS_LOCK_GRACE_MS, clamped)
-                .apply();
-        Log.d(TAG, "setGraceMs=" + clamped);
+        // intentionally empty
     }
 
-    private static long clampGrace(long ms) {
-        if (ms < 0) return 0;
-        if (ms > BreakPrefs.MAX_SETTINGS_LOCK_GRACE_MS) return BreakPrefs.MAX_SETTINGS_LOCK_GRACE_MS;
-        return ms;
-    }
-
-    // ── Re-arm cycle math ──────────────────────────────────────────────────────
+    // ── Lock state derivation ──────────────────────────────────────────────────
 
     /**
-     * Snapshot of where a scope sits in its lock/grace cycle at one instant.
+     * Snapshot of where a scope sits in its lock at one instant.
      * Derived purely from the stamped base timestamp — nothing here is stored.
      */
     public static final class CycleState {
@@ -133,9 +114,9 @@ public final class SettingsLockManager {
         public final boolean locked;
         /** Epoch-ms when the current lock segment ends (0 when not locked). */
         public final long lockUntil;
-        /** Scope is inside a grace window that will re-arm when it ends. */
+        /** Always false — re-arm is removed. */
         public final boolean inGrace;
-        /** Epoch-ms when the grace window ends and the lock re-arms (0 if n/a). */
+        /** Always 0 — re-arm is removed. */
         public final long graceEndsAt;
 
         CycleState(boolean locked, long lockUntil, boolean inGrace, long graceEndsAt) {
@@ -147,41 +128,23 @@ public final class SettingsLockManager {
     }
 
     /**
-     * Pure cycle derivation. The cycle anchors on {@code base} (the stamped
-     * lockUntil = end of the FIRST lock segment) and then repeats
-     * [grace][duration][grace][duration]… forever, so the state at any instant is
-     * a modulo computation — the app can be closed for a week and still land in
-     * the right segment.
+     * Lock state derivation. Locked while {@code now < base}; unlocked forever
+     * after expiry — the scope stays editable until the next real edit.
      *
      * @param now        current epoch ms
      * @param base       stamped lockUntil for the scope (0 = never locked)
-     * @param durationMs lock segment length (> 0)
-     * @param graceMs    grace segment length (0 = no re-arm)
+     * @param durationMs unused (kept for call-site compatibility)
+     * @param graceMs    unused (re-arm is removed; always treated as 0)
      */
     public static CycleState computeCycle(long now, long base, long durationMs, long graceMs) {
         if (base <= 0) {
-            // Never locked: no cycle to derive.
             return new CycleState(false, 0L, false, 0L);
         }
         if (now < base) {
-            // Inside the first (stamped) lock segment.
             return new CycleState(true, base, false, 0L);
         }
-        if (graceMs <= 0) {
-            // Re-arm disabled: expired means unlocked until the next edit.
-            return new CycleState(false, 0L, false, 0L);
-        }
-        long cycle = graceMs + durationMs;
-        long elapsed = now - base;
-        long k = elapsed / cycle; // completed full cycles since the base expired
-        long pos = elapsed % cycle; // position inside the current cycle
-        long cycleStart = base + k * cycle;
-        if (pos < graceMs) {
-            // Grace segment: editable, but re-arms at graceEndsAt.
-            return new CycleState(false, 0L, true, cycleStart + graceMs);
-        }
-        // Re-armed lock segment.
-        return new CycleState(true, cycleStart + cycle, false, 0L);
+        // Lock expired — stays unlocked until the next edit.
+        return new CycleState(false, 0L, false, 0L);
     }
 
     /** Cycle state for {@code scope} right now (feature toggle NOT considered). */
@@ -216,22 +179,19 @@ public final class SettingsLockManager {
     }
 
     /**
-     * True iff the feature is on AND ANY scope (global or any app) is still locked
-     * (including re-armed lock segments). Used to keep the feature toggle itself
-     * read-only while a lock is active, so the user can't disable the feature to
-     * shortcut a wait on any screen.
+     * True iff the feature is on AND ANY scope (global or any app) is still locked.
+     * Used to keep the feature toggle itself read-only while a lock is active.
      */
     public static boolean isAnyLocked(Context context) {
         if (!isEnabled(context)) return false;
         long now = System.currentTimeMillis();
         long duration = getDurationMs(context);
-        long grace = getGraceMs(context);
         try {
             JSONObject map = readMap(context);
             Iterator<String> keys = map.keys();
             while (keys.hasNext()) {
                 long base = map.optLong(keys.next(), 0L);
-                if (computeCycle(now, base, duration, grace).locked) return true;
+                if (computeCycle(now, base, duration, 0L).locked) return true;
             }
         } catch (JSONException e) {
             Log.w(TAG, "isAnyLocked parse failed: " + e.getMessage());
@@ -265,11 +225,8 @@ public final class SettingsLockManager {
     /**
      * State for ONE scope as a flat JSON string for the bridge:
      * {@code {"enabled":bool,"locked":bool,"anyLocked":bool,"lockUntil":epochMs,
-     *   "baseLockUntil":epochMs,"durationMs":ms,"graceMs":ms,"inGrace":bool,
-     *   "graceEndsAt":epochMs}}.
-     * {@code lockUntil} is the EFFECTIVE unlock instant for the current lock
-     * segment (first or re-armed); {@code baseLockUntil} is the raw stamped value
-     * so the JS layer can run the same cycle math for live ticking between reads.
+     *   "baseLockUntil":epochMs,"durationMs":ms,"graceMs":0,"inGrace":false,
+     *   "graceEndsAt":0}}.
      */
     public static String getStateJson(Context context, String scope) {
         boolean enabled = isEnabled(context);
@@ -283,9 +240,9 @@ public final class SettingsLockManager {
             out.put("lockUntil", cycle.lockUntil);
             out.put("baseLockUntil", base);
             out.put("durationMs", getDurationMs(context));
-            out.put("graceMs", getGraceMs(context));
-            out.put("inGrace", enabled && cycle.inGrace);
-            out.put("graceEndsAt", cycle.graceEndsAt);
+            out.put("graceMs", 0);
+            out.put("inGrace", false);
+            out.put("graceEndsAt", 0);
         } catch (JSONException e) {
             Log.w(TAG, "getStateJson failed: " + e.getMessage());
         }

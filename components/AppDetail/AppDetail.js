@@ -174,15 +174,15 @@ const AppDetail = ({ navigation, route }) => {
           console.warn('[AppDetail] load intercept settings failed:', e);
         }
 
-        // Load the Typing Coach toggle (YouTube only — global native pref).
-        if (isYouTube) {
-          try {
-            const enabled = await SettingsModule.getCoachEnabled();
-            setCoachEnabled(enabled === true);
-          } catch (e) {
-            console.warn('[AppDetail] load coach enabled failed:', e);
-          }
-        }
+        // TEMP: Typing Coach load disabled — revive later with isCoachEnabled.
+        // if (isYouTube) {
+        //   try {
+        //     const enabled = await SettingsModule.getCoachEnabled();
+        //     setCoachEnabled(enabled === true);
+        //   } catch (e) {
+        //     console.warn('[AppDetail] load coach enabled failed:', e);
+        //   }
+        // }
 
         // Freshly loaded state is the saved baseline — not dirty.
         dirtyRef.current = false;
@@ -301,11 +301,10 @@ const AppDetail = ({ navigation, route }) => {
         delayMin,
       );
 
-      // 6. Typing Coach toggle (YouTube only). Native reads it live on the next
-      //    launch/tick — no restart needed, but persisted before monitoring kick.
-      if (isYouTube) {
-        await SettingsModule.setCoachEnabled(coachEnabled);
-      }
+      // TEMP: Typing Coach save disabled — revive later with isCoachEnabled.
+      // if (isYouTube) {
+      //   await SettingsModule.setCoachEnabled(coachEnabled);
+      // }
 
       // 7. Restart monitoring so an intercept toggle takes effect immediately.
       if (policy.app_open_intercept === true) {
@@ -504,7 +503,8 @@ const AppDetail = ({ navigation, route }) => {
                       setInterceptFreqMode={setInterceptFreqMode}
                       interceptRepeatMin={interceptRepeatMin}
                       setInterceptRepeatMin={setInterceptRepeatMin}
-                      showCoachToggle={isYouTube}
+                      // TEMP: Typing Coach toggle hidden — revive later
+                      showCoachToggle={false}
                       coachEnabled={coachEnabled}
                       setCoachEnabled={setCoachEnabled}
                       onEdit={markDirty}

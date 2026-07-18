@@ -514,15 +514,13 @@ public class SettingsModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Sets the re-arm grace window in HOURS (0 = "None": no auto re-arm; clamped
-     * to at most 24). When > 0, an expired lock re-arms after this window unless
-     * the user changed something first.
+     * No-op. Re-arm is removed; grace is always 0. Kept as a safe bridge stub
+     * so any cached JS that still calls this does not throw.
      */
     @ReactMethod
     public void setSettingsLockGrace(int hours) {
-        long ms = (long) hours * 60L * 60L * 1000L;
-        SettingsLockManager.setGraceMs(reactContext, ms);
-        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockGrace hours=" + hours);
+        SettingsLockManager.setGraceMs(reactContext, 0L);
+        Log.d(TAG, "[SETTINGS_LOCK] setSettingsLockGrace no-op (re-arm removed)");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

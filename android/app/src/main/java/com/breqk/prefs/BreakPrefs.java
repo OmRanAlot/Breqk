@@ -256,19 +256,15 @@ public final class BreakPrefs {
     /** Maximum lock length the duration picker allows: 7 days (1 week). */
     public static final long MAX_SETTINGS_LOCK_MS = 7L * 24 * 60 * 60 * 1000;
 
-    // ── Settings Lock re-arm grace window ──────────────────────────────────────
-    // After a scope's lock expires, a GRACE window opens. If the user changes
-    // nothing in that scope before the grace window ends, the lock re-arms
-    // automatically for the full duration, and the cycle repeats:
-    //   locked(duration) → grace → locked(duration) → grace → …
-    // Editing the scope during grace resets the cycle through the normal
-    // "edit + leave screen" startLock path. grace == 0 means "None": the scope
-    // stays unlocked until the user actually makes a change (pre-cycle behavior).
+    // ── Settings Lock grace (legacy, unused) ──────────────────────────────────
+    // Re-arm is removed. The key is kept for SharedPreferences compatibility;
+    // SettingsLockManager.getGraceMs always returns 0 regardless of the stored
+    // value. DEFAULT is 0 so any fresh install or cleared storage starts correct.
     public static final String KEY_SETTINGS_LOCK_GRACE_MS = "settings_lock_grace_ms";
 
-    /** Default grace window before a lock re-arms: 8 hours. */
-    public static final long DEFAULT_SETTINGS_LOCK_GRACE_MS = 8L * 60 * 60 * 1000;
-    /** Maximum grace window the picker allows: 24 hours. */
+    /** Always 0 — re-arm is removed. */
+    public static final long DEFAULT_SETTINGS_LOCK_GRACE_MS = 0L;
+    /** Unused — kept to avoid breaking any residual references. */
     public static final long MAX_SETTINGS_LOCK_GRACE_MS = 24L * 60 * 60 * 1000;
 
     // ── Content Filter double-safe disable ─────────────────────────────────────
@@ -277,9 +273,8 @@ public final class BreakPrefs {
     //   disable #1 → filter STAYS ON, wait (lock duration) → confirm window →
     //   disable #2 actually flips content_filter_enabled off.
     // If the confirm window passes with no action, the pending disable is
-    // discarded and the filter stays protected. The confirm window equals the
-    // settings-lock grace window, or CF_INTERNAL_CONFIRM_WINDOW_MS when grace is
-    // "None". See com.Break.lock.ContentFilterGuard.
+    // discarded and the filter stays protected. The confirm window is always
+    // CF_INTERNAL_CONFIRM_WINDOW_MS (4h). See com.Break.lock.ContentFilterGuard.
     // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing so
     // would shortcut (or spuriously restart) an active wait.
     public static final String KEY_CF_DOUBLE_SAFE_ENABLED = "content_filter_double_safe_enabled";
@@ -1098,9 +1093,13 @@ public final class BreakPrefs {
     /**
      * Whether the YouTube mindful-viewing coach is enabled. Default true so the
      * gate is on once the feature ships; the Customize screen can turn it off.
+     *
+     * TEMP: coach disabled — revive later by restoring the prefs read below.
+     * YouTube App Open Intercept currently uses the delay overlay only.
      */
     public static boolean isCoachEnabled(Context context) {
-        return get(context).getBoolean(KEY_COACH_ENABLED, true);
+        // return get(context).getBoolean(KEY_COACH_ENABLED, true);
+        return false;
     }
 
     /** Enables or disables the YouTube viewing coach. */
