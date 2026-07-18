@@ -85,10 +85,16 @@ public class AppUsageMonitor {
     // Recents overview / brief launcher flashes change the foreground away from the blocked
     // app even though the user is about to return. Hold the overlay until they've been gone
     // longer than this threshold before actually dismissing.
-    private static final long TRANSIENT_AWAY_GRACE_MS = 1500;
+    // Away ≤ this → keep session (no re-arm). Away longer → end session so return
+    // shows the delay overlay again. Raised from 1.5s so brief focus blips do not
+    // relaunch the intercept.
+    private static final long TRANSIENT_AWAY_GRACE_MS = 3000;
     // Timestamp (ms) when foreground first changed away from lastAppPackage while overlay
     // was active. 0 = currently on the blocked app (or overlay not shown).
     private long awayFromBlockedAppSince = 0L;
+    // Wall-clock when we first observed a departure from currentForegroundApp while that
+    // package still had intercept session state. 0 = not pending a session end.
+    private long sessionAwaySince = 0L;
 
     // Custom message for the delay overlay (set from React Native)
     private String customMessage = "Take a moment to consider if you really need this app right now";
@@ -332,6 +338,7 @@ public class AppUsageMonitor {
                                 lastPopupShownTimestamps.remove(currentForegroundApp);
                                 currentForegroundApp = "";
                                 nullForegroundSince = 0L;
+                                sessionAwaySince = 0L;
                             } else if (isOwnInterceptionOwning(currentForegroundApp)) {
                                 // [SESSION_REARM] Our own interception surface (delay overlay, or —
                                 // YouTube only — the mindful-viewing coach) is on screen. The coach
@@ -425,8 +432,16 @@ public class AppUsageMonitor {
 
                         // Track when blocked apps are opened
                         if (isBlocked && !isAllowed) {
-                            // If this is a new blocked app or app was switched to, record the open time
-                            if (!foregroundApp.equals(currentForegroundApp)) {
+                            // If this is a new blocked app or app was switched to, record the open time.
+                            // Skip while a departure-grace is protecting another package's session —
+                            // otherwise every tick on the temporary foreground would reset that app's
+                            // timestamps. Session start for the new app is recorded when grace ends.
+                            boolean protectingOtherSession = sessionAwaySince > 0L
+                                    && currentForegroundApp != null
+                                    && !currentForegroundApp.isEmpty()
+                                    && !foregroundApp.equals(currentForegroundApp)
+                                    && (now - sessionAwaySince < TRANSIENT_AWAY_GRACE_MS);
+                            if (!foregroundApp.equals(currentForegroundApp) && !protectingOtherSession) {
                                 appOpenTimestamps.put(foregroundApp, now);
                                 // Clear last popup timestamp when app is reopened (new session)
                                 lastPopupShownTimestamps.remove(foregroundApp);
@@ -540,17 +555,44 @@ public class AppUsageMonitor {
                             }
                         }
 
-                        // If user switches away from an allowed app, remove it from allowed session and
-                        // clear timestamps
-                        if (!foregroundApp.equals(currentForegroundApp)) {
-                            if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
-                                allowedThisSession.remove(currentForegroundApp);
-                                appOpenTimestamps.remove(currentForegroundApp); // Clear timestamp when switching away
-                                lastPopupShownTimestamps.remove(currentForegroundApp); // Clear last popup timestamp
-                                                                                       // when switching away
-                                Log.d(TAG, "Cleared timestamps for " + currentForegroundApp + " after switching away");
+                        // Session end on leave: Away ≤ TRANSIENT_AWAY_GRACE_MS keeps timestamps
+                        // (no overlay re-arm on brief focus loss). Away longer ends the session so
+                        // the next open shows the delay overlay again.
+                        if (foregroundApp.equals(currentForegroundApp)) {
+                            sessionAwaySince = 0L;
+                        } else {
+                            boolean leavingHadSession = currentForegroundApp != null
+                                    && !currentForegroundApp.isEmpty()
+                                    && (allowedThisSession.contains(currentForegroundApp)
+                                            || appOpenTimestamps.containsKey(currentForegroundApp)
+                                            || lastPopupShownTimestamps.containsKey(currentForegroundApp));
+                            if (leavingHadSession) {
+                                if (sessionAwaySince == 0L) {
+                                    sessionAwaySince = now;
+                                    Log.d(TAG, "[SESSION_REARM] left " + currentForegroundApp
+                                            + " → " + foregroundApp + "; starting "
+                                            + TRANSIENT_AWAY_GRACE_MS + "ms departure grace");
+                                } else if (now - sessionAwaySince >= TRANSIENT_AWAY_GRACE_MS) {
+                                    Log.i(TAG, "[SESSION_REARM] away >" + TRANSIENT_AWAY_GRACE_MS
+                                            + "ms from " + currentForegroundApp
+                                            + " — ending session; intercept re-arms on next open");
+                                    allowedThisSession.remove(currentForegroundApp);
+                                    appOpenTimestamps.remove(currentForegroundApp);
+                                    lastPopupShownTimestamps.remove(currentForegroundApp);
+                                    currentForegroundApp = foregroundApp;
+                                    sessionAwaySince = 0L;
+                                    if (isBlocked && !allowedThisSession.contains(foregroundApp)) {
+                                        appOpenTimestamps.put(foregroundApp, now);
+                                        lastPopupShownTimestamps.remove(foregroundApp);
+                                        Log.d(TAG, "Recorded open time for " + foregroundApp
+                                                + " at " + now + " (after departure grace)");
+                                    }
+                                }
+                                // else still within grace — keep currentForegroundApp + session
+                            } else {
+                                currentForegroundApp = foregroundApp;
+                                sessionAwaySince = 0L;
                             }
-                            currentForegroundApp = foregroundApp;
                         }
 
                     }

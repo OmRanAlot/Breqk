@@ -1,8 +1,8 @@
 /**
  * lockCycle.js
  * ------------
- * Pure derivation helpers for the Settings Change Lock re-arm cycle and the
- * Content Filter double-safe guard. These MIRROR the authoritative native math
+ * Pure derivation helpers for the Settings Change Lock and the Content Filter
+ * double-safe guard. These MIRROR the authoritative native math
  * (SettingsLockManager.computeCycle / ContentFilterGuard.getState) so the UI can
  * tick countdowns live between native refreshes — and so the math is unit-
  * testable in Jest without an emulator.
@@ -27,24 +27,22 @@ export const GUARD_STATES = {
 export const CF_INTERNAL_CONFIRM_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 /**
- * Where a scope sits in its lock/grace cycle at one instant.
+ * Where a scope sits in its lock at one instant.
  *
- * The cycle anchors on `baseLockUntilMs` (the stamped end of the FIRST lock)
- * and repeats [grace][duration] forever, so any instant reduces to a modulo.
+ * Locked while `nowMs < baseLockUntilMs`; unlocked forever after expiry.
+ * The scope stays editable until the next real edit triggers a new lock.
  *
  * @param {{
  *   nowMs: number,
  *   baseLockUntilMs: number,  // 0 = never locked
- *   durationMs: number,       // lock segment length (> 0)
- *   graceMs: number,          // grace segment length (0 = no re-arm)
+ *   durationMs: number,       // lock segment length (unused post-expiry, kept for compat)
+ *   graceMs: number,          // ignored — re-arm is removed
  * }} args
  * @returns {{ locked: boolean, lockUntilMs: number, inGrace: boolean, graceEndsAtMs: number }}
  */
 export function deriveLockCycle({
   nowMs,
   baseLockUntilMs,
-  durationMs,
-  graceMs,
 }) {
   if (!baseLockUntilMs || baseLockUntilMs <= 0) {
     return { locked: false, lockUntilMs: 0, inGrace: false, graceEndsAtMs: 0 };
@@ -57,29 +55,8 @@ export function deriveLockCycle({
       graceEndsAtMs: 0,
     };
   }
-  if (!graceMs || graceMs <= 0) {
-    // Re-arm disabled: expired means unlocked until the next edit.
-    return { locked: false, lockUntilMs: 0, inGrace: false, graceEndsAtMs: 0 };
-  }
-  const cycle = graceMs + durationMs;
-  const elapsed = nowMs - baseLockUntilMs;
-  const k = Math.floor(elapsed / cycle);
-  const pos = elapsed % cycle;
-  const cycleStart = baseLockUntilMs + k * cycle;
-  if (pos < graceMs) {
-    return {
-      locked: false,
-      lockUntilMs: 0,
-      inGrace: true,
-      graceEndsAtMs: cycleStart + graceMs,
-    };
-  }
-  return {
-    locked: true,
-    lockUntilMs: cycleStart + cycle,
-    inGrace: false,
-    graceEndsAtMs: 0,
-  };
+  // Lock expired — stays unlocked until the next edit.
+  return { locked: false, lockUntilMs: 0, inGrace: false, graceEndsAtMs: 0 };
 }
 
 /**

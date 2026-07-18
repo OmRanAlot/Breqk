@@ -411,12 +411,11 @@ public class ReelsInterventionService extends AccessibilityService {
         }
 
         // ── Mindful Viewing Coach: YouTube launch gate + X-minute re-fire ─────────
-        // Runs before any early-return branches below so a genuine launch into
-        // YouTube is always caught. Cheap: fast-exits for non-YouTube packages and
-        // irrelevant event types. All gating logic lives in YouTubeCoachGate.
-        if (coachGate != null) {
-            coachGate.onAccessibilityEvent(packageName, event);
-        }
+        // TEMP: coach disabled — revive later with BreakPrefs.isCoachEnabled + this
+        // forward. YouTube currently uses the delay overlay only.
+        // if (coachGate != null) {
+        //     coachGate.onAccessibilityEvent(packageName, event);
+        // }
 
         // --- App-switch detection (defense in depth for false-positive fix) ---
         // When the user is in Reels and a DIFFERENT app comes to foreground
