@@ -7,7 +7,8 @@
  * Mirrors the "Prevent deletion" pattern: flipping the toggle ON first opens a
  * confirmation modal explaining the commitment; turning it OFF is direct (so the
  * feature keeps the same easy-exit discretion as deletion prevention). When on,
- * a duration picker lets the user choose how long each scope stays locked.
+ * a duration picker lets the user choose how long each scope stays locked after
+ * an edit.
  *
  * This control is intentionally NOT gated by the lock and changing it does NOT
  * start a lock — so the user can always disable the feature.
@@ -24,6 +25,7 @@ import {
   Modal,
   TouchableOpacity,
 } from 'react-native';
+import InfoCircle from '../shared/InfoCircle';
 
 const DURATION_OPTIONS = [24, 48, 72, 168]; // hours
 const formatDuration = h => {
@@ -38,6 +40,7 @@ const formatDuration = h => {
  *   durationMs: number,
  *   onToggle: (value: boolean) => void,
  *   onPickDuration: (hours: number) => void,
+ *   locked?: boolean,
  * }} props
  */
 export default function SettingsLockSection({
@@ -68,7 +71,23 @@ export default function SettingsLockSection({
 
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionLabel}>Settings Change Lock</Text>
+      <View style={styles.sectionLabelRow}>
+        <Text style={styles.sectionLabel}>Settings Change Lock</Text>
+        <InfoCircle title="How the Settings Change Lock works">
+          <Text style={infoStyles.para}>
+            When this is on, changing a settings screen and leaving it makes
+            that screen read-only for your chosen duration (the lock timer).
+          </Text>
+          <Text style={infoStyles.para}>
+            Once the timer expires the screen is freely editable again — it only
+            re-locks after you actually make another change and leave.
+          </Text>
+          <Text style={infoStyles.para}>
+            Each scope is independent — the global settings and each managed app
+            lock on their own timers.
+          </Text>
+        </InfoCircle>
+      </View>
       <View style={styles.row}>
         <View style={styles.rowText}>
           <Text style={styles.toggleLabel}>Lock settings after changes</Text>
@@ -137,16 +156,20 @@ export default function SettingsLockSection({
             <Text style={styles.modalBody}>
               Whenever you change a screen and leave it, that screen becomes
               read-only for {formatDuration(currentHours || 24)} before you can
-              change it again. This adds a deliberate pause so you can’t
+              change it again. This adds a deliberate pause so you can't
               instantly loosen your own limits on impulse.
             </Text>
             <Text style={styles.modalBody}>
-              Each scope is separate: locking the global settings won’t lock an
-              app’s settings, and vice-versa.
+              Each scope is separate: locking the global settings won't lock an
+              app's settings, and vice-versa.
+            </Text>
+            <Text style={styles.modalBody}>
+              Once the timer expires the screen is freely editable again — it
+              only re-locks after you make another change and leave.
             </Text>
             <Text style={styles.modalWarn}>
               Important: once a screen is locked, this switch locks too — you
-              can’t turn the feature off until that screen’s timer ends. That’s
+              can't turn the feature off until that screen's timer ends. That's
               what makes it a real commitment.
             </Text>
             <View style={styles.modalButtons}>
@@ -173,14 +196,29 @@ export default function SettingsLockSection({
 }
 
 const INK = '#1A1A1A';
+
+// Shared paragraph style for the InfoCircle modal body.
+const infoStyles = StyleSheet.create({
+  para: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: '#525252',
+    marginBottom: 12,
+  },
+});
+
 const styles = StyleSheet.create({
   section: { marginTop: 8, marginBottom: 28 },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
   sectionLabel: {
     fontSize: 13,
     fontWeight: '700',
     color: INK,
     letterSpacing: 0.3,
-    marginBottom: 12,
     textTransform: 'uppercase',
   },
   row: {

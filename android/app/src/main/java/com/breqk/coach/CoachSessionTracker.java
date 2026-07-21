@@ -80,21 +80,36 @@ public final class CoachSessionTracker {
 
     /**
      * Whether the coach overlay should be shown right now: the feature is enabled
-     * and it has not already been shown during the current session.
+     * and it hasn't been shown within the last {@link BreakPrefs#COACH_RESHOW_COOLDOWN_MS}.
+     *
+     * Previously this gated on "once per session" ({@code coach_shown_for_session}),
+     * which meant reopening YouTube within the 30-minute session window never
+     * re-showed the coach — surprising for a "pause me every time" tool. Decision:
+     * fire on every genuine relaunch (caller's relaunch-gap detector), with only a
+     * short cooldown here to prevent a single launch's multiple WINDOW_STATE_CHANGED
+     * events from double-showing the overlay.
      */
     public boolean shouldShowCoach(Context context) {
         boolean enabled = BreakPrefs.isCoachEnabled(context);
-        boolean alreadyShown = prefs.getBoolean(BreakPrefs.KEY_COACH_SHOWN_FOR_SESSION, false);
-        boolean show = enabled && !alreadyShown;
+        long lastShownAt = prefs.getLong(BreakPrefs.KEY_COACH_LAST_SHOWN_AT, 0);
+        long sinceLastShown = System.currentTimeMillis() - lastShownAt;
+        boolean withinCooldown = lastShownAt > 0 && sinceLastShown < BreakPrefs.COACH_RESHOW_COOLDOWN_MS;
+        boolean show = enabled && !withinCooldown;
         Log.d(TAG, "[GATE] shouldShowCoach enabled=" + enabled
-                + " alreadyShown=" + alreadyShown + " → " + show);
+                + " withinCooldown=" + withinCooldown
+                + " sinceLastShownMs=" + (lastShownAt == 0 ? "n/a" : sinceLastShown)
+                + " → " + show);
         return show;
     }
 
-    /** Marks the coach as having run for this session (show-once enforcement). */
+    /** Marks the coach as having actually shown now — starts the re-show cooldown. */
     public void markCoachShown() {
-        prefs.edit().putBoolean(BreakPrefs.KEY_COACH_SHOWN_FOR_SESSION, true).apply();
-        Log.d(TAG, "[GATE] Coach marked shown for current session");
+        long now = System.currentTimeMillis();
+        prefs.edit()
+                .putBoolean(BreakPrefs.KEY_COACH_SHOWN_FOR_SESSION, true)
+                .putLong(BreakPrefs.KEY_COACH_LAST_SHOWN_AT, now)
+                .apply();
+        Log.d(TAG, "[GATE] Coach shown at " + now + " — re-show cooldown armed");
     }
 
     /** Increments the per-session video counter (called on player transitions). */

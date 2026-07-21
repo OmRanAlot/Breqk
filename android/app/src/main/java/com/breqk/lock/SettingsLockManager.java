@@ -21,14 +21,17 @@ import java.util.Iterator;
  *     package name (e.g. {@code "com.instagram.android"}).
  *   - {@link #startLock(Context, String)} stamps {@code lockUntil[scope] = now + duration}.
  *     The JS layer calls this when the user edits a scope and leaves the screen.
- *   - A scope is LOCKED iff {@code enabled && now < lockUntil[scope]}. While locked
- *     the scope's screen is read-only and shows a countdown.
+ *   - A scope is LOCKED iff {@code enabled && now < effectiveLockUntil(scope)}. While
+ *     locked the scope's screen is read-only and shows a countdown.
  *   - Scopes are INDEPENDENT: locking "global" never affects a per-app scope, and
  *     vice-versa. One toggle ({@code enabled}) governs whether locking happens at all.
  *
+ * Once a lock expires the scope stays unlocked until the user makes another change
+ * and leaves the screen — there is no auto re-arm cycle.
+ *
  * There is no AlarmManager / notification: the lock is a pure read-time check, so
  * expiry needs no wakeup — the next time the screen reads {@link #isLocked} after
- * the deadline, it is simply unlocked.
+ * the deadline, it is simply unlocked (or re-armed, per the cycle math).
  *
  * Threat model: resists IMPULSIVE in-app edits only. Like the rest of the app it
  * does not defend against {@code adb shell pm clear} or a forward clock change.
@@ -85,6 +88,74 @@ public final class SettingsLockManager {
         return ms;
     }
 
+    // ── Grace window (legacy / no-op) ─────────────────────────────────────────
+
+    /**
+     * Always returns 0 — re-arm is removed. Kept so the bridge method
+     * {@code setSettingsLockGrace} can remain a safe no-op for any cached JS.
+     */
+    public static long getGraceMs(Context context) {
+        return 0L;
+    }
+
+    /** No-op. Re-arm is removed; grace is always 0. */
+    public static void setGraceMs(Context context, long ms) {
+        // intentionally empty
+    }
+
+    // ── Lock state derivation ──────────────────────────────────────────────────
+
+    /**
+     * Snapshot of where a scope sits in its lock at one instant.
+     * Derived purely from the stamped base timestamp — nothing here is stored.
+     */
+    public static final class CycleState {
+        /** Scope is currently read-only. */
+        public final boolean locked;
+        /** Epoch-ms when the current lock segment ends (0 when not locked). */
+        public final long lockUntil;
+        /** Always false — re-arm is removed. */
+        public final boolean inGrace;
+        /** Always 0 — re-arm is removed. */
+        public final long graceEndsAt;
+
+        CycleState(boolean locked, long lockUntil, boolean inGrace, long graceEndsAt) {
+            this.locked = locked;
+            this.lockUntil = lockUntil;
+            this.inGrace = inGrace;
+            this.graceEndsAt = graceEndsAt;
+        }
+    }
+
+    /**
+     * Lock state derivation. Locked while {@code now < base}; unlocked forever
+     * after expiry — the scope stays editable until the next real edit.
+     *
+     * @param now        current epoch ms
+     * @param base       stamped lockUntil for the scope (0 = never locked)
+     * @param durationMs unused (kept for call-site compatibility)
+     * @param graceMs    unused (re-arm is removed; always treated as 0)
+     */
+    public static CycleState computeCycle(long now, long base, long durationMs, long graceMs) {
+        if (base <= 0) {
+            return new CycleState(false, 0L, false, 0L);
+        }
+        if (now < base) {
+            return new CycleState(true, base, false, 0L);
+        }
+        // Lock expired — stays unlocked until the next edit.
+        return new CycleState(false, 0L, false, 0L);
+    }
+
+    /** Cycle state for {@code scope} right now (feature toggle NOT considered). */
+    public static CycleState getCycleState(Context context, String scope) {
+        return computeCycle(
+                System.currentTimeMillis(),
+                getLockUntil(context, scope),
+                getDurationMs(context),
+                getGraceMs(context));
+    }
+
     // ── Per-scope lock state ────────────────────────────────────────────────────
 
     /** Epoch-ms instant when {@code scope} unlocks, or 0 if it has no active lock. */
@@ -98,25 +169,29 @@ public final class SettingsLockManager {
         }
     }
 
-    /** True iff the feature is on AND {@code scope} is still within its lock window. */
+    /**
+     * True iff the feature is on AND {@code scope} is within a lock segment
+     * (the first stamped lock OR a re-armed one from the grace cycle).
+     */
     public static boolean isLocked(Context context, String scope) {
         if (!isEnabled(context)) return false;
-        return System.currentTimeMillis() < getLockUntil(context, scope);
+        return getCycleState(context, scope).locked;
     }
 
     /**
      * True iff the feature is on AND ANY scope (global or any app) is still locked.
-     * Used to keep the feature toggle itself read-only while a lock is active, so the
-     * user can't disable the feature to shortcut a wait on any screen.
+     * Used to keep the feature toggle itself read-only while a lock is active.
      */
     public static boolean isAnyLocked(Context context) {
         if (!isEnabled(context)) return false;
         long now = System.currentTimeMillis();
+        long duration = getDurationMs(context);
         try {
             JSONObject map = readMap(context);
             Iterator<String> keys = map.keys();
             while (keys.hasNext()) {
-                if (now < map.optLong(keys.next(), 0L)) return true;
+                long base = map.optLong(keys.next(), 0L);
+                if (computeCycle(now, base, duration, 0L).locked) return true;
             }
         } catch (JSONException e) {
             Log.w(TAG, "isAnyLocked parse failed: " + e.getMessage());
@@ -149,19 +224,25 @@ public final class SettingsLockManager {
 
     /**
      * State for ONE scope as a flat JSON string for the bridge:
-     * {@code {"enabled":bool,"locked":bool,"lockUntil":epochMs,"durationMs":ms}}.
+     * {@code {"enabled":bool,"locked":bool,"anyLocked":bool,"lockUntil":epochMs,
+     *   "baseLockUntil":epochMs,"durationMs":ms,"graceMs":0,"inGrace":false,
+     *   "graceEndsAt":0}}.
      */
     public static String getStateJson(Context context, String scope) {
         boolean enabled = isEnabled(context);
-        long until = getLockUntil(context, scope);
-        boolean locked = enabled && System.currentTimeMillis() < until;
+        long base = getLockUntil(context, scope);
+        CycleState cycle = getCycleState(context, scope);
         JSONObject out = new JSONObject();
         try {
             out.put("enabled", enabled);
-            out.put("locked", locked);
+            out.put("locked", enabled && cycle.locked);
             out.put("anyLocked", isAnyLocked(context));
-            out.put("lockUntil", until);
+            out.put("lockUntil", cycle.lockUntil);
+            out.put("baseLockUntil", base);
             out.put("durationMs", getDurationMs(context));
+            out.put("graceMs", 0);
+            out.put("inGrace", false);
+            out.put("graceEndsAt", 0);
         } catch (JSONException e) {
             Log.w(TAG, "getStateJson failed: " + e.getMessage());
         }

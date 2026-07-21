@@ -284,4 +284,30 @@ export const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '500',
   },
+
+  // ── Sticky Save bar ─────────────────────────────────────────────────────────
+  saveBar: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    backgroundColor: L.bg,
+    borderTopWidth: 1,
+    borderTopColor: L.border,
+  },
+  saveButton: {
+    backgroundColor: L.charcoal,
+    borderRadius: 9999,
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  saveButtonDisabled: {
+    backgroundColor: '#E8E8E8',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  saveButtonTextDisabled: {
+    color: L.muted,
+  },
 });

@@ -101,6 +101,68 @@ export const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
+  // Toggle label + InfoCircle side by side (double-safe disable row).
+  labelWithInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  // Paragraphs inside InfoCircle modals.
+  infoPara: {
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: '#525252',
+    marginBottom: 12,
+  },
+
+  // ── Content-filter guard status panel ─────────────────────────────────────
+  guardStatusText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: L.muted,
+  },
+  guardStatusWarn: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#9a3412',
+    backgroundColor: '#fff4ed',
+    borderRadius: 10,
+    padding: 12,
+    fontWeight: '500',
+  },
+  guardStatusStrong: {
+    fontWeight: '700',
+    color: L.charcoal,
+  },
+  guardButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  guardConfirmButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: '#9a3412',
+    marginRight: 10,
+  },
+  guardConfirmText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  guardCancelButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: L.charcoal,
+  },
+  guardCancelText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
   // ── Deletion-prevention info modal ────────────────────────────────────────
   infoModalOverlay: {
     flex: 1,
@@ -209,6 +271,12 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 12,
     marginBottom: 8,
+  },
+  // Applied to any control group frozen because a non-default mode owns the
+  // settings (see shared/useDefaultModeGate). Greys the group out so the
+  // read-only state is visible, not merely unresponsive.
+  sectionDisabled: {
+    opacity: 0.4,
   },
   stepperGroup: {
     flexDirection: 'row',

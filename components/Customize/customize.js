@@ -1,4 +1,4 @@
-/**
+﻿/**
  * customize.js — Customize Screen (Break light design system)
  * ─────────────────────────────────────────────────────────────────────────────
  * Settings screen layout:
@@ -24,24 +24,26 @@ import {
   TouchableOpacity,
   ScrollView,
   NativeModules,
-  Modal,
   Animated,
   AppState,
   Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
-import BlockerInterstitial from '../BlockerInterstitial/BlockerInterstitial';
 import useDebouncedSaver from './useDebouncedSaver';
 import {
   deriveBudgetStatus,
   inferWindowStartMs,
 } from '../shared/scrollBudgetStatus';
 import useSettingsLock from './useSettingsLock';
+import useContentFilterGuard from './useContentFilterGuard';
 import SettingsLockGate from './SettingsLockGate';
 import SettingsLockSection from './SettingsLockSection';
+import useDefaultModeGate from '../shared/useDefaultModeGate';
+import ModeGateBanner from '../shared/ModeGateBanner';
+import InfoCircle from '../shared/InfoCircle';
+import { formatRemaining, GUARD_STATES } from '../shared/lockCycle';
 import ScrollBudgetSection from './ScrollBudgetSection';
-import InterceptMessageSection from './InterceptMessageSection';
 import DeletionInfoModal from './DeletionInfoModal';
 import { styles, L } from './customize.styles';
 
@@ -73,6 +75,14 @@ const BackIcon = ({ color, size }) => (
 const Customize = ({ navigation }) => {
   const insets = useSafeAreaInsets();
 
+  // ── Default-mode gate ─────────────────────────────────────────────────────
+  // Base settings belong to Default mode. While any other mode is active it owns
+  // the app's behaviour, so editing the base underneath would be a silent no-op —
+  // the controls below go read-only and the banner points the user at the fix.
+  // Native rejects these writes independently (BreakPrefs.isBaseSettingsEditable),
+  // so this is UX, not the enforcement.
+  const modeGate = useDefaultModeGate(navigation);
+
   // ── Browser content filter state ─────────────────────────────────────────
   const [contentFilterEnabled, setContentFilterEnabled] = useState(false);
   const [accessibilityServiceActive, setAccessibilityServiceActive] =
@@ -91,16 +101,6 @@ const Customize = ({ navigation }) => {
   const [scrollWindow, setScrollWindow] = useState(60);
   const [budgetStatus, setBudgetStatus] = useState(null);
 
-  // ── Intercept message + delay ─────────────────────────────────────────────
-  const [interceptMessage, setInterceptMessage] = useState(
-    'Is this intentional?',
-  );
-  const [pauseDuration, setPauseDuration] = useState(5);
-  const [sliderValue, setSliderValue] = useState(5);
-
-  // ── Preview modal ─────────────────────────────────────────────────────────
-  const [previewVisible, setPreviewVisible] = useState(false);
-
   // ── "Saved" toast ─────────────────────────────────────────────────────────
   // Two states:
   //   - "Saving…"   — shown while a debounced write is pending (opacity held at 1)
@@ -114,6 +114,11 @@ const Customize = ({ navigation }) => {
   // if the feature is enabled. See useSettingsLock.
   const settingsLock = useSettingsLock('global', navigation);
   const { markDirty: markSettingsDirty } = settingsLock;
+
+  // Content-filter double-safe guard: opt-in two-step disable for the browser
+  // content filter (disable → wait a full lock duration → confirm window →
+  // disable again). See useContentFilterGuard / ContentFilterGuard.java.
+  const cfGuard = useContentFilterGuard(navigation);
 
   // Called every time the user taps a toggle that gets scheduled.
   // Keeps the pill visible ("Saving…") until the commit fires.
@@ -187,26 +192,18 @@ const Customize = ({ navigation }) => {
         SettingsModule.getScrollBudget((allowance, window) => {
           setScrollAllowance(allowance);
           setScrollWindow(window);
-          VPNModule.setScrollBudget(allowance, window).catch(e =>
-            console.warn('[Customize] setScrollBudget failed:', e),
-          );
+          // Re-push the saved budget to the live monitor. Skipped while a mode
+          // owns the settings: native rejects base writes then (MODE_ACTIVE), and
+          // this is only a redundant re-sync of a value we just read back.
+          if (modeGate.isEditable) {
+            VPNModule.setScrollBudget(allowance, window).catch(e =>
+              console.warn('[Customize] setScrollBudget failed:', e),
+            );
+          }
           resolve();
         });
       });
       console.log('[Customize] scroll budget loaded');
-
-      // Load intercept message from native
-      SettingsModule.getDelayMessage(message => {
-        setInterceptMessage(message);
-        console.log('[Customize] delay_message=', message);
-      });
-
-      // Load pause duration from native
-      SettingsModule.getDelayTime(seconds => {
-        setPauseDuration(seconds);
-        setSliderValue(seconds);
-        console.log('[Customize] delay_time_seconds=', seconds);
-      });
 
       // Load content filter state
       SettingsModule.getContentFilterEnabled(enabled => {
@@ -226,7 +223,7 @@ const Customize = ({ navigation }) => {
     } catch (e) {
       console.warn('[Customize] load settings error:', e);
     }
-  }, []);
+  }, [modeGate.isEditable]);
 
   // Load on mount
   useEffect(() => {
@@ -330,41 +327,26 @@ const Customize = ({ navigation }) => {
     return () => clearInterval(interval);
   }, []);
 
-  // ── Intercept message + delay handlers ───────────────────────────────────
-
-  const handleSliderChange = value => setSliderValue(Math.round(value));
-  const handleSliderComplete = async value => {
-    const rounded = Math.round(value);
-    setPauseDuration(rounded);
-    setSliderValue(rounded);
-    console.log('[Customize] pause duration →', rounded);
-    try {
-      await VPNModule.setDelayTime(rounded);
-      showSaved();
-    } catch (e) {
-      console.warn('[Customize] setDelayTime error:', e);
-    }
-  };
-
-  const handleMessageSubmit = async () => {
-    console.log('[Customize] saving intercept message:', interceptMessage);
-    try {
-      await VPNModule.setDelayMessage(interceptMessage);
-      showSaved();
-    } catch (e) {
-      console.warn('[Customize] setDelayMessage error:', e);
-    }
-  };
-
   // ── Content filter handler ────────────────────────────────────────────────
 
   const handleContentFilterToggle = useCallback(
     async value => {
+      // Double-safe guard on + turning OFF → this tap is disable #1 of two.
+      // The filter STAYS ACTIVE; a full lock-duration wait starts, then a
+      // confirm window in which disable #2 actually turns it off.
+      if (!value && cfGuard.doubleSafeEnabled) {
+        console.log('[Customize] content_filter disable → routed to guard');
+        const ok = await cfGuard.requestDisable();
+        if (ok) showSaved();
+        return;
+      }
       setContentFilterEnabled(value);
       console.log('[Customize] content_filter toggled →', value);
       try {
         await SettingsModule.saveContentFilterEnabled(value);
         showSaved();
+        // Re-enabling also clears any pending two-step disable natively.
+        cfGuard.refresh();
         // After enabling, re-check whether the accessibility service is active
         if (value) {
           SettingsModule.isContentFilterServiceEnabled(active => {
@@ -375,7 +357,18 @@ const Customize = ({ navigation }) => {
         console.warn('[Customize] saveContentFilterEnabled error:', e);
       }
     },
-    [showSaved],
+    [showSaved, cfGuard],
+  );
+
+  // Opt-in/out of the double-safe guard. Turning it OFF is refused natively
+  // while a pending disable is in flight (that would shortcut the wait).
+  const handleDoubleSafeToggle = useCallback(
+    async value => {
+      console.log('[Customize] cf double-safe toggled →', value);
+      const ok = await cfGuard.setDoubleSafe(value);
+      if (ok) showSaved();
+    },
+    [cfGuard, showSaved],
   );
 
   // Persist the deletion-prevention flag. Extracted so both the confirm-modal
@@ -448,6 +441,20 @@ const Customize = ({ navigation }) => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {/* ── Default-mode gate: a mode owns these settings ─────────────
+            Shown above the settings-lock gate because the two are independent —
+            a mode can be active while the scope is also lock-timed, and the mode
+            is the one the user can act on right now. */}
+        {!modeGate.isEditable && (
+          <ModeGateBanner
+            modeName={modeGate.activeModeName}
+            modeColor={modeGate.activeModeColor}
+            modeIcon={modeGate.activeModeIcon}
+            onSwitchToDefault={modeGate.switchToDefault}
+            scopeLabel="these settings"
+          />
+        )}
+
         {/* ── Settings Change Lock: read-only gate while the global scope is locked ── */}
         {settingsLock.locked ? (
           <SettingsLockGate remainingMs={settingsLock.remainingMs} />
@@ -459,6 +466,7 @@ const Customize = ({ navigation }) => {
               budgetStatus={budgetStatus}
               adjustAllowance={adjustAllowance}
               adjustWindow={adjustWindow}
+              disabled={!modeGate.isEditable}
             />
 
             {/* <InterceptMessageSection
@@ -474,7 +482,6 @@ const Customize = ({ navigation }) => {
                 setPreviewVisible(true);
               }}
             /> */}
-
             {/* ── Browser Content Filter ───────────────────────────────── */}
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>Browser Safety</Text>
@@ -494,6 +501,53 @@ const Customize = ({ navigation }) => {
                   trackColor={{ false: L.border, true: L.charcoal }}
                   thumbColor="#FFFFFF"
                   accessibilityLabel="Browser content filter"
+                />
+              </View>
+
+              {/* Double-safe disable: opt-in second barrier on the filter. */}
+              <View style={styles.toggleRow}>
+                <View style={styles.toggleLabelGroup}>
+                  <View style={styles.labelWithInfo}>
+                    <Text style={styles.toggleLabel}>Double-safe disable</Text>
+                    <InfoCircle title="How Double-safe disable works">
+                      <Text style={styles.infoPara}>
+                        With this on, turning the content filter off takes two
+                        deliberate steps instead of one tap.
+                      </Text>
+                      <Text style={styles.infoPara}>
+                        Step 1 — flip the filter off once. Nothing turns off
+                        yet: the filter keeps protecting you while a full lock
+                        timer runs (your Settings Change Lock duration).
+                      </Text>
+                      <Text style={styles.infoPara}>
+                        Step 2 — when the timer ends, a short confirm window
+                        opens. Confirm the disable there and the filter actually
+                        turns off.
+                      </Text>
+                      <Text style={styles.infoPara}>
+                        If you let the confirm window pass without confirming,
+                        the pending disable is discarded and full protection
+                        re-instates automatically. The confirm window is 4 hours.
+                      </Text>
+                      <Text style={styles.infoPara}>
+                        You can cancel a pending disable at any time, and
+                        re-enabling the filter is always instant. This toggle
+                        itself can’t be turned off while a disable is pending.
+                      </Text>
+                    </InfoCircle>
+                  </View>
+                  <Text style={styles.toggleCaption}>
+                    Turning the filter off requires two waits: one full lock
+                    timer, then a final confirmation. Protection re-arms itself
+                    if you don’t follow through.
+                  </Text>
+                </View>
+                <Switch
+                  value={cfGuard.doubleSafeEnabled}
+                  onValueChange={handleDoubleSafeToggle}
+                  trackColor={{ false: L.border, true: L.charcoal }}
+                  thumbColor="#FFFFFF"
+                  accessibilityLabel="Double-safe disable for content filter"
                 />
               </View>
 
@@ -546,6 +600,71 @@ const Customize = ({ navigation }) => {
           </>
         )}
 
+        {/* ── Content-filter guard status ──────────────────────────────
+            Rendered OUTSIDE the SettingsLockGate on purpose: if the global
+            scope re-locks while a two-step disable is waiting, the user must
+            still be able to see the countdown and confirm/cancel — otherwise
+            the confirm window could never be reached. */}
+        {(cfGuard.state === GUARD_STATES.PENDING_WAIT ||
+          cfGuard.state === GUARD_STATES.CONFIRM_WINDOW) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Content Filter — Pending</Text>
+
+            {cfGuard.state === GUARD_STATES.PENDING_WAIT ? (
+              <Text style={styles.guardStatusText}>
+                First barrier removed. The filter is still protecting you — the
+                final disable unlocks in{' '}
+                <Text style={styles.guardStatusStrong}>
+                  {formatRemaining(cfGuard.waitRemainingMs)}
+                </Text>
+                .
+              </Text>
+            ) : (
+              <Text style={styles.guardStatusWarn}>
+                Confirm window open: disable the filter for good within{' '}
+                <Text style={styles.guardStatusStrong}>
+                  {formatRemaining(cfGuard.confirmRemainingMs)}
+                </Text>{' '}
+                — or protection re-arms automatically.
+              </Text>
+            )}
+
+            <View style={styles.guardButtonRow}>
+              {cfGuard.state === GUARD_STATES.CONFIRM_WINDOW && (
+                <TouchableOpacity
+                  style={styles.guardConfirmButton}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm content filter disable"
+                  onPress={async () => {
+                    console.log('[Customize] cf guard confirm tapped');
+                    const ok = await cfGuard.confirmDisable();
+                    if (ok) {
+                      setContentFilterEnabled(false);
+                      showSaved();
+                    }
+                  }}
+                >
+                  <Text style={styles.guardConfirmText}>Disable filter</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.guardCancelButton}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel pending content filter disable"
+                onPress={async () => {
+                  console.log('[Customize] cf guard cancel tapped');
+                  const ok = await cfGuard.cancelDisable();
+                  if (ok) showSaved();
+                }}
+              >
+                <Text style={styles.guardCancelText}>Keep protection</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* ── Deletion Prevention ──────────────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Deletion Prevention</Text>
@@ -580,26 +699,6 @@ const Customize = ({ navigation }) => {
       >
         <Text style={styles.savedToastText}>{savedLabel}</Text>
       </Animated.View>
-
-      {/* ── Preview modal ────────────────────────────────────────────── */}
-      <Modal
-        visible={previewVisible}
-        transparent
-        animationType="none"
-        onRequestClose={() => setPreviewVisible(false)}
-      >
-        <BlockerInterstitial
-          duration={pauseDuration}
-          onComplete={() => {
-            console.log('[Customize] preview completed');
-            setPreviewVisible(false);
-          }}
-          onForceClose={() => {
-            console.log('[Customize] preview force-closed');
-            setPreviewVisible(false);
-          }}
-        />
-      </Modal>
 
       {/* ── Deletion-prevention info modal ───────────────────────────── */}
       <DeletionInfoModal

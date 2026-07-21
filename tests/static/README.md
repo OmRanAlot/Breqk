@@ -7,6 +7,16 @@ consistency, prefs key hygiene, code structure, and a static security
 surface. It exists alongside (not instead of) Jest/JUnit/Detox.
 
 ## Quick start
+
+To run **all** project tests (Jest + static), use the master runner from the project root:
+
+```bash
+python tests/run_all.py          # both suites
+python tests/run_all.py --static # static only
+pwsh   tests/run_tests.ps1       # Windows, both suites
+```
+
+To run this static suite in isolation:
 - **Windows:**  `pwsh tests/static/run_tests.ps1`
 - **Bash:**     `python tests/static/run_all.py`
 - **Slow tier** (toolchain + adb): add `--slow`
@@ -72,7 +82,8 @@ sections in order:
   3. Define your CONFIG constants (paths from `_paths`, allowlists).
   4. Implement main(): banner print → scan → per-finding prints → summary →
      `result(PASS|WARN|FAIL|SKIP, "…")`.
-  5. Run `pwsh tests/static/run_tests.ps1 --filter <short_name> --verbose`
+  5. Run `pwsh tests/run_tests.ps1 --static --filter <short_name> --verbose`
+     (or `pwsh tests/static/run_tests.ps1 --filter <short_name> --verbose`)
      to see the trace.
 
 ## How to allowlist a false positive

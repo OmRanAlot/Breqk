@@ -161,9 +161,33 @@ public final class BreakPrefs {
     public static final String KEY_COACH_OVERRIDES_TODAY = "coach_overrides_today";
     /** "yyyy-MM-dd" the override counter belongs to; rolls the counter on change. */
     public static final String KEY_COACH_OVERRIDES_DATE = "coach_overrides_date";
+    /** True while the coach overlay is currently attached (read across processes). */
+    public static final String KEY_COACH_OVERLAY_VISIBLE = "coach_overlay_visible";
+    /** Epoch ms the coach overlay was last actually shown — drives the re-show cooldown. */
+    public static final String KEY_COACH_LAST_SHOWN_AT = "coach_last_shown_at";
 
     /** A gap this long with YouTube not foregrounded starts a fresh session. */
     public static final long COACH_SESSION_GAP_MS = 30L * 60 * 1000;
+    /**
+     * Minimum gap since YouTube was last foreground for a WINDOW_STATE_CHANGED event
+     * to count as a genuine (re)launch rather than YouTube's own internal window churn.
+     * YouTube's internal transitions fire back-to-back within a few hundred ms; a real
+     * return from elsewhere (Home, another app, screen off) always exceeds this.
+     */
+    public static final long COACH_RELAUNCH_GAP_MS = 1500L;
+    /**
+     * Minimum time between two coach overlay *shows*, so a single launch that emits
+     * several WINDOW_STATE_CHANGED events cannot double-fire the overlay. Independent
+     * of {@link #COACH_RELAUNCH_GAP_MS}, which decides whether an event is a launch.
+     */
+    public static final long COACH_RESHOW_COOLDOWN_MS = 60_000L;
+    /**
+     * Grace window AppUsageMonitor waits, once YouTube is foreground and blocked, for
+     * the coach to actually show before falling back to the ordinary delay overlay.
+     * Defense in depth: guarantees YouTube is never left with zero interception if the
+     * coach fails to fire.
+     */
+    public static final long COACH_FALLBACK_GRACE_MS = 4000L;
     /** Default friction level when the user has not chosen one. */
     public static final String DEFAULT_COACH_MODE = "balanced";
 
@@ -231,6 +255,34 @@ public final class BreakPrefs {
     public static final long MIN_SETTINGS_LOCK_MS = 24L * 60 * 60 * 1000;
     /** Maximum lock length the duration picker allows: 7 days (1 week). */
     public static final long MAX_SETTINGS_LOCK_MS = 7L * 24 * 60 * 60 * 1000;
+
+    // ── Settings Lock grace (legacy, unused) ──────────────────────────────────
+    // Re-arm is removed. The key is kept for SharedPreferences compatibility;
+    // SettingsLockManager.getGraceMs always returns 0 regardless of the stored
+    // value. DEFAULT is 0 so any fresh install or cleared storage starts correct.
+    public static final String KEY_SETTINGS_LOCK_GRACE_MS = "settings_lock_grace_ms";
+
+    /** Always 0 — re-arm is removed. */
+    public static final long DEFAULT_SETTINGS_LOCK_GRACE_MS = 0L;
+    /** Unused — kept to avoid breaking any residual references. */
+    public static final long MAX_SETTINGS_LOCK_GRACE_MS = 24L * 60 * 60 * 1000;
+
+    // ── Content Filter double-safe disable ─────────────────────────────────────
+    // Opt-in second barrier on the browser content filter. When enabled, turning
+    // the filter OFF takes two steps separated by a full settings-lock duration:
+    //   disable #1 → filter STAYS ON, wait (lock duration) → confirm window →
+    //   disable #2 actually flips content_filter_enabled off.
+    // If the confirm window passes with no action, the pending disable is
+    // discarded and the filter stays protected. The confirm window is always
+    // CF_INTERNAL_CONFIRM_WINDOW_MS (4h). See com.Break.lock.ContentFilterGuard.
+    // CRITICAL: never wipe these keys in a "reset to defaults" routine — doing so
+    // would shortcut (or spuriously restart) an active wait.
+    public static final String KEY_CF_DOUBLE_SAFE_ENABLED = "content_filter_double_safe_enabled";
+    public static final String KEY_CF_PENDING_DISABLE_AT = "content_filter_pending_disable_at";
+    public static final String KEY_CF_PENDING_READY_AT = "content_filter_pending_ready_at";
+
+    /** Confirm window when the grace setting is "None": 4 hours. */
+    public static final long CF_INTERNAL_CONFIRM_WINDOW_MS = 4L * 60 * 60 * 1000;
 
     // ── Default values ───────────────────────────────────────────────────────
     public static final int DEFAULT_DELAY_TIME_SECONDS = 15;
@@ -384,10 +436,14 @@ public final class BreakPrefs {
         return Math.max(5, Math.min(120, seconds));
     }
 
-    /** Global default countdown from Customize → Forced Pause Duration. */
+    /**
+     * Global default countdown from Customize → Forced Pause Duration, with the
+     * active mode's {@code setting_overrides} layered on top. A mode that sets
+     * delay_time_seconds (e.g. Bedtime's 20s) wins over the base pref.
+     */
     public static int getGlobalDelaySecs(Context context) {
         return clampDelaySecs(
-                get(context).getInt(KEY_DELAY_TIME_SECONDS, DEFAULT_DELAY_TIME_SECONDS));
+                getEffectiveSettingInt(context, KEY_DELAY_TIME_SECONDS, DEFAULT_DELAY_TIME_SECONDS));
     }
 
     /**
@@ -398,10 +454,48 @@ public final class BreakPrefs {
     }
 
     /**
-     * Per-app delay_secs when configured; otherwise {@link #getGlobalDelaySecs}.
-     * Used by the delay overlay countdown ring and Continue button timer.
+     * Effective re-show interval (minutes) for one app: per-app
+     * {@code popup_delay_min} when configured, otherwise the global
+     * {@link #KEY_POPUP_DELAY_MINUTES}. May return the once-per-open sentinel
+     * ({@code Integer.MAX_VALUE}); callers normalize via
+     * {@code PopupDecision.normalizeDelayMinutes()}.
+     *
+     * Mirrors AppUsageMonitor's private per-app lookup so the YouTube typing
+     * coach (ReelsInterventionService) re-fires on the SAME "Every X min"
+     * setting the delay overlay uses — one adjustable cadence for both styles.
+     */
+    public static int getEffectivePopupDelayMinutes(Context context, String packageName) {
+        // Active mode's setting_overrides win outright — same precedence as
+        // getEffectiveDelaySecs.
+        Integer modeOverride = getModeSettingOverrideInt(context, KEY_POPUP_DELAY_MINUTES);
+        if (modeOverride != null) {
+            return modeOverride;
+        }
+        JSONObject entry = getAppInterceptSettings(context, packageName);
+        if (entry.has("popup_delay_min")) {
+            return entry.optInt("popup_delay_min", DEFAULT_POPUP_DELAY_MINUTES);
+        }
+        return get(context).getInt(KEY_POPUP_DELAY_MINUTES, DEFAULT_POPUP_DELAY_MINUTES);
+    }
+
+    /**
+     * Effective overlay countdown for one app.
+     *
+     * Resolution: active mode setting_override → per-app delay_secs → global base.
+     * The active mode is the OUTERMOST layer by design: while a mode is on it
+     * "takes over", so a mode that pins delay_time_seconds overrides even a
+     * per-app override the user set in AppDetail. Base settings are only editable
+     * in Default mode anyway (see {@link #isBaseSettingsEditable}), so a per-app
+     * value can never have been set while the mode was active.
      */
     public static int getEffectiveDelaySecs(Context context, String packageName) {
+        // 1. Active mode's setting_overrides win outright.
+        Integer modeOverride = getModeSettingOverrideInt(context, KEY_DELAY_TIME_SECONDS);
+        if (modeOverride != null) {
+            return clampDelaySecs(modeOverride);
+        }
+
+        // 2. Per-app override from AppDetail's intercept customization.
         try {
             JSONObject all = getInterceptSettingsJson(context);
             if (all.has(packageName)) {
@@ -414,6 +508,8 @@ public final class BreakPrefs {
             Log.e(TAG, "[INTERCEPT_SETTINGS] getEffectiveDelaySecs pkg=" + packageName
                     + ": " + e.getMessage());
         }
+
+        // 3. Global base pref.
         return getGlobalDelaySecs(context);
     }
 
@@ -483,36 +579,104 @@ public final class BreakPrefs {
     }
 
     /**
+     * Returns the active mode's override for a global int setting, or null when
+     * no mode is active or the active mode does not override this key. Null means
+     * "fall through to the next layer" — callers decide what that layer is.
+     *
+     * This is the single place the setting_overrides JSON is walked; every
+     * effective-value getter routes through it so mode precedence stays uniform.
+     */
+    public static Integer getModeSettingOverrideInt(Context context, String settingKey) {
+        SharedPreferences prefs = get(context);
+        String activeMode = prefs.getString(KEY_ACTIVE_MODE, "");
+        if (activeMode == null || activeMode.isEmpty()) {
+            return null;
+        }
+        try {
+            String modesJson = prefs.getString(KEY_MODES, "");
+            if (modesJson == null || modesJson.isEmpty()) {
+                return null;
+            }
+            JSONObject modes = new JSONObject(modesJson);
+            if (!modes.has(activeMode)) {
+                return null;
+            }
+            JSONObject mode = modes.getJSONObject(activeMode);
+            if (!mode.has("setting_overrides")) {
+                return null;
+            }
+            JSONObject overrides = mode.getJSONObject("setting_overrides");
+            if (!overrides.has(settingKey)) {
+                return null;
+            }
+            int value = overrides.getInt(settingKey);
+            Log.d(TAG, "[POLICY] mode setting override key=" + settingKey
+                    + " → " + value + " (from mode '" + activeMode + "')");
+            return value;
+        } catch (JSONException e) {
+            Log.w(TAG, "[POLICY] Error reading mode setting override: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Returns the effective value of a global setting, considering mode overrides.
      * Resolution: active mode setting_overrides → base SharedPreferences →
      * defaultValue.
      */
     public static int getEffectiveSettingInt(Context context, String settingKey, int defaultValue) {
-        SharedPreferences prefs = get(context);
-        String activeMode = prefs.getString(KEY_ACTIVE_MODE, "");
-        if (activeMode != null && !activeMode.isEmpty()) {
-            try {
-                String modesJson = prefs.getString(KEY_MODES, "");
-                if (modesJson != null && !modesJson.isEmpty()) {
-                    JSONObject modes = new JSONObject(modesJson);
-                    if (modes.has(activeMode)) {
-                        JSONObject mode = modes.getJSONObject(activeMode);
-                        if (mode.has("setting_overrides")) {
-                            JSONObject overrides = mode.getJSONObject("setting_overrides");
-                            if (overrides.has(settingKey)) {
-                                int value = overrides.getInt(settingKey);
-                                Log.d(TAG, "[POLICY] getEffectiveSettingInt key=" + settingKey
-                                        + " → " + value + " (from mode '" + activeMode + "')");
-                                return value;
-                            }
-                        }
-                    }
-                }
-            } catch (JSONException e) {
-                Log.w(TAG, "[POLICY] Error reading mode setting override: " + e.getMessage());
-            }
+        Integer modeOverride = getModeSettingOverrideInt(context, settingKey);
+        if (modeOverride != null) {
+            return modeOverride;
         }
-        return prefs.getInt(settingKey, defaultValue);
+        return get(context).getInt(settingKey, defaultValue);
+    }
+
+    // ── Default-mode gate ─────────────────────────────────────────────────────
+
+    /**
+     * The ID of the always-on baseline mode. It is not a mode the user
+     * deliberately enters — it IS the base configuration, so base settings are
+     * editable while it (and only it) is active.
+     */
+    public static final String MODE_DEFAULT = "default";
+
+    /**
+     * True when the base settings (Customize screen + per-app AppDetail screen)
+     * may be written.
+     *
+     * While a real mode is active, that mode's overrides "take over" the app's
+     * behaviour. Letting the user edit the base settings underneath would be a
+     * lie: the edits would be silently masked by the mode and appear to do
+     * nothing. So base settings are writable ONLY in Default mode; the UI tells
+     * the user to switch back to Default, and every native setter enforces it.
+     *
+     * The Modes screen itself is deliberately NOT gated — that is where a mode's
+     * own overrides are configured. Neither are the safety features (uninstall
+     * lock, settings lock, content-filter double-safe), which carry their own
+     * deliberate friction and must not become bypassable by toggling a mode.
+     *
+     * Logging: [MODE_GATE]
+     */
+    public static boolean isBaseSettingsEditable(Context context) {
+        String activeMode = getActiveMode(context);
+        return activeMode == null || activeMode.isEmpty() || MODE_DEFAULT.equals(activeMode);
+    }
+
+    /**
+     * Gate helper for native setters. Returns true when the write may proceed;
+     * logs and returns false when a non-default mode owns the settings.
+     *
+     * @param operation Short name of the blocked write, for the log line.
+     */
+    public static boolean assertBaseSettingsEditable(Context context, String operation) {
+        if (isBaseSettingsEditable(context)) {
+            return true;
+        }
+        Log.w(TAG, "[MODE_GATE] BLOCKED '" + operation + "' — mode '"
+                + getActiveMode(context) + "' is active. Base settings are editable"
+                + " only in Default mode.");
+        return false;
     }
 
     /**
@@ -929,9 +1093,13 @@ public final class BreakPrefs {
     /**
      * Whether the YouTube mindful-viewing coach is enabled. Default true so the
      * gate is on once the feature ships; the Customize screen can turn it off.
+     *
+     * TEMP: coach disabled — revive later by restoring the prefs read below.
+     * YouTube App Open Intercept currently uses the delay overlay only.
      */
     public static boolean isCoachEnabled(Context context) {
-        return get(context).getBoolean(KEY_COACH_ENABLED, true);
+        // return get(context).getBoolean(KEY_COACH_ENABLED, true);
+        return false;
     }
 
     /** Enables or disables the YouTube viewing coach. */

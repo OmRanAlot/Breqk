@@ -16,6 +16,7 @@
  *     unmount) AND the feature is enabled AND the scope was edited, the native
  *     lock (re)starts: lockUntil = now + duration. This is the "save & exit
  *     starts the timer" behaviour. While locked, the screen renders read-only.
+ *   - Once the lock expires the scope stays editable until the next real edit.
  *
  * The lock is purely additive friction; it never blocks the underlying writes,
  * which still commit immediately via the normal save paths.
@@ -25,6 +26,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, NativeModules } from 'react-native';
+import { deriveLockCycle } from '../shared/lockCycle';
 
 const { SettingsModule } = NativeModules;
 
@@ -33,19 +35,30 @@ const EMPTY_STATE = {
   locked: false,
   anyLocked: false,
   lockUntilMs: 0,
+  baseLockUntilMs: 0,
   durationMs: 24 * 60 * 60 * 1000,
 };
 
 /**
  * @param {string} scope            'global' or a package name
  * @param {object} [navigation]     React Navigation prop (optional)
+ * @param {object} [options]
+ * @param {boolean} [options.autoLockOnLeave=true]
+ *        When true (default), the lock (re)starts automatically on the three
+ *        "leaving the screen" signals (blur / background / unmount) — the
+ *        original behaviour used by the global Customize screen. When false,
+ *        leaving never starts the lock; the caller must arm it explicitly via
+ *        the returned `startLock()`. AppDetail passes false so the lock arms on
+ *        an explicit Save instead of on plain exit.
  * @returns {{
- *   enabled: boolean, locked: boolean, lockUntilMs: number, durationMs: number,
- *   remainingMs: number, markDirty: () => void, refresh: () => void,
+ *   enabled: boolean, locked: boolean, anyLocked: boolean, lockUntilMs: number,
+ *   durationMs: number, remainingMs: number, markDirty: () => void,
+ *   startLock: () => void, refresh: () => void,
  *   setEnabled: (v: boolean) => Promise<void>, setDurationHours: (h: number) => Promise<void>,
  * }}
  */
-export default function useSettingsLock(scope, navigation) {
+export default function useSettingsLock(scope, navigation, options = {}) {
+  const { autoLockOnLeave = true } = options;
   const [state, setState] = useState(EMPTY_STATE);
   const [now, setNow] = useState(Date.now());
 
@@ -65,6 +78,7 @@ export default function useSettingsLock(scope, navigation) {
             locked: !!parsed.locked,
             anyLocked: !!parsed.anyLocked,
             lockUntilMs: Number(parsed.lockUntil) || 0,
+            baseLockUntilMs: Number(parsed.baseLockUntil) || 0,
             durationMs: Number(parsed.durationMs) || EMPTY_STATE.durationMs,
           });
         } catch (e) {
@@ -80,17 +94,41 @@ export default function useSettingsLock(scope, navigation) {
     dirtyRef.current = true;
   }, []);
 
-  // Starts the lock if the feature is on and the scope was edited. Called on exit.
+  // Fires the native lock start for this scope and clears the dirty flag.
+  const doStartLock = useCallback(
+    reason => {
+      console.log(
+        '[SettingsLock] ' + reason + ' → starting lock for scope=',
+        scope,
+      );
+      try {
+        SettingsModule.startSettingsLock(scope);
+      } catch (e) {
+        console.warn(
+          '[SettingsLock] startSettingsLock failed:',
+          e?.message || e,
+        );
+      }
+      dirtyRef.current = false;
+    },
+    [scope],
+  );
+
+  // Auto-start on exit: only when enabled, the scope was edited, AND the caller
+  // opted into auto-lock-on-leave. AppDetail opts out and arms via startLock().
   const maybeStartLock = useCallback(() => {
+    if (!autoLockOnLeave) return;
     if (!enabledRef.current || !dirtyRef.current) return;
-    console.log('[SettingsLock] exit → starting lock for scope=', scope);
-    try {
-      SettingsModule.startSettingsLock(scope);
-    } catch (e) {
-      console.warn('[SettingsLock] startSettingsLock failed:', e?.message || e);
-    }
-    dirtyRef.current = false;
-  }, [scope]);
+    doStartLock('exit');
+  }, [autoLockOnLeave, doStartLock]);
+
+  // Explicit arm, e.g. from an AppDetail "Save" action. Arms only when the
+  // feature is enabled; no-op otherwise. Refreshes so the UI flips to locked.
+  const startLock = useCallback(() => {
+    if (!enabledRef.current) return;
+    doStartLock('save');
+    refresh();
+  }, [doStartLock, refresh]);
 
   // Load on mount + on focus return.
   useEffect(() => {
@@ -119,17 +157,33 @@ export default function useSettingsLock(scope, navigation) {
     };
   }, [navigation, maybeStartLock]);
 
-  // Tick so the countdown stays live and an expired lock flips to editable.
+  // Derive the live lock state from the stamped base timestamp using the same
+  // math as the native layer. This flips the UI at lock expiry without waiting
+  // for a native refresh.
+  const cycle = deriveLockCycle({
+    nowMs: now,
+    baseLockUntilMs: state.baseLockUntilMs,
+    durationMs: state.durationMs,
+    graceMs: 0,
+  });
+  const liveLocked = state.enabled && cycle.locked;
+  const remainingMs = liveLocked ? cycle.lockUntilMs - now : 0;
+
+  // Tick while locked so the countdown stays live and expiry renders on time.
   useEffect(() => {
-    if (!state.locked) return undefined;
+    if (!liveLocked) return undefined;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [state.locked]);
+  }, [liveLocked]);
 
-  // Derive a live "locked" — flips false the moment the deadline passes, even
-  // before the next native refresh.
-  const liveLocked = state.enabled && now < state.lockUntilMs;
-  const remainingMs = liveLocked ? state.lockUntilMs - now : 0;
+  // Re-sync with native whenever our derived "locked" disagrees with the last
+  // native read (i.e. a segment boundary passed) so anyLocked etc. stay fresh.
+  useEffect(() => {
+    if (liveLocked !== state.locked) {
+      console.log('[SettingsLock] segment boundary crossed → refreshing');
+      refresh();
+    }
+  }, [liveLocked, state.locked, refresh]);
 
   const setEnabled = useCallback(
     async value => {
@@ -161,10 +215,11 @@ export default function useSettingsLock(scope, navigation) {
     enabled: state.enabled,
     locked: liveLocked,
     anyLocked: state.anyLocked,
-    lockUntilMs: state.lockUntilMs,
+    lockUntilMs: cycle.lockUntilMs || state.lockUntilMs,
     durationMs: state.durationMs,
     remainingMs,
     markDirty,
+    startLock,
     refresh,
     setEnabled,
     setDurationHours,

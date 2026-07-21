@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import ModeEditorModal from './ModeEditorModal';
+import ModeIcon from '../shared/ModeIcons';
 import { styles, L } from './ModesScreen.styles';
 
 if (
@@ -24,16 +25,6 @@ if (
 }
 
 const { SettingsModule, VPNModule } = require('react-native').NativeModules;
-
-const MODE_ICONS = {
-  book: '📖',
-  moon: '🌙',
-  dumbbell: '💪',
-  focus: '🎯',
-  coffee: '☕',
-  work: '💼',
-  default: '⚡',
-};
 
 const DEFAULT_MODES = {
   study: {
@@ -121,7 +112,7 @@ const generateModeSummary = mode => {
 };
 
 const ModeCard = ({ modeId, mode, isActive, onToggleActive, onEdit }) => {
-  const icon = MODE_ICONS[mode.icon] || MODE_ICONS.default;
+  const accent = mode.color || L.charcoal;
 
   return (
     <View
@@ -132,7 +123,9 @@ const ModeCard = ({ modeId, mode, isActive, onToggleActive, onEdit }) => {
       ]}
     >
       <View style={styles.modeCardHeader}>
-        <Text style={styles.modeIcon}>{icon}</Text>
+        <View style={[styles.modeIconTile, { backgroundColor: accent + '1F' }]}>
+          <ModeIcon name={mode.icon} size={22} color={accent} />
+        </View>
         <View style={styles.modeCardInfo}>
           <Text style={styles.modeCardName}>{mode.name}</Text>
           <Text style={styles.modeCardSummary} numberOfLines={2}>
@@ -315,25 +308,23 @@ const ModesScreen = ({ navigation }) => {
     setModalVisible(true);
   }, []);
 
+  // Note: we deliberately do NOT prompt for the Android "Alarms & reminders"
+  // (exact alarm) permission here. Scheduled modes fall back to inexact
+  // alarms natively (ModeManager.setExactAlarm), which is good enough and
+  // avoids an extra permission ask during mode creation.
   const handleSave = useCallback(
     (modeId, updatedMode) => {
       console.log('[ModesScreen] saving mode:', modeId);
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-      if (isNewMode) {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      } else {
-        const updatedModes = { ...modes, [modeId]: updatedMode };
-        setModes(updatedModes);
-        SettingsModule.saveModes(JSON.stringify(updatedModes));
-      }
+      const updatedModes = { ...modes, [modeId]: updatedMode };
+      setModes(updatedModes);
+      SettingsModule.saveModes(JSON.stringify(updatedModes));
 
       setModalVisible(false);
       showSaved();
     },
-    [modes, isNewMode, showSaved],
+    [modes, showSaved],
   );
 
   const handleDelete = useCallback(

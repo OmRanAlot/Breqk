@@ -1,7 +1,106 @@
 # Current Task
 
 **Date Started:** 2026-06-30
-**Status:** `[~] In progress — On-device mindful viewing coach for YouTube`
+**Status:** `[~] In progress — Modes take over settings + Default-mode gate`
+
+## 2026-07-14 — Modes actually take over; base settings gated to Default mode
+
+**Bug found:** `BreakPrefs.getEffectiveSettingInt()` — the function that resolves a
+mode's `setting_overrides` on top of the base prefs — had **zero callers**. Every
+settings read went straight to raw SharedPreferences, so a mode's
+`delay_time_seconds` (Study and Bedtime both ship 20s) was written, shown in the
+mode editor, and then silently ignored at runtime. Only `policy_overrides` worked,
+because `isFeatureEnabled()` did consult the active mode.
+
+**Decision (user):** a mode's settings TAKE OVER while it is active, and the base
+settings screens (Customize + per-app AppDetail) are editable **only in Default
+mode**. Anything else would let the user "change" a value the active mode masks —
+an edit that appears to do nothing.
+
+**Changes — native:**
+
+- `prefs/BreakPrefs.java` — `getModeSettingOverrideInt()` (NEW; the single place
+  the `setting_overrides` JSON is walked), `getEffectiveSettingInt()` refactored
+  onto it, and `getGlobalDelaySecs()` + `getEffectivePopupDelayMinutes()` now
+  resolve through the active mode. Precedence: **active mode → per-app → base
+  global** (the mode is the outermost layer). New `isBaseSettingsEditable()` /
+  `assertBaseSettingsEditable()` gate (`[MODE_GATE]`).
+- `monitor/AppUsageMonitor.java` — cached delay/popup values now read effectively;
+  new `reloadSettings()` (`[RELOAD]`) so a mode switch cannot leave the previous
+  mode's delay in memory. Wired to the `UPDATE_BLOCKED_APPS` dispatch that
+  `ModeManager.activate()` already sends (`service/BreakVpnService.java`).
+- `monitor/UsageStatsQuery.java` (NEW) — the UsageStatsManager query bodies,
+  extracted because `AppUsageMonitor` crossed the 1500-line hard limit
+  (test_060). Thin delegates keep VPNModule's bridge calls unchanged.
+- `bridge/SettingsModule.java` + `bridge/VPNModule.java` — every base-settings
+  writer now rejects while a non-default mode is active (Promise setters reject
+  with `MODE_ACTIVE`). New `getBaseSettingsEditable()` bridge method.
+  **Deliberately NOT gated:** `saveBlockedApps` / `setBlockedApps` (a derived
+  cache that Home re-seeds on every launch — gating it would break monitoring),
+  the Modes screen itself, and the safety features (uninstall lock, settings lock,
+  content-filter double-safe — they carry their own deliberate friction and must
+  not become bypassable by toggling a mode).
+
+**Changes — JS:**
+
+- `shared/useDefaultModeGate.js` (NEW) — the gate hook. Polls every 10s because a
+  SCHEDULED mode can activate from an AlarmManager alarm with no JS event while
+  the user is sitting on the settings screen.
+- `shared/ModeGateBanner.js` + styles (NEW) — "Bedtime is controlling these
+  settings. Switch to Default mode to change them", in the mode's own colour.
+- `Customize/customize.js` — banner + disabled controls; the load-time
+  `setScrollBudget` re-sync is skipped while gated (native would reject it).
+- `AppDetail/AppDetail.js` — banner replaces the form, Save bar hidden. **Removed**
+  the old write-into-the-active-mode path that this rule supersedes.
+- `Home/ActiveModeBanner.js` + styles (NEW) — the one-line "Bedtime mode" text in
+  the status strip was far too quiet for something that overrides every setting
+  and freezes the settings screens. Now a mode-coloured card: schedule window,
+  effective pause, intercepted apps, and an **End** button — the escape hatch back
+  to Default.
+
+**Verification:** static 24 PASS / 0 FAIL, jest 40/40, `compileDebugJavaWithJavac`
+clean. **Not yet run on a device** — the schedule-driven gate transition (a mode
+activating while Customize is open) is the case worth exercising by hand.
+
+**Known trade-off:** while a scheduled mode like Bedtime is active (22:00–07:00
+daily), NO base setting can be changed without ending the mode. That is the
+intended friction; the Home banner's End button is the only relief.
+
+## 2026-07-13 — YouTube double-intercept fix + coach toggle & cadence
+
+**Bug:** the YouTube launch intercept fired twice — the normal delay overlay
+(AppUsageMonitor) AND the typing coach stacked. **Decision (user):** the coach is
+YouTube's App Open Intercept STYLE — exactly one surface ever fires:
+
+- **Coach ON (default):** typing gate at launch **and re-fires every X minutes**
+  while the user stays in YouTube. X = the existing per-app "Re-show overlay"
+  interval (`popup_delay_min`; once-per-open sentinel disables re-fire). The
+  delay overlay is suppressed for YouTube (`[COACH_OWNS]` in AppUsageMonitor).
+- **Coach OFF:** normal delay overlay, exactly like Instagram.
+- Either way, App Open Intercept disabled for YouTube → no launch gate at all.
+
+**Changes:**
+
+- `coach/YouTubeCoachGate.java` (NEW) — coach trigger logic extracted from
+  `ReelsInterventionService` (file went >1500 lines): launch gate (relaunch-gap
+  detection, now also fed by an in-memory last-YT-event timestamp so mid-session
+  window churn can't fake a relaunch) + throttled every-X-min re-fire
+  (`[COACH_REFIRE]`, active-window check guards against PiP).
+- `ReelsInterventionService.java` — coach section replaced with a single
+  `coachGate.onAccessibilityEvent(...)` forward; old yield-to-delay-overlay
+  precedence removed (inverted).
+- `monitor/PopupDecision.java` — pure helpers `coachOwnsYouTubeIntercept()` +
+  `shouldRefireCoach()`; tests in `PopupDecisionTest` (29/29 pass).
+- `monitor/AppUsageMonitor.java` — delay overlay suppressed for YouTube when the
+  coach is enabled.
+- `prefs/BreakPrefs.java` — `getEffectivePopupDelayMinutes()` (per-app → global).
+- `bridge/SettingsModule.java` — `getCoachEnabled` / `setCoachEnabled`.
+- `AppDetail.js` + `InterceptCustomization.js` — "Typing Coach" toggle (YouTube
+  only) inside the intercept box; saved via the manual Save flow.
+- `docs/LOGGING.md` — `[COACH_REFIRE]`, `[COACH_OWNS]`, SettingsModule `[COACH]`.
+
+**Verified:** `:app:compileDebugJavaWithJavac` clean, `:app:testDebugUnitTest`
+29/29, `npm test` (jest + static audit) all PASS, eslint 0 errors.
 
 ## Goal
 
@@ -90,3 +189,170 @@ Made the Home "Scroll Budget" card tappable → navigates to `Customize` so the
 user can edit the budget. `HomeScrollBudgetCard.js` now takes an optional
 `onPress` (wraps the card in `TouchableOpacity`, disabled when no handler);
 `home.js` passes `navigation.navigate('Customize')`. No new log tags/keys.
+
+## Side change (2026-07-08) — test suites repaired
+
+Both test stacks now run green; they are complementary, not either/or:
+
+- **Python** (`tests/static/`, run `python tests/static/run_all.py`) — static
+  audit of manifest↔Java wiring, JS↔Java bridge, prefs hygiene, security.
+  Was broken by the `com/Break` → `com/breqk` directory rename (sources still
+  declare `package com.Break;`). Fixed `_paths.py` (`JAVA_SRC` → `com/breqk`)
+  and `_harness.py:class_name_to_path` (maps logical package `com.Break` onto
+  the on-disk dir). Result: 24 PASS / 0 FAIL / 5 WARN / 2 SKIP.
+- **Jest** (`tests/unit/`, run `npm run test:jest`) — JS logic + App render. package.json
+  had NO jest config: added `preset: react-native`, `setupFiles` →
+  new `jest.setup.js` (mocks VPNModule/SettingsModule via self-populating
+  Proxy + react-native-webview), `transformIgnorePatterns` for RN ecosystem
+  libs, and test/module ignore for the vendored `everything-claude-code/`
+  repo (its 110 non-Jest suites were polluting `npm test`).
+  Result: 3 suites / 34 tests pass in ~4s.
+
+## Side change (2026-07-08) — mode creation UI redesign
+
+Reworked the mode editor (`components/Modes/ModeEditorModal.js`) per user request:
+
+- **SVG icons replace emojis** — new `components/shared/ModeIcons.js`
+  (`ModeIcon` + `MODE_ICON_KEYS`, Feather-style strokes via react-native-svg;
+  same keys as before so saved modes render unchanged). Used by the editor's
+  icon picker/preview and the ModeCard on `ModesScreen.js`.
+- **App Open Intercept is now a box** — added apps listed as rows
+  (Monogram tile + label + remove ✕), centered dashed **+** button opens an
+  inline picker of remaining `MANAGED_APPS` (7 apps, up from the old
+  Instagram/YouTube-only toggles).
+- **Forced pause duration is conditional** — the stepper only renders while
+  at least one app has `app_open_intercept: true`.
+- **Reels Detection limited to Instagram + YouTube** (labels "Reels
+  Detection" / "Shorts Detection", same shared `reels_detection` key).
+- **No alarm permission prompt** — removed `maybePromptExactAlarm` from
+  `ModesScreen.js` (and the now-dead `shouldPromptForExactAlarm` helper +
+  tests from `scheduleWindow.js`). Scheduled modes rely on the native
+  inexact-alarm fallback in `ModeManager.setExactAlarm`; the app never asks
+  for the Android "Alarms & reminders" permission during mode creation.
+- Data model unchanged (`breqk_modes` JSON). New JS log prefix `[ModeEditor]`
+  added to `docs/LOGGING.md` (plus the previously missing `[ModesScreen]`).
+- Verified: `npx jest tests/unit` → 3 suites / 31 tests pass; eslint clean on
+  all touched files.
+
+## Side change (2026-07-11) — fixed inconsistent YouTube launch intercept
+
+Root-caused and fixed per `.claude/plan/youtube-launch-intercept-inconsistent.md`:
+the coach's relaunch detector compared against `coachLastForegroundPackage`, the
+last *real* foreground package — but the Home launcher is deliberately filtered
+out as a system-overlay package (Reels `[STICKY-FIX]`), so leaving YouTube via
+Home never cleared it. Every re-open then looked like an internal window change
+and the coach silently never fired, until some unrelated app happened to be
+opened in between (the "~5 min later" symptom).
+
+- `ReelsInterventionService.maybeTriggerYouTubeCoach()` — rewritten to detect a
+  relaunch via a **time gap** since `coach_last_yt_foreground` (new constant
+  `BreakPrefs.COACH_RELAUNCH_GAP_MS` = 1.5s) instead of the pinned-package
+  heuristic. Removed the now-dead `coachLastForegroundPackage` field.
+- **Cadence changed (decided: Option A)** — coach now fires on **every** genuine
+  relaunch, not once per 30-min session. `CoachSessionTracker.shouldShowCoach()`
+  gates on a short re-show cooldown (`BreakPrefs.COACH_RESHOW_COOLDOWN_MS` = 60s,
+  keyed off new `coach_last_shown_at` pref) instead of the old
+  `coach_shown_for_session` once-only flag (kept for stats only).
+  `COACH_SESSION_GAP_MS` (30m) still governs session stats boundaries only.
+- **Coach-miss fallback (defense in depth)** — `AppUsageMonitor`'s hard
+  suppression of the delay overlay for YouTube (`coachOwnsYouTube`) is now
+  time-boxed via new pref `coach_overlay_visible` (set/cleared by
+  `IntentCoachOverlay.show()/dismiss()`) + `BreakPrefs.COACH_FALLBACK_GRACE_MS`
+  (4s): if the coach never attaches within the grace window, the ordinary delay
+  overlay fires instead of leaving YouTube unintercepted. New log line
+  `AppUsageMonitor` `[COACH_FALLBACK]`.
+- `docs/LOGGING.md` — added `coach_overlay_visible`, `coach_last_shown_at` rows,
+  updated `coach_shown_for_session` description, added `[COACH_FALLBACK]` to the
+  `AppUsageMonitor` row.
+- Not yet done: unit test for the pure relaunch-gap helper (plan's test-plan
+  item 1) and manual on-device repro verification (item 2) — no test harness
+  currently isolates this Java logic from the AccessibilityService; flagging for
+  follow-up rather than fabricating an untested claim.
+
+## Side change (2026-07-13) — per-app settings now save via a manual Save button
+
+Fixed the "YouTube per-app settings don't save" bug and reworked the AppDetail
+save model from auto-save to explicit Save.
+
+- **Root cause:** the intercept box (message/countdown/frequency) persisted
+  through a 1.5s debounce plus a "flush on unmount" effect whose cleanup re-ran
+  on *every keystroke*, racing the debounce and the navigation-blur auto-lock.
+  YouTube's only editable content lives in that box (its lone toggle is Shorts
+  Detection), so it was the visible casualty while toggle-based apps looked fine.
+- **New model (`components/AppDetail/AppDetail.js`):** every control edits LOCAL
+  state and marks the screen dirty; nothing writes natively until **Save**.
+  `handleSave()` replays all prior side effects in order (per-key `setAppFeature`,
+  active-mode override propagation + `activateMode`, `saveFreeBreakEnabled`,
+  Instagram `saveHomeFeedPostLimit`, `setAppInterceptSettings`, `startMonitoring`),
+  then arms the Settings Change Lock for this scope via `settingsLock.startLock()`.
+- **Leave guard:** `navigation` `beforeRemove` listener prompts Save / Discard /
+  Keep editing when dirty (covers header back, hardware back, swipe).
+- **`components/Customize/useSettingsLock.js`:** added opt-out third arg
+  `{ autoLockOnLeave }` (default true preserves the global Customize behavior) and
+  a new `startLock()` method. AppDetail passes `autoLockOnLeave: false` so the
+  lock arms on Save, not on plain exit.
+- **`InterceptCustomization.js`:** now purely presentational — setters + `onEdit()`
+  to mark dirty; removed the debounce/timer/flush props.
+- Sticky Save bar added (`AppDetail.styles.js`: `saveBar`/`saveButton*`).
+- No log tags or SharedPreferences keys changed → no `docs/LOGGING.md` edit.
+- Verified: eslint clean on all four touched files (one pre-existing inline-style
+  warning). Not yet done: on-device manual verification of the save + lock flow.
+
+## Side change (2026-07-13) — YouTube App-Open Intercept re-show interval fixed
+
+Fixed the YouTube-only glitch where the App Open Intercept overlay ("Is this
+intentional?" delay overlay) re-showed **every time the previous one closed**
+instead of honoring the per-app "Re-show every X min" setting (`popup_delay_min`).
+
+- **Root cause:** the mindful-viewing coach (`IntentCoachOverlay`, a different
+  process) uses a FOCUSABLE window for intent entry, which pauses YouTube's
+  activity. `AppUsageMonitor.getCurrentForegroundApp()` then reads YouTube as
+  backgrounded and returns null. The null-foreground session-rearm branch
+  (`[SESSION_REARM]`) — guarded only by `!isOverlayActive`, which does NOT cover
+  the coach — treated that as the user leaving and cleared
+  `appOpenTimestamps` / `lastPopupShownTimestamps` for YouTube every coach cycle.
+  With `lastPopupTime` perpetually null, `shouldShowFirstPopup` re-fired on each
+  reopen. YouTube-only because only YouTube drives the coach.
+- **Fix (`AppUsageMonitor.java`):** new `isOwnInterceptionOwning(pkg)` helper
+  (delay overlay active, or — YouTube — `coach_overlay_visible` / within
+  `COACH_FALLBACK_GRACE_MS`). The session-rearm now preserves the session while
+  our own interception surface owns the screen, so the X-min timer survives the
+  coach's focusable window. Genuine leave+reopen still re-arms (confirmed spec:
+  fresh open always intercepts).
+- **Hardening:** extracted the show/no-show decision into pure
+  `com.Break.monitor.PopupDecision` (mirrors `ScrollBudgetLogic`). Added
+  `normalizeDelayMinutes` (passes the once sentinel through, else clamps 0–60) —
+  the per-app path previously applied no clamp, so a malformed stored value could
+  yield a ~0ms interval. `AppUsageMonitor`'s inline `shouldShow*` computation now
+  calls `PopupDecision`.
+- **Tests:** `android/app/src/test/java/com/breqk/monitor/PopupDecisionTest.java`
+  (18 cases: normalize/clamp, once-never-repeats, repeat fires exactly at X min,
+  within-interval suppressed). `./gradlew :app:testDebugUnitTest` → BUILD
+  SUCCESSFUL.
+- No new log tags/prefixes or SharedPreferences keys (reuses `[SESSION_REARM]`)
+  → no `docs/LOGGING.md` edit. Not yet done: on-device manual repro verification.
+
+### Follow-up (2026-07-13) — YouTube: coach + delay overlay were double-firing
+
+After the re-show fix, YouTube still showed two launch intercepts (the coach AND
+the App Open Intercept delay overlay) plus a ~5s delay. Root cause: both surfaces
+intercept YouTube launch. The `coachOwnsYouTube` gate suppressed the delay overlay
+for `COACH_FALLBACK_GRACE_MS` (~4s) on every open (the ~5s delay), then released
+once the coach closed, so the delay overlay fired as a second, stacked intercept.
+
+Decision (confirmed with user): **App Open Intercept is YouTube's single launch
+intercept; the coach yields to it.**
+
+- `AppUsageMonitor.java` — removed the `coachOwnsYouTube` time-boxed suppression
+  block; the delay overlay now fires promptly for YouTube (`if (isBlocked &&
+  !isOverlayActive)`), like any other app. Removed the `[COACH_FALLBACK]` log line
+  (dead) and updated its `docs/LOGGING.md` row to document `[SESSION_REARM]`.
+- `ReelsInterventionService.maybeTriggerYouTubeCoach()` — early-return (coach
+  yields) when `app_open_intercept` is enabled for YouTube, so the coach and the
+  delay overlay never stack. The coach still owns YouTube launch when App Open
+  Intercept is OFF for YouTube (feature preserved, not removed).
+- `isOwnInterceptionOwning()` retained: the delay overlay is focusable and sets
+  `isOverlayActive`, so the session-preserve guard still holds via that flag.
+- Verified: `./gradlew :app:compileDebugJavaWithJavac` → BUILD SUCCESSFUL.
+  Not yet done: on-device manual verification (expect a single delay overlay
+  ~0.5s after opening YouTube, no coach, honoring the per-app re-show interval).

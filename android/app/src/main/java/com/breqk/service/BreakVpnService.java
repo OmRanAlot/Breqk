@@ -113,7 +113,14 @@ public class BreakVpnService extends Service {
                 case "UPDATE_BLOCKED_APPS":
                     Set<String> blocked = new HashSet<>(intent.getStringArrayListExtra("blockedApps"));
                     Log.d(TAG, "[CMD] UPDATE_BLOCKED_APPS size=" + blocked.size() + " apps=" + blocked.toString());
-                    if (monitor != null) monitor.setBlockedApps(blocked);
+                    if (monitor != null) {
+                        monitor.setBlockedApps(blocked);
+                        // ModeManager dispatches this on every mode transition. The monitor
+                        // caches delay/popup/budget values that resolve through the active
+                        // mode's setting_overrides, so they must be re-read here — otherwise
+                        // the previous mode's delay stays in force until a service restart.
+                        monitor.reloadSettings();
+                    }
                     saveBlockedApps(blocked);
                     break;
                 case "SET_DELAY_MESSAGE":

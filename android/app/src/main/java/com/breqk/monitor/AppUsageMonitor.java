@@ -1,4 +1,5 @@
 package com.Break.monitor;
+import com.Break.mode.ModeManager;
 import com.Break.prefs.BreakPrefs;
 import com.Break.shortform.budget.ScrollBudgetLogic;
 import com.Break.R;
@@ -84,10 +85,16 @@ public class AppUsageMonitor {
     // Recents overview / brief launcher flashes change the foreground away from the blocked
     // app even though the user is about to return. Hold the overlay until they've been gone
     // longer than this threshold before actually dismissing.
-    private static final long TRANSIENT_AWAY_GRACE_MS = 1500;
+    // Away ≤ this → keep session (no re-arm). Away longer → end session so return
+    // shows the delay overlay again. Raised from 1.5s so brief focus blips do not
+    // relaunch the intercept.
+    private static final long TRANSIENT_AWAY_GRACE_MS = 3000;
     // Timestamp (ms) when foreground first changed away from lastAppPackage while overlay
     // was active. 0 = currently on the blocked app (or overlay not shown).
     private long awayFromBlockedAppSince = 0L;
+    // Wall-clock when we first observed a departure from currentForegroundApp while that
+    // package still had intercept session state. 0 = not pending a session end.
+    private long sessionAwaySince = 0L;
 
     // Custom message for the delay overlay (set from React Native)
     private String customMessage = "Take a moment to consider if you really need this app right now";
@@ -144,6 +151,29 @@ public class AppUsageMonitor {
     private static final int PRUNE_INTERVAL_TICKS = 60;
     private static final long STALE_ENTRY_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
     private int tickCounter = 0;
+
+    // ─── Mode Schedule Heartbeat ────────────────────────────────────────────
+    // Alarm-free safety net for timed modes (Bedtime, Study, custom schedules).
+    // AlarmManager transitions can be deferred indefinitely in Doze when the
+    // exact-alarm permission is denied (the Android 14+ default) or dropped by
+    // OEM battery managers, so the monitor loop reconciles schedule state every
+    // 30s via ModeManager.applyCurrentScheduleState(). The call is idempotent —
+    // it only activates/deactivates on an actual window transition.
+    // Logs: [MODE_HEARTBEAT] here, MODE_MGR tag inside ModeManager.
+    private static final long MODE_SCHEDULE_CHECK_INTERVAL_MS = 30_000;
+    private long lastModeScheduleCheckTime = 0;
+
+    // ─── Session Re-Arm on Departure ────────────────────────────────────────
+    // Timestamp (ms) when getCurrentForegroundApp() first returned null while we
+    // still had a tracked currentForegroundApp. Gesture-nav home/recents leaves
+    // often resolve to a null foreground (the departed app's MOVE_TO_BACKGROUND
+    // invalidates the candidate), so the explicit switch-away cleanup never runs
+    // and allowedThisSession/popup timestamps go stale — the original "intercept
+    // only fires once every few opens" bug. After the foreground has been null
+    // for TRANSIENT_AWAY_GRACE_MS we treat the departure as real and end the
+    // session (clear allow + timestamps) so the next open re-arms the intercept.
+    // 0 = foreground currently known (not in a null streak).
+    private long nullForegroundSince = 0L;
 
     // ─── Scroll Budget ─────────────────────────────────────────────────────────
     // Configuration (loaded from SharedPreferences via loadScrollBudgetFromPrefs, updated by setScrollBudget)
@@ -235,8 +265,10 @@ public class AppUsageMonitor {
             }
 
             isMonitoring = true;
-            // Reset throttle timer so first tick syncs immediately
+            // Reset throttle timers so first tick syncs immediately
             lastPrefsSyncTime = 0;
+            lastModeScheduleCheckTime = 0;
+            nullForegroundSince = 0L;
             tickCounter = 0;
             Log.d(TAG, "Starting monitor thread...");
 
@@ -270,23 +302,63 @@ public class AppUsageMonitor {
                         pruneStaleEntries();
                     }
 
+                    // ── Mode schedule heartbeat (alarm-free safety net) ──
+                    // Runs before the null-foreground early return so scheduled modes
+                    // transition even while the phone sits idle on the lock screen.
+                    long tickNow = System.currentTimeMillis();
+                    if (tickNow - lastModeScheduleCheckTime >= MODE_SCHEDULE_CHECK_INTERVAL_MS) {
+                        lastModeScheduleCheckTime = tickNow;
+                        Log.d(TAG, "[MODE_HEARTBEAT] reconciling scheduled mode state");
+                        ModeManager.applyCurrentScheduleState(context);
+                    }
+
                     String foregroundApp = getCurrentForegroundApp();
                     if (foregroundApp == null) {
                         Log.d(TAG, "Foreground app is null; skipping this tick");
                         // Null foreground means the user is in recents, the launcher, or
                         // between apps and UsageEvents has no confirmed foreground activity.
-                        // Reset currentForegroundApp so that when the user returns to a
-                        // blocked app it is treated as a fresh open and the overlay re-arms.
+                        // Keep currentForegroundApp during a short grace so a transient
+                        // detection blip mid-use does not end the session; once the null
+                        // streak exceeds TRANSIENT_AWAY_GRACE_MS the departure is real —
+                        // end the session (clear allow + popup timestamps) so the next
+                        // open of that app re-arms the intercept. Skipped while the
+                        // overlay is visible: its own dismiss paths manage this state.
                         if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
-                            Log.d(TAG, "[RECENTS_DETECT] foreground null — resetting currentForegroundApp="
-                                    + currentForegroundApp + " so return-from-recents re-triggers overlay");
-                            currentForegroundApp = "";
+                            if (nullForegroundSince == 0L) {
+                                nullForegroundSince = System.currentTimeMillis();
+                                Log.d(TAG, "[SESSION_REARM] foreground null while on "
+                                        + currentForegroundApp + "; starting "
+                                        + TRANSIENT_AWAY_GRACE_MS + "ms departure grace");
+                            } else if (!isOwnInterceptionOwning(currentForegroundApp)
+                                    && System.currentTimeMillis() - nullForegroundSince >= TRANSIENT_AWAY_GRACE_MS) {
+                                Log.i(TAG, "[SESSION_REARM] sustained null foreground — ending session for "
+                                        + currentForegroundApp + "; intercept re-arms on next open");
+                                allowedThisSession.remove(currentForegroundApp);
+                                appOpenTimestamps.remove(currentForegroundApp);
+                                lastPopupShownTimestamps.remove(currentForegroundApp);
+                                currentForegroundApp = "";
+                                nullForegroundSince = 0L;
+                                sessionAwaySince = 0L;
+                            } else if (isOwnInterceptionOwning(currentForegroundApp)) {
+                                // [SESSION_REARM] Our own interception surface (delay overlay, or —
+                                // YouTube only — the mindful-viewing coach) is on screen. The coach
+                                // uses a FOCUSABLE window (soft keyboard for intent entry), which
+                                // pauses YouTube's activity; getCurrentForegroundApp() then reads
+                                // YouTube as backgrounded and returns null. Treating that as a real
+                                // departure would clear the App Open Intercept re-show timers every
+                                // coach cycle, so the next open re-fires the intercept immediately
+                                // ("every time" instead of every X minutes). Preserve the session.
+                                Log.d(TAG, "[SESSION_REARM] null foreground but our interception owns "
+                                        + currentForegroundApp + " (overlay/coach) — preserving session timers");
+                            }
                         }
                         if (isMonitoring) {
                             handler.postDelayed(this, 500);
                         }
                         return;
                     }
+                    // Foreground is known again — cancel any pending null-streak grace.
+                    nullForegroundSince = 0L;
 
                     // ─── Auto-Dismiss: remove overlay when user leaves the blocked app ───
                     // Keep the overlay visible while the user is in recents (system UI) since they
@@ -360,8 +432,16 @@ public class AppUsageMonitor {
 
                         // Track when blocked apps are opened
                         if (isBlocked && !isAllowed) {
-                            // If this is a new blocked app or app was switched to, record the open time
-                            if (!foregroundApp.equals(currentForegroundApp)) {
+                            // If this is a new blocked app or app was switched to, record the open time.
+                            // Skip while a departure-grace is protecting another package's session —
+                            // otherwise every tick on the temporary foreground would reset that app's
+                            // timestamps. Session start for the new app is recorded when grace ends.
+                            boolean protectingOtherSession = sessionAwaySince > 0L
+                                    && currentForegroundApp != null
+                                    && !currentForegroundApp.isEmpty()
+                                    && !foregroundApp.equals(currentForegroundApp)
+                                    && (now - sessionAwaySince < TRANSIENT_AWAY_GRACE_MS);
+                            if (!foregroundApp.equals(currentForegroundApp) && !protectingOtherSession) {
                                 appOpenTimestamps.put(foregroundApp, now);
                                 // Clear last popup timestamp when app is reopened (new session)
                                 lastPopupShownTimestamps.remove(foregroundApp);
@@ -380,34 +460,42 @@ public class AppUsageMonitor {
                             }
                         }
 
-                        // Check if we should show the overlay
-                        // CRITICAL: Check for second popup even if app is in allowedThisSession
-                        // allowedThisSession only prevents FIRST popup, not second popup
+                        // Check if we should show the overlay.
+                        // CRITICAL: Check for second popup even if app is in allowedThisSession —
+                        // allowedThisSession only prevents the FIRST popup, not the next one.
                         //
-                        // [COACH] YouTube launch is owned by the mindful-viewing coach
-                        // (ReelsInterventionService → IntentCoachOverlay): the coach's
-                        // own wait countdown replaces this delay overlay, so suppress the
-                        // delay overlay for YouTube whenever the coach is enabled to avoid
-                        // two overlays stacking on the same launch.
-                        boolean coachOwnsYouTube = "com.google.android.youtube".equals(foregroundApp)
-                                && BreakPrefs.isCoachEnabled(context);
-                        if (isBlocked && !isOverlayActive && !coachOwnsYouTube) {
+                        // [COACH_OWNS] YouTube intercept STYLE: when the typing coach is enabled
+                        // it IS YouTube's App Open Intercept — initial show and every-X-min
+                        // re-fire are both owned by ReelsInterventionService
+                        // (maybeTriggerYouTubeCoach / maybeRefireYouTubeCoach, same "Re-show
+                        // overlay" interval this overlay would use). Suppress this delay overlay
+                        // for YouTube so the two surfaces can never stack — the double-fire bug.
+                        // Coach OFF → this overlay fires for YouTube exactly like for Instagram.
+                        boolean coachOwnsIntercept = PopupDecision.coachOwnsYouTubeIntercept(
+                                foregroundApp, BreakPrefs.isCoachEnabled(context));
+                        if (isBlocked && coachOwnsIntercept) {
+                            Log.d(TAG, "[COACH_OWNS] typing coach owns " + foregroundApp
+                                    + " — delay overlay suppressed");
+                        }
+                        if (isBlocked && !isOverlayActive && !coachOwnsIntercept) {
                             // Get when this app was opened
                             Long appOpenTime = appOpenTimestamps.get(foregroundApp);
                             Long lastPopupTime = lastPopupShownTimestamps.get(foregroundApp);
-                            // Per-app popup delay (falls back to global if not set for this app)
-                            int effectiveDelayMin = getPerAppPopupDelayMinutes(foregroundApp);
-                            long popupDelayMs = (long) effectiveDelayMin * 60 * 1000L;
+                            // Per-app popup delay (falls back to global if not set for this app).
+                            // Normalized so a malformed stored value can't yield a ~0ms interval
+                            // (which would re-show the intercept every tick). ONCE_SENTINEL = once per open.
+                            int effectiveDelayMin = PopupDecision.normalizeDelayMinutes(
+                                    getPerAppPopupDelayMinutes(foregroundApp));
+                            long popupDelayMs = PopupDecision.delayMillis(effectiveDelayMin);
 
-                            // Determine if we should show popup:
-                            // 1. If no previous popup shown yet AND app not in allowed session → show
-                            // immediately (first popup)
-                            // 2. If previous popup was shown and X minutes have passed → show again (next
-                            // popup) - regardless of allowedThisSession
-                            boolean shouldShowFirstPopup = (appOpenTime != null && lastPopupTime == null
-                                    && !isAllowed);
-                            boolean shouldShowNextPopup = (lastPopupTime != null
-                                    && (now - lastPopupTime) >= popupDelayMs);
+                            // Determine if we should show popup (pure logic in PopupDecision):
+                            // 1. First popup: no previous popup this session AND app not already allowed.
+                            // 2. Next popup: previous popup shown AND the X-minute interval has elapsed
+                            //    (never for the once-per-open sentinel).
+                            boolean shouldShowFirstPopup = PopupDecision.shouldShowFirst(
+                                    appOpenTime, lastPopupTime, isAllowed);
+                            boolean shouldShowNextPopup = PopupDecision.shouldShowNext(
+                                    lastPopupTime, effectiveDelayMin, now);
                             boolean shouldShowPopup = shouldShowFirstPopup || shouldShowNextPopup;
 
                             // Enhanced logging for debugging
@@ -467,17 +555,44 @@ public class AppUsageMonitor {
                             }
                         }
 
-                        // If user switches away from an allowed app, remove it from allowed session and
-                        // clear timestamps
-                        if (!foregroundApp.equals(currentForegroundApp)) {
-                            if (currentForegroundApp != null && !currentForegroundApp.isEmpty()) {
-                                allowedThisSession.remove(currentForegroundApp);
-                                appOpenTimestamps.remove(currentForegroundApp); // Clear timestamp when switching away
-                                lastPopupShownTimestamps.remove(currentForegroundApp); // Clear last popup timestamp
-                                                                                       // when switching away
-                                Log.d(TAG, "Cleared timestamps for " + currentForegroundApp + " after switching away");
+                        // Session end on leave: Away ≤ TRANSIENT_AWAY_GRACE_MS keeps timestamps
+                        // (no overlay re-arm on brief focus loss). Away longer ends the session so
+                        // the next open shows the delay overlay again.
+                        if (foregroundApp.equals(currentForegroundApp)) {
+                            sessionAwaySince = 0L;
+                        } else {
+                            boolean leavingHadSession = currentForegroundApp != null
+                                    && !currentForegroundApp.isEmpty()
+                                    && (allowedThisSession.contains(currentForegroundApp)
+                                            || appOpenTimestamps.containsKey(currentForegroundApp)
+                                            || lastPopupShownTimestamps.containsKey(currentForegroundApp));
+                            if (leavingHadSession) {
+                                if (sessionAwaySince == 0L) {
+                                    sessionAwaySince = now;
+                                    Log.d(TAG, "[SESSION_REARM] left " + currentForegroundApp
+                                            + " → " + foregroundApp + "; starting "
+                                            + TRANSIENT_AWAY_GRACE_MS + "ms departure grace");
+                                } else if (now - sessionAwaySince >= TRANSIENT_AWAY_GRACE_MS) {
+                                    Log.i(TAG, "[SESSION_REARM] away >" + TRANSIENT_AWAY_GRACE_MS
+                                            + "ms from " + currentForegroundApp
+                                            + " — ending session; intercept re-arms on next open");
+                                    allowedThisSession.remove(currentForegroundApp);
+                                    appOpenTimestamps.remove(currentForegroundApp);
+                                    lastPopupShownTimestamps.remove(currentForegroundApp);
+                                    currentForegroundApp = foregroundApp;
+                                    sessionAwaySince = 0L;
+                                    if (isBlocked && !allowedThisSession.contains(foregroundApp)) {
+                                        appOpenTimestamps.put(foregroundApp, now);
+                                        lastPopupShownTimestamps.remove(foregroundApp);
+                                        Log.d(TAG, "Recorded open time for " + foregroundApp
+                                                + " at " + now + " (after departure grace)");
+                                    }
+                                }
+                                // else still within grace — keep currentForegroundApp + session
+                            } else {
+                                currentForegroundApp = foregroundApp;
+                                sessionAwaySince = 0L;
                             }
-                            currentForegroundApp = foregroundApp;
                         }
 
                     }
@@ -566,6 +681,38 @@ public class AppUsageMonitor {
         // Check dynamically resolved home launcher
         String launcher = getLauncherPackage();
         if (launcher != null && packageName.equals(launcher)) return true;
+        return false;
+    }
+
+    /**
+     * True when one of OUR OWN interception surfaces currently owns the given
+     * app's screen: the delay overlay is active, or — YouTube only — the
+     * mindful-viewing coach overlay is up (or still within its attach grace).
+     *
+     * Why this matters: the coach ({@code IntentCoachOverlay}, a different
+     * process) uses a FOCUSABLE window so the soft keyboard can open for intent
+     * entry. A focusable overlay pauses the underlying YouTube activity, so
+     * {@link #getCurrentForegroundApp()} sees YouTube move to background and
+     * returns null. Without this guard the null-foreground session-rearm treats
+     * that as the user leaving and clears the App Open Intercept re-show timers,
+     * making the intercept re-fire on every coach cycle instead of every X
+     * minutes.
+     *
+     * Kept in sync with the {@code coachOwnsYouTube} gate used lower in the tick
+     * so the show-decision and the session-rearm agree on coach ownership.
+     */
+    private boolean isOwnInterceptionOwning(String packageName) {
+        if (isOverlayActive) return true;
+        if ("com.google.android.youtube".equals(packageName)
+                && BreakPrefs.isCoachEnabled(context)) {
+            boolean coachVisible = BreakPrefs.get(context)
+                    .getBoolean(BreakPrefs.KEY_COACH_OVERLAY_VISIBLE, false);
+            if (coachVisible) return true;
+            Long ytOpenTime = appOpenTimestamps.get(packageName);
+            long sinceYtOpen = ytOpenTime != null
+                    ? (System.currentTimeMillis() - ytOpenTime) : Long.MAX_VALUE;
+            return sinceYtOpen < BreakPrefs.COACH_FALLBACK_GRACE_MS;
+        }
         return false;
     }
 
@@ -807,7 +954,11 @@ public class AppUsageMonitor {
                     Log.i(TAG, "Back clicked for " + packageName);
                     allowedThisSession.remove(packageName);
                     Log.i(TAG, "Back pressed: no cooldown; will show immediately on next open for " + packageName);
-                    removeOverlayUserDismissed();
+                    // Back = user chose NOT to enter the app, so the intercept must fire
+                    // fresh on the next open. removeOverlayAutoDismissed clears the popup
+                    // timestamps; removeOverlayUserDismissed (Continue) keeps them so the
+                    // next-popup delay timer keeps running for the ongoing session.
+                    removeOverlayAutoDismissed(packageName);
                     Intent homeIntent = new Intent(Intent.ACTION_MAIN);
                     homeIntent.addCategory(Intent.CATEGORY_HOME);
                     homeIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -933,7 +1084,13 @@ public class AppUsageMonitor {
             Log.d(TAG, "removeOverlay: breathing animation cancelled");
         }
         if (overlayView != null) {
-            windowManager.removeView(overlayView);
+            try {
+                windowManager.removeView(overlayView);
+            } catch (IllegalArgumentException e) {
+                // View was already detached (e.g. process restart or double-remove).
+                // Log and continue so overlayView is always nulled below.
+                Log.w(TAG, "removeOverlay: view already removed from WindowManager", e);
+            }
             overlayView = null;
         }
         isOverlayActive = false;
@@ -947,7 +1104,7 @@ public class AppUsageMonitor {
     }
 
     /**
-     * Called when the user explicitly dismisses the overlay (Continue or Back button).
+     * Called when the user passes the intercept via the Continue button.
      * Keeps popup timestamps intact so the next-popup delay timer keeps running.
      */
     private void removeOverlayUserDismissed() {
@@ -955,10 +1112,10 @@ public class AppUsageMonitor {
     }
 
     /**
-     * Called when the monitor auto-dismisses the overlay (user left the blocked app or
-     * safety timeout fired). Clears per-app popup timestamps so the intercept re-arms
-     * immediately the next time the user opens that app — they never completed the
-     * intercept flow, so the delay should start fresh on return.
+     * Called when the intercept flow was NOT completed: the user pressed Back,
+     * left the blocked app, or the safety timeout fired. Clears per-app popup
+     * timestamps so the intercept re-arms immediately the next time the user
+     * opens that app — the delay should start fresh on return.
      */
     private void removeOverlayAutoDismissed(String pkg) {
         if (pkg != null && !pkg.isEmpty()) {
@@ -1099,101 +1256,24 @@ public class AppUsageMonitor {
     }
 
     // ─── Usage Stats Query Methods ──────────────────────────────────────────
+    // Bodies live in UsageStatsQuery — they are pure UsageStatsManager reads with
+    // no monitor state, and this file is against the 1500-line hard limit
+    // (tests/static/test_060_file_size_limit.py). These delegates keep the public
+    // API intact so VPNModule's bridge methods are unaffected.
 
     public long getAppUsageTime(String packageName, long startTime, long endTime) {
-        try {
-            if (!hasUsageStatsPermission()) {
-                return 0;
-            }
-
-            List<UsageStats> stats = usageStatsManager.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY,
-                    startTime,
-                    endTime);
-
-            long totalTime = 0;
-            for (UsageStats stat : stats) {
-                if (stat.getPackageName().equals(packageName)) {
-                    totalTime += stat.getTotalTimeInForeground();
-                }
-            }
-            return totalTime;
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting app usage time for " + packageName, e);
-            return 0;
-        }
+        return UsageStatsQuery.getAppUsageTime(usageStatsManager, hasUsageStatsPermission(),
+                packageName, startTime, endTime);
     }
 
     public long getTotalScreenTime(long startTime, long endTime) {
-        try {
-            if (!hasUsageStatsPermission()) {
-                return 0;
-            }
-
-            List<UsageStats> stats = usageStatsManager.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY,
-                    startTime,
-                    endTime);
-
-            long totalTime = 0;
-            for (UsageStats stat : stats) {
-                totalTime += stat.getTotalTimeInForeground();
-            }
-            return totalTime;
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting total screen time", e);
-            return 0;
-        }
+        return UsageStatsQuery.getTotalScreenTime(usageStatsManager, hasUsageStatsPermission(),
+                startTime, endTime);
     }
 
     public List<AppUsageInfo> getTopAppsByUsage(long startTime, long endTime, int limit) {
-        List<AppUsageInfo> appUsageList = new ArrayList<>();
-
-        try {
-            if (!hasUsageStatsPermission()) {
-                return appUsageList;
-            }
-
-            List<UsageStats> stats = usageStatsManager.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY,
-                    startTime,
-                    endTime);
-
-            // Group by package name and sum up usage time
-            Map<String, Long> appUsageMap = new HashMap<>();
-            for (UsageStats stat : stats) {
-                String packageName = stat.getPackageName();
-                long usageTime = stat.getTotalTimeInForeground();
-
-                if (appUsageMap.containsKey(packageName)) {
-                    appUsageMap.put(packageName, appUsageMap.get(packageName) + usageTime);
-                } else {
-                    appUsageMap.put(packageName, usageTime);
-                }
-            }
-
-            // Convert to AppUsageInfo objects and sort by usage time
-            for (Map.Entry<String, Long> entry : appUsageMap.entrySet()) {
-                String packageName = entry.getKey();
-                long usageTime = entry.getValue();
-
-                if (usageTime > 0) { // Only include apps with actual usage
-                    String appName = getAppName(packageName);
-                    appUsageList.add(new AppUsageInfo(packageName, appName, usageTime));
-                }
-            }
-
-            // Sort by usage time (descending) and limit results
-            appUsageList.sort((a, b) -> Long.compare(b.usageTime, a.usageTime));
-            if (limit > 0 && appUsageList.size() > limit) {
-                appUsageList = appUsageList.subList(0, limit);
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting top apps by usage", e);
-        }
-
-        return appUsageList;
+        return UsageStatsQuery.getTopAppsByUsage(usageStatsManager, hasUsageStatsPermission(),
+                this::getAppName, startTime, endTime, limit);
     }
 
     public long getTodayScreenTime() {
@@ -1224,6 +1304,22 @@ public class AppUsageMonitor {
     }
 
     /**
+     * Re-reads the cached intercept + scroll-budget settings from prefs.
+     *
+     * Those values are resolved THROUGH the active mode's setting_overrides, so
+     * they go stale the moment the active mode changes. ModeManager.activate()
+     * already dispatches UPDATE_BLOCKED_APPS to BreakVpnService on every mode
+     * transition; that handler calls this so the live monitor picks up the new
+     * mode's delay without waiting for a service restart.
+     */
+    public void reloadSettings() {
+        loadInterceptSettingsFromPrefs();
+        loadScrollBudgetFromPrefs();
+        Log.i(TAG, "[RELOAD] Settings reloaded for active mode — delaySecs="
+                + customDelayTimeSeconds + " popupDelayMin=" + popupDelayMinutes);
+    }
+
+    /**
      * Load intercept overlay settings from SharedPreferences.
      * Called on startMonitoring() so user-customized values survive service restarts.
      */
@@ -1232,9 +1328,14 @@ public class AppUsageMonitor {
         if (msg != null && !msg.trim().isEmpty()) {
             customMessage = msg;
         }
-        int secs = cachedPrefs.getInt(BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
+        // Effective reads, not raw: an active mode's setting_overrides must win.
+        // These are cached in fields, so reloadSettings() re-runs this whenever the
+        // active mode changes (dispatched via BreakVpnService's UPDATE_BLOCKED_APPS).
+        int secs = BreakPrefs.getEffectiveSettingInt(context,
+                BreakPrefs.KEY_DELAY_TIME_SECONDS, BreakPrefs.DEFAULT_DELAY_TIME_SECONDS);
         customDelayTimeSeconds = Math.max(5, Math.min(120, secs));
-        int delay = cachedPrefs.getInt(BreakPrefs.KEY_POPUP_DELAY_MINUTES, BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES);
+        int delay = BreakPrefs.getEffectiveSettingInt(context,
+                BreakPrefs.KEY_POPUP_DELAY_MINUTES, BreakPrefs.DEFAULT_POPUP_DELAY_MINUTES);
         // Allow sentinel (Integer.MAX_VALUE = once per open); otherwise clamp 0–60.
         popupDelayMinutes = (delay == Integer.MAX_VALUE) ? delay : Math.max(0, Math.min(60, delay));
         Log.d(TAG, "[LOAD_INTERCEPT] message='" + customMessage + "' delaySecs=" + customDelayTimeSeconds

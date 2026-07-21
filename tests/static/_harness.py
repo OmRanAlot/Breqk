@@ -66,12 +66,17 @@ def class_name_to_path(name: str, java_src: Path) -> Path:
     """
     Convert manifest class name to expected Java file path.
     Handles both full names ("com.Break.Foo") and short names (".Foo", ".bar.Foo").
-    java_src should be the .../java/com/Break directory.
+    java_src is the on-disk source root for the app package (may differ from
+    the declared package: sources declare `package com.Break;` but live under
+    com/breqk on disk), so app-package classes resolve relative to java_src.
     """
     if name.startswith("."):
         name = "com.Break" + name
+    if name.startswith("com.Break."):
+        relative = name[len("com.Break."):].replace(".", "/") + ".java"
+        return java_src / relative
     relative = name.replace(".", "/") + ".java"
-    # java_src = project/.../java/com/Break  ->  java base = .../java
+    # java_src = project/.../java/<pkg dirs>  ->  java base = .../java
     java_base = java_src.parent.parent
     return java_base / relative
 
