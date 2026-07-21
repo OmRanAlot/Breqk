@@ -26,6 +26,7 @@ import {
   Text,
   Platform,
   AppState,
+  Animated,
   NativeModules,
   NativeEventEmitter,
   TouchableOpacity,
@@ -41,6 +42,10 @@ import ActiveModeBanner from './ActiveModeBanner';
 import { MANAGED_APPS } from '../managedApps/manifest';
 import { styles, L } from './home.styles';
 import { formatTime, formatCount } from '../common/format';
+import useCountUp, {
+  BAR_FILL_DURATION_MS,
+  FILL_EASING,
+} from '../common/useCountUp';
 
 /** The always-on baseline mode — never surfaced as "a mode is active". */
 const DEFAULT_MODE_ID = 'default';
@@ -86,22 +91,43 @@ const ModesIcon = ({ color, size }) => (
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 /** Single stat card shown in the summary row */
-const StatCard = ({ label, value, loading }) => (
-  <View style={styles.statCard}>
-    {loading ? (
-      <View style={styles.skeletonValue} />
-    ) : (
-      <Text style={styles.statValue}>{value}</Text>
-    )}
-    <Text style={styles.statLabel}>{label}</Text>
-  </View>
-);
+const StatCard = ({ label, rawValue, formatFn, loading }) => {
+  const displayValue = useCountUp(rawValue, { enabled: !loading });
+  // rawValue == null means the metric is unavailable (not "still loading") —
+  // formatFn renders that as "—" directly rather than counting up from 0.
+  const valueText =
+    rawValue == null ? formatFn(rawValue) : formatFn(displayValue);
+
+  return (
+    <View style={styles.statCard}>
+      {loading ? (
+        <View style={styles.skeletonValue} />
+      ) : (
+        <Text style={styles.statValue}>{valueText}</Text>
+      )}
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+};
 
 /** One row in the top-apps list */
 const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
   // Progress bar fill ratio relative to TOTAL screen time — conveys absolute
   // share rather than "tallest bar = 100%" which hides how big the top app is.
   const ratio = totalMin > 0 ? Math.min(1, usageTimeMin / totalMin) : 0;
+
+  // Fills in from 0 → ratio once on mount (rows only mount when real data
+  // replaces the loading skeleton — see the `loading` branch below).
+  const fillAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(fillAnim, {
+      toValue: ratio,
+      duration: BAR_FILL_DURATION_MS,
+      easing: FILL_EASING,
+      useNativeDriver: false,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <View style={styles.appUsageRow}>
@@ -112,10 +138,15 @@ const AppUsageRow = ({ appName, usageTimeMin, totalMin }) => {
         <Text style={styles.appUsageTime}>{formatTime(usageTimeMin)}</Text>
       </View>
       <View style={styles.usageBar}>
-        <View
+        <Animated.View
           style={[
             styles.usageBarFill,
-            { width: `${Math.round(ratio * 100)}%` },
+            {
+              width: fillAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '100%'],
+              }),
+            },
           ]}
         />
       </View>
@@ -611,14 +642,16 @@ const Home = ({ navigation }) => {
         <View style={styles.statsRow}>
           <StatCard
             label="Screen Time"
-            value={formatTime(stats.totalScreenTimeMin)}
+            rawValue={stats.totalScreenTimeMin}
+            formatFn={formatTime}
             loading={loading}
           />
           {/* Only show unlock card if value is available (API 28+) */}
           {(loading || stats.unlockCount !== null) && (
             <StatCard
               label="Unlocks"
-              value={formatCount(stats.unlockCount)}
+              rawValue={stats.unlockCount}
+              formatFn={formatCount}
               loading={loading}
             />
           )}
@@ -626,7 +659,8 @@ const Home = ({ navigation }) => {
           {(loading || stats.notificationCount !== null) && (
             <StatCard
               label="Notifications"
-              value={formatCount(stats.notificationCount)}
+              rawValue={stats.notificationCount}
+              formatFn={formatCount}
               loading={loading}
             />
           )}
