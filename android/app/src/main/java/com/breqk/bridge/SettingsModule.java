@@ -617,7 +617,15 @@ public class SettingsModule extends ReactContextBaseJavaModule {
             JSONObject parsed = new JSONObject(jsonString);
             BreakPrefs.saveModes(reactContext, parsed);
             ModeManager.onModesSaved(reactContext, oldModes);
-            Log.d(TAG, "[MODE] saveModes saved");
+
+            // Home-screen edits now write into the ACTIVE mode's policy_overrides
+            // via this call. onModesSaved only reconciles schedules, so re-derive
+            // the effective blocked_apps set and push it to the live monitor —
+            // otherwise an edit to the active mode would need an app restart to
+            // take effect. (Activation already syncs; a pure edit-in-place did not.)
+            BreakPrefs.syncBlockedAppsFromPolicies(reactContext);
+            BreakPrefs.dispatchBlockedAppsReload(reactContext);
+            Log.d(TAG, "[MODE] saveModes saved + blocked_apps resynced");
         } catch (Exception e) {
             Log.e(TAG, "[MODE] saveModes error: " + e.getMessage());
         }

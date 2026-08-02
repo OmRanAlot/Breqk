@@ -642,41 +642,32 @@ public final class BreakPrefs {
     public static final String MODE_DEFAULT = "default";
 
     /**
-     * True when the base settings (Customize screen + per-app AppDetail screen)
-     * may be written.
+     * ALWAYS TRUE. The former "base settings are editable only in Default mode"
+     * lock has been removed: the home-screen settings now write directly into the
+     * ACTIVE mode's overrides (see the RN AppDetail / Customize save paths), so a
+     * write can never be masked by the active mode — there is nothing to gate.
      *
-     * While a real mode is active, that mode's overrides "take over" the app's
-     * behaviour. Letting the user edit the base settings underneath would be a
-     * lie: the edits would be silently masked by the mode and appear to do
-     * nothing. So base settings are writable ONLY in Default mode; the UI tells
-     * the user to switch back to Default, and every native setter enforces it.
-     *
-     * The Modes screen itself is deliberately NOT gated — that is where a mode's
-     * own overrides are configured. Neither are the safety features (uninstall
-     * lock, settings lock, content-filter double-safe), which carry their own
-     * deliberate friction and must not become bypassable by toggling a mode.
+     * Kept as a returning-true stub so any residual caller (native setter guards,
+     * the {@code getBaseSettingsEditable} bridge) keeps compiling and behaves as
+     * "always editable". Safety features (uninstall lock, settings lock,
+     * content-filter double-safe) carry their own independent friction and are
+     * unaffected by this method either way.
      *
      * Logging: [MODE_GATE]
      */
     public static boolean isBaseSettingsEditable(Context context) {
-        String activeMode = getActiveMode(context);
-        return activeMode == null || activeMode.isEmpty() || MODE_DEFAULT.equals(activeMode);
+        return true;
     }
 
     /**
-     * Gate helper for native setters. Returns true when the write may proceed;
-     * logs and returns false when a non-default mode owns the settings.
+     * ALWAYS TRUE. See {@link #isBaseSettingsEditable(Context)} — the base-settings
+     * lock is removed. Retained so existing guard call sites keep compiling; every
+     * write now proceeds.
      *
-     * @param operation Short name of the blocked write, for the log line.
+     * @param operation Short name of the write, for parity with old call sites.
      */
     public static boolean assertBaseSettingsEditable(Context context, String operation) {
-        if (isBaseSettingsEditable(context)) {
-            return true;
-        }
-        Log.w(TAG, "[MODE_GATE] BLOCKED '" + operation + "' — mode '"
-                + getActiveMode(context) + "' is active. Base settings are editable"
-                + " only in Default mode.");
-        return false;
+        return true;
     }
 
     /**

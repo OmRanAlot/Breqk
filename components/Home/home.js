@@ -224,8 +224,9 @@ const Home = ({ navigation }) => {
   }, []);
 
   /**
-   * Ends the active mode. Native falls back to Default, which also re-opens the
-   * Customize / AppDetail screens for editing (see shared/useDefaultModeGate).
+   * Ends the active mode. Native falls back to Default; the home-screen settings
+   * then edit Default again (there is no read-only lock — home always edits the
+   * active mode).
    */
   const handleEndMode = useCallback(async () => {
     console.log('[Home] ending active mode → falling back to Default');

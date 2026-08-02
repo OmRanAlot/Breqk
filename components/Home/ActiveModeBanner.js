@@ -4,9 +4,9 @@
  * Replaces the old one-line "Bedtime mode" text in the status strip, which was
  * far too quiet for something that overrides every setting in the app.
  *
- * Doubles as the primary escape hatch: while a mode is active, Customize and
- * AppDetail are read-only (see shared/useDefaultModeGate), and this card's End
- * button is how the user gets back to Default in order to change anything.
+ * Doubles as the escape hatch: the home-screen settings edit whatever mode is
+ * active, so this card's End button is how the user drops the mode and returns
+ * to editing Default. (There is no read-only lock any more.)
  *
  * Never rendered for the "default" mode — that is the always-on baseline, not a
  * mode the user deliberately entered. Home decides that; this component just

@@ -1,7 +1,117 @@
 # Current Task
 
 **Date Started:** 2026-06-30
-**Status:** `[~] In progress — Modes take over settings + Default-mode gate`
+**Status:** `[x] Done — Home is the only mode editor; lock + editor page removed`
+
+## 2026-08-02 — Deletion prevention never fired (case-sensitivity bug)
+
+**Bug (user):** the deletion-prevention lock overlay never appeared when opening
+Settings → Apps → Break → Uninstall. 100% miss rate, not intermittent.
+
+**Root cause:** `UninstallScreenDetector.collectText()` returns
+`sb.toString().toLowerCase()`, but the app-name probe compared against the
+mixed-case literal `"Break"`. That condition could never be true, so `hasBreak`
+was permanently false and `detected = hasBreak && hasUninstall &&
+hasAppInfoMarker` was permanently false — `isOnBreakUninstallScreen()` always
+returned false and `ReelsInterventionService` never entered the show branch.
+The other two probes were unaffected because they already used lowercase
+literals (`"uninstall"`, and the all-lowercase `APP_INFO_MARKERS`).
+
+Everything downstream was already correct: the `uninstall_lock_enabled` opt-in
+gate, the `com.android.settings` dispatch, the 500ms debounce, the accessibility
+config, and `UninstallLockOverlay.show()`.
+
+**Changes — native:**
+
+- `uninstall/UninstallScreenDetector.java` — the app-name probe no longer uses a
+  hardcoded literal at all. New `resolveIdentityTokens(Context)` derives the
+  lowercased launcher label (`@string/app_name`) **and** the package id at
+  runtime and matches on either, cached in a `volatile String[]`. A rename of
+  `app_name` or `applicationId` can no longer silently disable the feature (the
+  repo already carries `Break`/`breqk` naming drift). Signature changed to
+  `isOnBreakUninstallScreen(Context ctx, AccessibilityNodeInfo root)`; falls back
+  to the package id if `loadLabel()` throws.
+- `ReelsInterventionService.java:539` — sole call site passes `this`.
+
+**Logging:** TAG `REELS_WATCH` and prefix `[UNINSTALL_WATCH]` unchanged, no new
+SharedPreferences keys → no `docs/LOGGING.md` edit needed. Two message strings
+changed (`Found 'Break' in node text=` → `Found app identity '<token>' in node
+text=`, plus a new `app identity tokens=[...]` line); LOGGING.md documents tags
+and prefixes, not individual messages.
+
+**Verified:** `./gradlew :app:compileDebugJavaWithJavac` clean (only a
+pre-existing deprecation note).
+**Not yet run on a device.** Worth exercising: enable deletion prevention in
+Customize, then Settings → Apps → Break and confirm
+`adb logcat -s REELS_WATCH | findstr UNINSTALL_WATCH` now reports
+`hasBreak=true ... -> detected=true` and the overlay appears.
+
+**Deliberately out of scope (user chose Phase 2 only)** — still open:
+
+- Uninstall started from a **launcher long-press** or the **Play Store** is never
+  inspected; only `com.android.settings` is watched, so those flows reach
+  `com.google.android.packageinstaller` / `com.android.vending` unblocked.
+- The BFS never recycles child nodes (node leak per scan), and `MAX_NODES = 500`
+  may be exhausted before all three signals are found on dense OEM Settings trees.
+
+## 2026-07-24 — Home screen edits the ACTIVE mode; lock + mode-editor removed
+
+**Bug (user):** editing settings from the home screen while Default mode was
+active "didn't save to the mode." Root cause: the `default` mode ships its own
+`policy_overrides` (e.g. IG intercept=false, reels=true), and native resolution
+(`isFeatureEnabled` / `getEffectiveSettingInt`) reads the active mode's overrides
+FIRST. But the home screens wrote to the **base** `app_policies` / prefs, which
+the active mode masked — the write landed but was invisible.
+
+**Decision (user):** remove the read-only lock and the separate mode-editor page.
+The home screens edit **whatever mode is active** (activate-to-edit); the Modes
+screen keeps only a tiny metadata sheet (name/icon/color/schedule). Per-app
+blocking + reels detection + forced-pause are per-mode; scroll budget, browser
+safety, deletion prevention, and the settings-lock stay global/shared.
+
+**Changes — native:**
+
+- `prefs/BreakPrefs.java` — `isBaseSettingsEditable()` / `assertBaseSettingsEditable()`
+  are now **always-true stubs** (the lock is gone; nothing to gate since writes go
+  into the active mode).
+- **No data migration needed.** The active mode's `policy_overrides` are read
+  FIRST and are already what the user experiences (base was masked all along), so
+  Default's curated/edited overrides stay authoritative; base remains a fallback
+  for keys a mode doesn't override. (An earlier "fold base into Default" migration
+  was written and then removed — on a fresh install it would have clobbered
+  Default's curated overrides with the generic all-true base seed.)
+- `bridge/SettingsModule.java` — `saveModes` now re-derives blocked_apps
+  (`syncBlockedAppsFromPolicies` + `dispatchBlockedAppsReload`) so an edit to the
+  ACTIVE mode's `policy_overrides` takes effect live (activation already synced; a
+  pure in-place edit did not). Gate guards on the base setters are now inert.
+
+**Changes — JS:**
+
+- `shared/activeModeSettings.js` (NEW, `[ActiveModeSettings]`) —
+  `saveAppSettingsToActiveMode(pkg, policy, delaySecs)` folds an app's boolean
+  policy keys into `modes[active].policy_overrides[pkg]` and the mode-wide
+  forced-pause into `setting_overrides.delay_time_seconds`, then `saveModes`.
+- `AppDetail/AppDetail.js` — removed the mode gate/banner; `handleSave` now writes
+  via the helper (single write path) instead of base `setAppFeature`. Message /
+  frequency / post-limit / free-break stay global as before.
+- `Customize/customize.js` — removed the mode gate/banner; scroll-budget re-sync
+  always runs (global setting).
+- `Modes/ModeMetaSheet.js` + `.styles.js` (NEW, `[ModeMeta]`) — metadata-only
+  editor (name/icon/color/schedule/delete). Replaces `ModeEditorModal`.
+- `Modes/ModesScreen.js` — switcher + "Rename & schedule" opens the metadata sheet;
+  `handleSave` merges only metadata, preserving each mode's overrides.
+- **Deleted:** `Modes/ModeEditorModal.js` (+styles), `shared/useDefaultModeGate.js`,
+  `shared/ModeGateBanner.js` (+styles). `TimePickerSheet.styles.js` palette import
+  redirected to `ModeMetaSheet.styles`.
+- `docs/LOGGING.md` — dropped `[ModeGate]` / `[ModeEditor]`, added
+  `[ActiveModeSettings]`, `[ModeMeta]`.
+
+**Verified:** eslint 0 errors (3 pre-existing warnings), jest 38/38, static
+`test_021` PASS / `test_041` SKIP, `:app:compileDebugJavaWithJavac` clean.
+**Not yet run on a device** — worth exercising: (1) editing IG/YT from Home while a
+non-default mode is active persists into that mode and takes effect live,
+(2) forced-pause is one value per mode, (3) a fresh install still shows Default's
+curated behavior (IG no intercept, YT no shorts detection).
 
 ## 2026-07-14 — Modes actually take over; base settings gated to Default mode
 

@@ -14,12 +14,11 @@ import { styles } from './customize.styles';
 import { formatBudgetTime } from '../common/format';
 
 /**
- * @param {boolean} disabled  True while a non-default mode owns the settings
- *                            (see shared/useDefaultModeGate). The steppers grey
- *                            out and stop responding. The live status row below
- *                            stays visible on purpose: the budget is still
- *                            running under the mode's rules, and the user should
- *                            be able to see where it stands.
+ * @param {boolean} [disabled=false]  Optional read-only flag for the steppers.
+ *   Scroll budget is a GLOBAL setting (shared across modes), so Customize never
+ *   passes this true today — the controls are always editable. Kept as a generic
+ *   presentational prop in case a future gate needs to grey the steppers out
+ *   while leaving the live status row visible.
  */
 const ScrollBudgetSection = ({
   scrollAllowance,
