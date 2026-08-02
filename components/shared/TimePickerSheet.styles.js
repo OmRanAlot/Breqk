@@ -10,7 +10,7 @@
  */
 
 import { StyleSheet } from 'react-native';
-import { L } from '../Modes/ModeEditorModal.styles';
+import { L } from '../Modes/ModeMetaSheet.styles';
 
 export const ROW_HEIGHT = 44;
 export const VISIBLE_ROWS = 5; // odd, so one row sits centered under the band

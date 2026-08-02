@@ -39,8 +39,6 @@ import useSettingsLock from './useSettingsLock';
 import useContentFilterGuard from './useContentFilterGuard';
 import SettingsLockGate from './SettingsLockGate';
 import SettingsLockSection from './SettingsLockSection';
-import useDefaultModeGate from '../shared/useDefaultModeGate';
-import ModeGateBanner from '../shared/ModeGateBanner';
 import InfoCircle from '../shared/InfoCircle';
 import { formatRemaining, GUARD_STATES } from '../shared/lockCycle';
 import ScrollBudgetSection from './ScrollBudgetSection';
@@ -75,13 +73,9 @@ const BackIcon = ({ color, size }) => (
 const Customize = ({ navigation }) => {
   const insets = useSafeAreaInsets();
 
-  // ── Default-mode gate ─────────────────────────────────────────────────────
-  // Base settings belong to Default mode. While any other mode is active it owns
-  // the app's behaviour, so editing the base underneath would be a silent no-op —
-  // the controls below go read-only and the banner points the user at the fix.
-  // Native rejects these writes independently (BreakPrefs.isBaseSettingsEditable),
-  // so this is UX, not the enforcement.
-  const modeGate = useDefaultModeGate(navigation);
+  // Settings on this screen (scroll budget, browser safety, deletion prevention,
+  // settings-lock) are GLOBAL and shared across modes — there is no mode gate.
+  // Per-app blocking and forced-pause live in AppDetail and edit the active mode.
 
   // ── Browser content filter state ─────────────────────────────────────────
   const [contentFilterEnabled, setContentFilterEnabled] = useState(false);
@@ -192,14 +186,11 @@ const Customize = ({ navigation }) => {
         SettingsModule.getScrollBudget((allowance, window) => {
           setScrollAllowance(allowance);
           setScrollWindow(window);
-          // Re-push the saved budget to the live monitor. Skipped while a mode
-          // owns the settings: native rejects base writes then (MODE_ACTIVE), and
-          // this is only a redundant re-sync of a value we just read back.
-          if (modeGate.isEditable) {
-            VPNModule.setScrollBudget(allowance, window).catch(e =>
-              console.warn('[Customize] setScrollBudget failed:', e),
-            );
-          }
+          // Re-push the saved budget to the live monitor so it matches what we
+          // just read back. Scroll budget is global, so this always runs.
+          VPNModule.setScrollBudget(allowance, window).catch(e =>
+            console.warn('[Customize] setScrollBudget failed:', e),
+          );
           resolve();
         });
       });
@@ -223,7 +214,7 @@ const Customize = ({ navigation }) => {
     } catch (e) {
       console.warn('[Customize] load settings error:', e);
     }
-  }, [modeGate.isEditable]);
+  }, []);
 
   // Load on mount
   useEffect(() => {
@@ -441,20 +432,6 @@ const Customize = ({ navigation }) => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Default-mode gate: a mode owns these settings ─────────────
-            Shown above the settings-lock gate because the two are independent —
-            a mode can be active while the scope is also lock-timed, and the mode
-            is the one the user can act on right now. */}
-        {!modeGate.isEditable && (
-          <ModeGateBanner
-            modeName={modeGate.activeModeName}
-            modeColor={modeGate.activeModeColor}
-            modeIcon={modeGate.activeModeIcon}
-            onSwitchToDefault={modeGate.switchToDefault}
-            scopeLabel="these settings"
-          />
-        )}
-
         {/* ── Settings Change Lock: read-only gate while the global scope is locked ── */}
         {settingsLock.locked ? (
           <SettingsLockGate remainingMs={settingsLock.remainingMs} />
@@ -466,7 +443,6 @@ const Customize = ({ navigation }) => {
               budgetStatus={budgetStatus}
               adjustAllowance={adjustAllowance}
               adjustWindow={adjustWindow}
-              disabled={!modeGate.isEditable}
             />
 
             {/* <InterceptMessageSection

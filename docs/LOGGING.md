@@ -556,10 +556,10 @@ JS logs use `console.log('[Prefix] message')` so you can grep Metro output.
 | `[useDigitalWellbeing]` | `components/Home/useDigitalWellbeing.js` | Cache hits/misses, fetch duration, raw stat values, top apps count |
 | `[Customize]` | `components/Customize/customize.js` | Settings load/save, toggle states, preview actions, preset selection |
 | `[SettingsLock]` | `components/Customize/useSettingsLock.js`, `SettingsLockGate.js`, `SettingsLockSection.js` | Settings Change Lock UI: state refresh, mark-dirty, exit→startLock, enable/duration changes |
-| `[ModeGate]` | `components/shared/useDefaultModeGate.js`, `components/shared/ModeGateBanner.js` | Default-mode gate: base settings are editable only in Default mode. Logs each gate check (`editable=… activeMode='…'`) and the user's confirmed switch back to Default. Pairs with the native `[MODE_GATE]` tag, which logs the writes it blocks. |
 | `[PermissionsScreen]` | `components/Permissions/PermissionsScreen.js` | Permission request flow, screen advancement |
-| `[ModesScreen]` | `components/Modes/ModesScreen.js` | Modes list: load, activate/deactivate toggle, save/delete |
-| `[ModeEditor]` | `components/Modes/ModeEditorModal.js` | Mode editor: App Open Intercept add/remove app actions, unsaved-changes discard guard |
+| `[ModesScreen]` | `components/Modes/ModesScreen.js` | Modes list: load, activate/deactivate toggle, metadata save/delete |
+| `[ModeMeta]` | `components/Modes/ModeMetaSheet.js` | Mode metadata sheet (name/icon/color/schedule): save, unsaved-changes discard guard |
+| `[ActiveModeSettings]` | `components/shared/activeModeSettings.js` | Writes home-screen edits into the ACTIVE mode's overrides (per-app policy + forced-pause) via saveModes |
 | `[TimePicker]` | `components/shared/TimePickerSheet.js` | Schedule time picker sheet: confirmed time (logged as the stored 24h `HH:mm`) |
 | `[BlockerInterstitial]` | `components/BlockerInterstitial/BlockerInterstitial.tsx` | Overlay mount, countdown, button taps, budget-exhausted variant |
 | `[App]` | `App.tsx` | Root navigation, modal state, event listener setup |
