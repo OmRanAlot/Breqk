@@ -272,9 +272,9 @@ export const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 8,
   },
-  // Applied to any control group frozen because a non-default mode owns the
-  // settings (see shared/useDefaultModeGate). Greys the group out so the
-  // read-only state is visible, not merely unresponsive.
+  // Generic "greyed out" style for a frozen control group — makes a read-only
+  // state visible rather than merely unresponsive. Currently unused (the base-
+  // settings mode lock was removed); kept for any future per-control gating.
   sectionDisabled: {
     opacity: 0.4,
   },

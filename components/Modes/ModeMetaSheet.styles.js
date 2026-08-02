@@ -1,8 +1,12 @@
 /**
- * ModeEditorModal.styles.js — Styles + palette for the mode editor modal.
+ * ModeMetaSheet.styles.js — Styles + palette for the mode metadata sheet.
  * ─────────────────────────────────────────────────────────────────────────────
- * Extracted verbatim from ModeEditorModal.js. Exports the Break light palette
- * (`L`) so the modal shares a single source of truth for colors.
+ * The metadata sheet edits ONLY a mode's identity + schedule (name, icon, color,
+ * schedule) and its delete action. A mode's actual blocking (per-app intercept,
+ * reels detection, forced pause) is edited from the home screen while the mode is
+ * active — see components/AppDetail and docs/current_task.md.
+ *
+ * Exports the Break light palette (`L`) so the sheet shares one colour source.
  */
 
 import { StyleSheet } from 'react-native';
@@ -89,6 +93,14 @@ export const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
   },
+  // Caption under the preview explaining where blocking is edited.
+  metaHint: {
+    fontSize: 13,
+    color: L.muted,
+    lineHeight: 18,
+    marginTop: -12,
+    marginBottom: 8,
+  },
   sectionLabel: {
     fontSize: 11,
     fontWeight: '600',
@@ -97,20 +109,6 @@ export const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: 12,
     marginTop: 20,
-  },
-  sectionCaption: {
-    fontSize: 13,
-    color: L.muted,
-    lineHeight: 18,
-    marginTop: -6,
-    marginBottom: 12,
-  },
-  // Same as sectionCaption but sits UNDER its control rather than above it.
-  sectionCaptionBelow: {
-    fontSize: 12,
-    color: L.muted,
-    textAlign: 'center',
-    marginTop: 8,
   },
   nameInput: {
     fontSize: 16,
@@ -134,9 +132,6 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconOptionSelected: {
-    borderWidth: 2,
-  },
   colorGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -157,143 +152,6 @@ export const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 4,
-  },
-  // ── App Open Intercept box ────────────────────────────────────────────────
-  interceptBox: {
-    backgroundColor: L.cardBg,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    padding: 14,
-  },
-  interceptAppRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 6,
-  },
-  interceptAppLabel: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '500',
-    color: L.charcoal,
-  },
-  interceptRemoveBtn: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  interceptEmptyText: {
-    fontSize: 13,
-    color: L.muted,
-    textAlign: 'center',
-    lineHeight: 18,
-    paddingVertical: 8,
-  },
-  addAppBtn: {
-    alignSelf: 'center',
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 1.5,
-    borderColor: L.border,
-    borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 8,
-  },
-  appPickerList: {
-    borderTopWidth: 1,
-    borderTopColor: L.border,
-    marginTop: 8,
-    paddingTop: 4,
-  },
-  appPickerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 8,
-  },
-  appPickerLabel: {
-    flex: 1,
-    fontSize: 15,
-    color: L.charcoal,
-  },
-  appPickerCancel: {
-    fontSize: 13,
-    color: L.muted,
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
-  // ── Reels Detection box ───────────────────────────────────────────────────
-  reelsBox: {
-    backgroundColor: L.cardBg,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-  },
-  reelsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-  },
-  reelsRowDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: L.border,
-  },
-  reelsRowInfo: {
-    flex: 1,
-  },
-  reelsRowLabel: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: L.charcoal,
-  },
-  reelsRowFeature: {
-    fontSize: 12,
-    color: L.muted,
-    marginTop: 1,
-  },
-  delayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 20,
-    backgroundColor: L.cardBg,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: L.cardBorder,
-    paddingVertical: 12,
-  },
-  stepperBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: L.bg,
-    borderWidth: 1,
-    borderColor: L.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperBtnDisabled: {
-    opacity: 0.35,
-  },
-  stepperBtnText: {
-    fontSize: 24,
-    fontWeight: '300',
-    color: L.charcoal,
-  },
-  delayValue: {
-    fontSize: 28,
-    fontWeight: '500',
-    color: L.charcoal,
-    minWidth: 60,
-    textAlign: 'center',
-    fontVariant: ['tabular-nums'],
   },
   addScheduleBtn: {
     borderWidth: 1,
@@ -325,8 +183,6 @@ export const styles = StyleSheet.create({
     fontSize: 14,
     color: L.charcoal,
   },
-  // Tappable time value: clock icon + "10:00 PM" + chevron. Replaced the old
-  // free-text HH:mm input, so it reads as a control rather than a field.
   scheduleTimeValueGroup: {
     flexDirection: 'row',
     alignItems: 'center',

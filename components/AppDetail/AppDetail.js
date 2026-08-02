@@ -35,8 +35,7 @@ import Svg, { Path } from 'react-native-svg';
 import { MANAGED_APPS } from '../managedApps/manifest';
 import useSettingsLock from '../Customize/useSettingsLock';
 import SettingsLockGate from '../Customize/SettingsLockGate';
-import useDefaultModeGate from '../shared/useDefaultModeGate';
-import ModeGateBanner from '../shared/ModeGateBanner';
+import { saveAppSettingsToActiveMode } from '../shared/activeModeSettings';
 import { styles, L } from './AppDetail.styles';
 import InterceptCustomization from './InterceptCustomization';
 import ApplyAllModal from './ApplyAllModal';
@@ -75,11 +74,9 @@ const AppDetail = ({ navigation, route }) => {
     autoLockOnLeave: false,
   });
 
-  // Default-mode gate. Per-app settings belong to Default mode: while another
-  // mode is active, its policy_overrides decide what happens for this app, so
-  // editing the base policy underneath would be a silent no-op. The form is
-  // replaced by an explanatory banner until the user returns to Default.
-  const modeGate = useDefaultModeGate(navigation);
+  // No mode gate any more: this screen edits whatever mode is ACTIVE. Toggles
+  // here write into the active mode's policy_overrides (see handleSave), so a
+  // write is never masked by the active mode — there is nothing to lock.
 
   const [policy, setPolicy] = useState({});
   const [postLimit, setPostLimit] = useState(DEFAULT_POST_LIMIT);
@@ -239,44 +236,20 @@ const AppDetail = ({ navigation, route }) => {
   const handleSave = useCallback(async () => {
     console.log('[AppDetail] saving all settings for', packageName);
 
-    // Defensive: the form is not rendered while a mode is active, so this should
-    // be unreachable. But a mode can activate on a SCHEDULE while the screen is
-    // open, and native would reject every write below with MODE_ACTIVE — fail
-    // loudly here rather than showing a generic "Save failed".
-    if (!modeGate.isEditable) {
-      console.warn(
-        '[AppDetail] save blocked — mode active:',
-        modeGate.activeModeName,
-      );
-      Alert.alert(
-        'Switch to Default mode',
-        `${modeGate.activeModeName} is active and controls ${appInfo.label}'s settings. Switch to Default mode to change them.`,
-      );
-      return false;
-    }
-
     try {
-      // 1. Base policy — write every key the UI currently holds. Idempotent.
-      const policyEntries = Object.entries(policy);
-      for (const [key, value] of policyEntries) {
-        // setAppFeature is boolean-only on the native side. Non-boolean policy
-        // values (e.g. session_post_limit, a number) are persisted through their
-        // own dedicated calls below — skip them here to avoid a bridge type error.
-        if (typeof value !== 'boolean') {
-          continue;
-        }
-        await SettingsModule.setAppFeature(packageName, key, value);
-      }
-      // NOTE: session_post_limit is a NUMBER and has no per-app native store —
-      // app_policies is a boolean-only map. The only place native reads a post
-      // limit is the global home_feed_post_limit (Instagram), persisted in
-      // step 4 below via saveHomeFeedPostLimit. Do NOT route it through
-      // setAppFeature (boolean-only bridge method) — that throws a type error.
+      // 1. Per-app policy + forced-pause → written into the ACTIVE mode's
+      //    overrides (whatever mode is on, including Default). This is the single
+      //    write path now; there is no separate base app_policies write, so a
+      //    toggle can never be masked by the active mode.
+      const modeId = await saveAppSettingsToActiveMode(
+        packageName,
+        policy,
+        interceptDelaySecs,
+      );
+      console.log('[AppDetail] wrote', packageName, 'into mode', modeId);
 
-      // 2. (Removed) This used to propagate the edits into the ACTIVE mode's
-      //    policy_overrides. That is gone: base settings are now editable only in
-      //    Default mode, so there is never an active non-default mode to write
-      //    into here. A mode's own overrides are edited in the Modes screen.
+      // 2. session_post_limit is a NUMBER (not a policy boolean) — the helper
+      //    above ignores it; it feeds the global home-feed limit in step 4.
 
       // 3. Sync the global free_break_enabled pref so Home's getFreeBreakStatus()
       //    (which reads the global pref, not per-app policy) stays in step.
@@ -326,17 +299,13 @@ const AppDetail = ({ navigation, route }) => {
     }
   }, [
     packageName,
-    appInfo,
     policy,
     postLimit,
     stepperFeature,
-    modeGate,
     interceptMessage,
     interceptDelaySecs,
     interceptFreqMode,
     interceptRepeatMin,
-    isYouTube,
-    coachEnabled,
     settingsLock,
   ]);
 
@@ -430,18 +399,7 @@ const AppDetail = ({ navigation, route }) => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {!modeGate.isEditable ? (
-          /* A non-default mode owns this app's behaviour. Showing the form would
-             invite edits that native rejects, so it is replaced by the banner —
-             same shape as the settings-lock gate below. */
-          <ModeGateBanner
-            modeName={modeGate.activeModeName}
-            modeColor={modeGate.activeModeColor}
-            modeIcon={modeGate.activeModeIcon}
-            onSwitchToDefault={modeGate.switchToDefault}
-            scopeLabel={`${appInfo.label}'s settings`}
-          />
-        ) : settingsLock.locked ? (
+        {settingsLock.locked ? (
           <SettingsLockGate
             remainingMs={settingsLock.remainingMs}
             scopeLabel={appInfo.label}
@@ -641,10 +599,8 @@ const AppDetail = ({ navigation, route }) => {
       </ScrollView>
 
       {/* ── Sticky Save bar ──
-          Hidden while either gate is showing: there is no form to save, and a
-          live Save button next to a "switch to Default mode" banner would just
-          invite a write that native rejects. */}
-      {!settingsLock.locked && modeGate.isEditable && (
+          Hidden only while the settings-lock gate is showing (no form to save). */}
+      {!settingsLock.locked && (
         <View
           style={[
             styles.saveBar,

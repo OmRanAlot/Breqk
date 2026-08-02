@@ -1,5 +1,7 @@
 package com.Break.uninstall;
 
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -10,7 +12,10 @@ import java.util.Deque;
  * Detects when the user is on the Android Settings App Info / uninstall screen for Break.
  *
  * Detection requires ALL three conditions:
- *   1. "Break" appears in the node tree (case-insensitive)
+ *   1. This app's identity appears in the node tree (case-insensitive) — either its
+ *      launcher label (@string/app_name) or its package id. Both are resolved at
+ *      runtime from Context, never hardcoded, so renaming the app or its
+ *      applicationId cannot silently disable deletion prevention.
  *   2. "uninstall" appears in the node tree (case-insensitive)
  *   3. At least one App Info marker is present ("force stop", "storage", "notifications",
  *      "app info", "open by default") — rules out Settings search results where "Break"
@@ -40,14 +45,24 @@ public class UninstallScreenDetector {
             "permissions",
     };
 
+    // Lowercased identity tokens for this app (launcher label + package id), resolved
+    // once from Context on first use. Both are stable for the process lifetime, and
+    // this method runs on every debounced Settings event, so the PackageManager
+    // lookup is cached rather than repeated. Volatile: written on the accessibility
+    // event thread, and a benign duplicate computation on a race is harmless.
+    private static volatile String[] identityTokens;
+
     /**
      * Returns true if the accessibility tree rooted at {@code root} looks like the
      * Break App Info / uninstall screen in Android Settings.
      *
-     * Safe to call with a null or recycled root (returns false).
+     * @param ctx  used to resolve this app's label and package id at runtime
+     * @param root safe to pass null or a recycled root (returns false)
      */
-    public static boolean isOnBreakUninstallScreen(AccessibilityNodeInfo root) {
-        if (root == null) return false;
+    public static boolean isOnBreakUninstallScreen(Context ctx, AccessibilityNodeInfo root) {
+        if (root == null || ctx == null) return false;
+
+        String[] identity = resolveIdentityTokens(ctx);
 
         boolean hasBreak = false;
         boolean hasUninstall = false;
@@ -63,9 +78,14 @@ public class UninstallScreenDetector {
 
             String text = collectText(node);
             if (!text.isEmpty()) {
-                if (!hasBreak && text.contains("Break")) {
-                    hasBreak = true;
-                    Log.d(TAG, "[UNINSTALL_WATCH] Found 'Break' in node text='" + text + "'");
+                if (!hasBreak) {
+                    for (String token : identity) {
+                        if (text.contains(token)) {
+                            hasBreak = true;
+                            Log.d(TAG, "[UNINSTALL_WATCH] Found app identity '" + token + "' in node text='" + text + "'");
+                            break;
+                        }
+                    }
                 }
                 if (!hasUninstall && text.contains("uninstall")) {
                     hasUninstall = true;
@@ -99,6 +119,43 @@ public class UninstallScreenDetector {
                 + " hasAppInfoMarker=" + hasAppInfoMarker
                 + " -> detected=" + detected);
         return detected;
+    }
+
+    /**
+     * Resolves this app's lowercased identity tokens: the launcher label
+     * (@string/app_name) and the package id. Result is cached in {@link #identityTokens}.
+     *
+     * Matching on EITHER is deliberate. Most OEM App Info screens show the label in the
+     * header and the package id in the footer, but some show only one, and a localized
+     * build could change the label. The package id is the stable fallback.
+     *
+     * Both are lowercased to match {@link #collectText}, which lowercases node text —
+     * a mixed-case literal here can never match and would silently disable the feature.
+     */
+    private static String[] resolveIdentityTokens(Context ctx) {
+        String[] cached = identityTokens;
+        if (cached != null) return cached;
+
+        String pkg = ctx.getPackageName().toLowerCase();
+        String label = null;
+        try {
+            PackageManager pm = ctx.getPackageManager();
+            CharSequence raw = ctx.getApplicationInfo().loadLabel(pm);
+            if (raw != null && raw.length() > 0) label = raw.toString().trim().toLowerCase();
+        } catch (Exception e) {
+            // Label lookup should never fail for our own package, but a null/odd
+            // PackageManager must not take the whole detector down — fall back to
+            // the package id, which is always available.
+            Log.w(TAG, "[UNINSTALL_WATCH] loadLabel failed, falling back to package id", e);
+        }
+
+        String[] tokens = (label == null || label.isEmpty() || label.equals(pkg))
+                ? new String[] { pkg }
+                : new String[] { label, pkg };
+
+        Log.d(TAG, "[UNINSTALL_WATCH] app identity tokens=" + java.util.Arrays.toString(tokens));
+        identityTokens = tokens;
+        return tokens;
     }
 
     /** Collects text and content description from a node into a single lowercased string. */

@@ -536,7 +536,7 @@ public class ReelsInterventionService extends AccessibilityService {
                 if (nowCheck - lastUninstallCheckMs >= UNINSTALL_CHECK_DEBOUNCE_MS) {
                     lastUninstallCheckMs = nowCheck;
                     AccessibilityNodeInfo settingsRoot = getRootInActiveWindow();
-                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreakUninstallScreen(settingsRoot);
+                    boolean onUninstallScreen = UninstallScreenDetector.isOnBreakUninstallScreen(this, settingsRoot);
                     if (settingsRoot != null) settingsRoot.recycle();
 
                     // STICKY: once the lock overlay is up it must persist regardless
